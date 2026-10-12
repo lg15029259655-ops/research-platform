@@ -25,6 +25,25 @@ def pdf_bytes(title: str) -> bytes:
     return data
 
 
+def test_comparison_rejects_pdf_without_readable_sections(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((50, 60), "HHS Public Access", fontsize=20)
+    page.insert_text((50, 120), "Publisher notice only", fontsize=12)
+    unreadable = document.tobytes()
+    document.close()
+    with TestClient(app) as client:
+        try:
+            good = client.post("/api/papers", files={"file": ("good.pdf", pdf_bytes("Good comparison paper"), "application/pdf")}).json()
+            bad = client.post("/api/papers", files={"file": ("bad.pdf", unreadable, "application/pdf")}).json()
+            response = client.post("/api/research/compare", json={"paper_ids": [good["id"], bad["id"]]})
+            assert response.status_code == 422
+            assert "bad.pdf" in response.json()["detail"]
+        finally:
+            clean(client)
+
+
 def clean(client: TestClient):
     for paper in client.get("/api/papers").json():
         client.delete(f"/api/papers/{paper['id']}")

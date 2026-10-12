@@ -69,7 +69,7 @@ def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
     return data
 
 
-def process_paper(paper_id: str, owner: str, path: str) -> None:
+def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool = False) -> None:
     def set_stage(stage: str) -> None:
         with SessionLocal() as db:
             paper = owned_paper(db, paper_id, owner)
@@ -87,6 +87,22 @@ def process_paper(paper_id: str, owner: str, path: str) -> None:
         with SessionLocal() as db:
             paper = owned_paper(db, paper_id, owner)
             metadata_title = paper.title if paper.openalex_id else None
+            if replace_existing:
+                db.query(Message).filter(Message.paper_id == paper_id).delete()
+                db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
+                db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
+                paper.current_unit_id = None
+                artifacts = db.scalars(select(ResearchArtifact).where(
+                    ResearchArtifact.owner_id == owner,
+                    ResearchArtifact.kind.in_(["paper_summary", "paper_compare"]))).all()
+                removed_ids = []
+                for artifact in artifacts:
+                    if paper_id in json.loads(artifact.paper_ids_json):
+                        removed_ids.append(artifact.id)
+                        db.delete(artifact)
+                workspace = db.scalar(select(ResearchWorkspace).where(ResearchWorkspace.owner_id == owner))
+                if workspace and workspace.synthesis_id in removed_ids:
+                    workspace.synthesis_id = None
             paper.title = parsed.title
             if not paper.domain:
                 from .research import route_research
@@ -108,7 +124,14 @@ def process_paper(paper_id: str, owner: str, path: str) -> None:
             db.commit()
     except Exception as exc:
         logger.warning("PDF parse failed: %s", type(exc).__name__)
-        set_stage("failed")
+        if replace_existing:
+            with SessionLocal() as db:
+                paper = owned_paper(db, paper_id, owner)
+                paper.status = "parsed"
+                paper.parse_warning = "重新解析失败，已保留上一次阅读记录。请检查 PDF 文件。"
+                db.commit()
+        else:
+            set_stage("failed")
 
 
 @router.post("")
@@ -160,6 +183,19 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
     if old_path and old_path != path and Path(old_path).resolve().parent == (file_service.upload_dir() / owner / paper_id).resolve():
         Path(old_path).unlink(missing_ok=True)
     background_tasks.add_task(process_paper, paper_id, owner, path)
+    return {"id": paper_id, "status": "uploaded"}
+
+
+@router.post("/{paper_id}/reparse")
+def reparse_paper(paper_id: str, background_tasks: BackgroundTasks, owner: str = Owner):
+    with SessionLocal() as db:
+        paper = owned_paper(db, paper_id, owner)
+        if paper.status != "parsed" or not paper.local_file_path or not Path(paper.local_file_path).is_file():
+            raise HTTPException(422, "当前 PDF 无法重新解析")
+        path = paper.local_file_path
+        paper.status = "uploaded"
+        db.commit()
+    background_tasks.add_task(process_paper, paper_id, owner, path, True)
     return {"id": paper_id, "status": "uploaded"}
 
 

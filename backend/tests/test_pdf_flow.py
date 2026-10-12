@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.auth import COOKIE_AGE, COOKIE_NAME, session_hash
 from app.db import SessionLocal
 from app.main import app
-from app.models import Paper, User
+from app.models import Message, Paper, User
 from app.services.pdf_service import parse_pdf, render_page_png, extract_unlabeled_abstract
 
 
@@ -173,6 +173,53 @@ def test_title_prefers_prominent_text_over_copyright_notice(tmp_path):
     path.write_bytes(document.tobytes())
     document.close()
     assert parse_pdf(path).title == "Attention Is All You Need"
+
+
+def test_author_manuscript_header_does_not_replace_title_or_hide_sections(tmp_path):
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((50, 45), "HHS Public Access", fontsize=20)
+    page.insert_text((50, 82), "Author Manuscript", fontsize=16)
+    page.insert_text((50, 135), "Yap-Sox9 signaling determines hepatocyte plasticity", fontsize=15)
+    for index, line in enumerate(("Abstract", "This study examines liver cell fate and lineage plasticity.",
+                                  "Introduction", "The biological question is unresolved.",
+                                  "Methods", "The authors compared genetic perturbations.",
+                                  "Results", "The observed response changed after perturbation.")):
+        page.insert_text((50, 190 + index * 27), line, fontsize=10)
+    path = tmp_path / "nih-manuscript.pdf"
+    path.write_bytes(document.tobytes())
+    document.close()
+    parsed = parse_pdf(path)
+    assert parsed.title == "Yap-Sox9 signaling determines hepatocyte plasticity"
+    assert {item.kind for item in parsed.units} >= {"ABSTRACT", "INTRODUCTION", "METHODS", "RESULTS"}
+
+
+def test_reparse_existing_pdf_replaces_units_and_reading_history(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        owner = None
+        try:
+            uploaded = upload(client, "Reparse Example")
+            owner = owner_of(client)
+            before = client.get(f"/api/papers/{uploaded['id']}").json()
+            with SessionLocal() as db:
+                db.add(Message(
+                    id="11111111-1111-4111-8111-111111111111", paper_id=uploaded["id"],
+                    role="assistant", content="Old reading", reading_unit_id=before["units"][0]["id"]))
+                db.commit()
+            response = client.post(f"/api/papers/{uploaded['id']}/reparse")
+            assert response.status_code == 200
+            after = client.get(f"/api/papers/{uploaded['id']}").json()
+            assert after["status"] == "parsed"
+            assert len(after["units"]) == len(before["units"])
+            assert after["messages"] == []
+        finally:
+            if owner:
+                with SessionLocal() as db:
+                    user = db.get(User, owner)
+                    if user:
+                        db.delete(user)
+                        db.commit()
 
 
 def test_figures_after_references_are_not_main_results(tmp_path):

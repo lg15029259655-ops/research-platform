@@ -240,7 +240,7 @@ class CompareRequest(BaseModel):
     paper_ids: list[str] = Field(min_length=2, max_length=5)
 
 
-def fulltext_papers(owner: str, ids: list[str]) -> list[dict]:
+def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> list[dict]:
     if len(ids) != len(set(ids)):
         raise HTTPException(422, "请选择不同的论文")
     papers = []
@@ -251,11 +251,30 @@ def fulltext_papers(owner: str, ids: list[str]) -> list[dict]:
             if paper.status != "parsed":
                 raise HTTPException(422, "这项分析需要全文，请先上传对应 PDF")
             units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id).order_by(ReadingUnit.position)).all()
+            substantive = [unit for unit in units if unit.kind in {
+                "ABSTRACT", "INTRODUCTION", "METHODS", "RESULTS", "DISCUSSION", "CONCLUSION"
+            } and unit.source_text.strip()]
+            if (len({unit.kind for unit in substantive}) < 2 or
+                    sum(len(unit.source_text) for unit in substantive) < 60 or
+                    paper.title.strip().casefold() in {"hhs public access", "author manuscript"}):
+                raise HTTPException(422, f"《{paper.original_filename}》未可靠提取论文正文，请先在精读页重新识别；若仍不足，请换用可复制文字的 PDF")
+            if compact:
+                quotas = {"TITLE": 1, "ABSTRACT": 1, "INTRODUCTION": 1,
+                          "METHODS": 2, "RESULTS": 3, "DISCUSSION": 1,
+                          "CONCLUSION": 1, "FIGURE": 2, "TABLE": 1}
+                counts: dict[str, int] = {}
+                selected_units = []
+                for unit in units:
+                    if counts.get(unit.kind, 0) < quotas.get(unit.kind, 0) and unit.source_text.strip():
+                        selected_units.append(unit)
+                        counts[unit.kind] = counts.get(unit.kind, 0) + 1
+            else:
+                selected_units = [unit for unit in units if unit.kind != "RECAP"][:35]
             excerpts = [{"unit_id": unit.id, "heading": unit.heading, "page": unit.page_start, "text": unit.source_text[:1100]}
-                        for unit in units if unit.kind != "RECAP"]
+                        for unit in selected_units]
             papers.append({"paper_id": paper.id, "title": paper.title,
                            "domain": paper.domain or route_research(paper.title)["domain"],
-                           "evidence_scope": "PDF提取的全文片段", "sections": excerpts[:35]})
+                           "evidence_scope": "PDF提取的全文片段", "sections": excerpts})
     return papers
 
 
@@ -286,7 +305,7 @@ async def paper_xray(paper_id: str, owner: str = Owner):
 
 @router.post("/compare")
 async def compare(request: CompareRequest, owner: str = Owner):
-    papers = fulltext_papers(owner, request.paper_ids)
+    papers = fulltext_papers(owner, request.paper_ids, compact=True)
     try:
         payload = await run_task("paper_compare", {"papers": papers})
     except StructuredAIError as exc:
@@ -298,6 +317,14 @@ async def compare(request: CompareRequest, owner: str = Owner):
                   {pid for claim in payload["controversies"] for pid in claim["paper_ids"]})
     if not referenced.issubset(allowed):
         raise HTTPException(503, "AI 返回的论文引用不匹配，请重试")
+    for row in payload["dimensions"]:
+        cells = {cell["paper_id"]: cell for cell in row["values"]}
+        row["values"] = [cells.get(paper_id) or {"paper_id": paper_id,
+            "value": "当前提取片段未找到可核对的该项信息，请查看原文。", "source": ""}
+            for paper_id in request.paper_ids]
+        for cell in row["values"]:
+            if not cell["value"].strip():
+                cell["value"] = "当前提取片段未找到可核对的该项信息，请查看原文。"
     if not payload["controversies"]:
         payload["controversies"] = [{"claim": "当前片段尚未形成可直接比较的共同命题",
             "paper_ids": request.paper_ids, "stance": "INSUFFICIENT",

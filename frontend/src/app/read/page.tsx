@@ -143,6 +143,30 @@ export default function ReadPage() {
     finally { setPending(false); setParseStage(""); event.target.value = ""; }
   }
 
+  async function reparse() {
+    if (!paper || pending || !window.confirm("重新解析会清除这篇论文的旧精读记录及相关综合结果，原 PDF 会保留。继续吗？")) return;
+    const id = paper.id;
+    setPending(true); setError(""); setParseStage("正在用新版规则重新解析 PDF…");
+    try {
+      const response = await fetch(`${API}/api/papers/${id}/reparse`, { method: "POST", credentials: "include" });
+      if (!response.ok) { const data = await response.json(); throw new Error(data.detail || "重新解析失败"); }
+      for (let attempt = 0; attempt < 240; attempt++) {
+        const status = await fetch(`${API}/api/papers/${id}`, { credentials: "include" });
+        if (!status.ok) throw new Error("无法读取解析进度");
+        const latest: Paper = await status.json();
+        if (latest.status === "failed") throw new Error("重新解析失败，请检查 PDF");
+        if (latest.status === "parsed") {
+          await loadPaper(id); await loadList();
+          if (latest.warning) setError(latest.warning);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 750));
+      }
+      throw new Error("解析仍在进行，请稍后重新打开论文");
+    } catch (e) { setError(e instanceof Error ? e.message : "重新解析失败"); }
+    finally { setPending(false); setParseStage(""); }
+  }
+
   async function openXRay() {
     if (!paper || paper.status !== "parsed") return;
     setReaderTab("xray");
@@ -204,6 +228,7 @@ export default function ReadPage() {
   }
 
   const current = paper?.units?.find((unit) => unit.id === paper.current_unit_id);
+  const needsReparse = !!paper && paper.status === "parsed" && (paper.title.trim().toLowerCase() === "hhs public access" || !!paper.warning?.includes("未可靠识别论文章节"));
   const units = paper?.units || [];
   const next = units[current ? current.position + 1 : 0];
   const figures = units.filter((unit) => unit.kind === "FIGURE");
@@ -222,6 +247,7 @@ export default function ReadPage() {
       {error && <div className="alert" role="alert">{error}</div>}
       {parseStage && paper && <div className="parseNotice" role="status">{parseStage}</div>}
       {paper?.warning && <div className="alert" role="status">{paper.warning}</div>}
+      {needsReparse && <div className="alert" role="status">这篇 PDF 的标题或章节可能识别错误，会影响 AI 讲解与文献对比。<button type="button" onClick={reparse} disabled={pending} className="quietButton">重新识别当前 PDF</button></div>}
       {!paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || "让阅读从原文开始"}</h2><p>上传本地 PDF 后，左侧查看原文，右侧按科学问题和证据链逐步精读。上传不会自动调用 AI。</p><label className="bigUpload">选择 PDF 文件<input type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload">{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> : readerTab === "xray" ?
       <XRayPanel xray={xray} units={units} pending={pending} onJump={jumpTo} /> : readerTab === "storyboard" ?
@@ -229,7 +255,7 @@ export default function ReadPage() {
       <div className="split">
         {mode !== "ai" && <div className="pdfColumn" style={{ flexBasis: mode === "pdf" ? "100%" : `${pdfWidth}%`, maxWidth: mode === "pdf" ? "100%" : "70%" }}><PdfPane paperId={paper.id} page={page} totalPages={paper.page_count} onPageChange={setPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</div>}
         {mode !== "pdf" && <div className="chatColumn"><div className="readingStatus"><span>当前阅读位置</span><strong>{activeHeading || current?.heading || "尚未开始"}</strong><small>阅读进度已保存；提问不会推进。</small>{figureIndex > 0 && <div className="figureProgress">Figure {figureIndex} / {figures.length}<div>{figures.map((unit, i) => <span key={unit.id} className={i < figureIndex ? "filled" : ""}>●</span>)}</div></div>}</div>
-          <div className="messages" ref={messagesRef} onScroll={(event) => { const box = event.currentTarget; followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }}>{!paper.messages?.length && !stream && <div className="chatIntro">点击“开始精读”，先读题目与摘要。之后每次只推进一个阅读单元。</div>}{paper.messages?.map((item) => <div key={item.id} className={`bubble ${item.role}`}><span>{item.role === "user" ? "你" : "精读助手"}{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "FIGURE" && <em className={item.visual_verified ? "verified" : "unverified"}>{item.visual_verified ? "视觉解析已完成" : "基于正文和图注，图像未核验"}</em>}</span>{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "RECAP" ? <SummaryCards content={item.content} /> : <div className="markdownBody"><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown></div>}</div>)}{stream && <div className="bubble assistant"><span>精读助手 · 正在生成</span><div className="markdownBody"><ReactMarkdown remarkPlugins={[remarkGfm]}>{stream}</ReactMarkdown></div></div>}</div>
+          <div className="messages" ref={messagesRef} onScroll={(event) => { const box = event.currentTarget; followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }}>{!paper.messages?.length && !stream && <div className="chatIntro">点击“开始精读”，先读题目与摘要。之后每次只推进一个阅读单元。</div>}{paper.messages?.map((item) => <div key={item.id} className={`bubble ${item.role}`}><span>{item.role === "user" ? "你" : "精读助手"}{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "FIGURE" && <em className={item.visual_verified ? "verified" : "unverified"}>{item.visual_verified ? "视觉解析已完成" : "基于正文和图注，图像未核验"}</em>}</span>{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "RECAP" ? <SummaryCards content={item.content} /> : <div className="markdownBody"><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown></div>}</div>)}{stream && <div className="bubble assistant"><span>精读助手 · 正在生成</span><div className="markdownBody">{stream}</div></div>}</div>
           <div className="chatControls"><div className="quickActions"><button disabled={pending || (!next && !!current)} onClick={() => act(current ? "NEXT" : "START")}>{nextLabel}</button>{current?.kind === "FIGURE" && <button disabled={pending} onClick={() => act("FIGURE")}>解释这张图</button>}<button disabled={pending} onClick={() => act("WHY_DESIGN")}>为什么这样设计？</button><button disabled={pending} onClick={() => act("EVIDENCE")}>这个结果说明什么？</button></div><form onSubmit={(e) => { e.preventDefault(); if (draft.trim()) act("QUESTION", draft.trim()); }}><textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="提出你的科研问题…" rows={2} disabled={pending} /><button type="submit" disabled={pending || !draft.trim()}>{pending ? "生成中" : "发送 ↗"}</button></form></div>
         </div>}
       </div>}

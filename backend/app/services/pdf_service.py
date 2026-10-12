@@ -1,5 +1,4 @@
 import re
-from statistics import median
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
@@ -8,18 +7,19 @@ import pymupdf as fitz
 
 
 HEADINGS = (
-    ("ABSTRACT", re.compile(r"^(abstract|摘要)$", re.I)),
-    ("INTRODUCTION", re.compile(r"^(\d+(?:\.0)?\s*)?(introduction|background|related work|literature review|引言|背景|相关工作|文献综述)$", re.I)),
-    ("METHODS", re.compile(r"^(\d+(?:\.0)?\s*)?(materials?\s*(and|&)\s*methods?|methods?|methodology|approach|proposed method|experimental setup|experimental design|study design|data and methods|patients?\s*(and|&)\s*methods?|experimental procedures|model architecture|training|方法|材料与方法|研究设计|模型与方法)$", re.I)),
-    ("RESULTS", re.compile(r"^(\d+(?:\.0)?\s*)?(results?|findings?|experiments?|evaluation|performance|outcomes?|empirical results|结果|实验结果|性能评估|实证结果)$", re.I)),
-    ("DISCUSSION", re.compile(r"^(\d+(?:\.0)?\s*)?(discussion|analysis|limitations?|implications|讨论|局限性|分析)$", re.I)),
-    ("CONCLUSION", re.compile(r"^(\d+(?:\.0)?\s*)?(conclusions?|concluding remarks|future work|结论|总结与展望)$", re.I)),
+    ("ABSTRACT", re.compile(r"^(abstract|summary|摘要)$", re.I)),
+    ("INTRODUCTION", re.compile(r"^(\d+(?:\.\d+)*\.?\s*)?(introduction|background|related work|literature review|引言|背景|相关工作|文献综述)$", re.I)),
+    ("METHODS", re.compile(r"^(\d+(?:\.\d+)*\.?\s*)?(materials?\s*(and|&)\s*methods?|methods?|methodology|approach|proposed method|experimental setup|experimental design|study design|data and methods|patients?\s*(and|&)\s*methods?|experimental procedures|model architecture|training|方法|材料与方法|研究设计|模型与方法)$", re.I)),
+    ("RESULTS", re.compile(r"^(\d+(?:\.\d+)*\.?\s*)?(results?|findings?|experiments?|evaluation|performance|outcomes?|empirical results|结果|实验结果|性能评估|实证结果)$", re.I)),
+    ("DISCUSSION", re.compile(r"^(\d+(?:\.\d+)*\.?\s*)?(discussion|analysis|limitations?|implications|讨论|局限性|分析)$", re.I)),
+    ("CONCLUSION", re.compile(r"^(\d+(?:\.\d+)*\.?\s*)?(conclusions?|concluding remarks|future work|结论|总结与展望)$", re.I)),
 )
 FIGURE = re.compile(r"^(?:Fig(?:ure)?\.?|图)\s*([0-9]+[A-Za-z]?)\s*[.:：-]\s*(.+)", re.I)
 TABLE = re.compile(r"^Table\s*([0-9]+[A-Za-z]?)\s*[.:：-]\s*(.+)", re.I)
 SUPPLEMENT = re.compile(r"^(?:supplementary|supplemental)(?: information| materials?| data)?$|^supporting information$", re.I)
 RESULT_SUBHEADING = re.compile(r"^(?:\d+(?:\.\d+)+\s+.{3,80}|(?:primary|secondary|exploratory)\s+(?:outcomes?|endpoints?|analys[ie]s)|baseline characteristics|safety|efficacy|patient characteristics)$", re.I)
-TITLE_NOISE = re.compile(r"copyright|provided proper attribution|permission to|journalistic|scholarly works|^arxiv:|^doi:|https?://|@|^\d+(?:st|nd|rd|th) conference", re.I)
+TITLE_NOISE = re.compile(r"copyright|provided proper attribution|permission to|journalistic|scholarly works|^arxiv:|^doi:|https?://|@|^\d+(?:st|nd|rd|th) conference|^HHS Public Access$|^Author Manuscript$|^Published in final edited form", re.I)
+RUNNING_HEADERS = re.compile(r"^(HHS Public Access|Author Manuscript|Published in final edited form as:?)$", re.I)
 
 
 @dataclass
@@ -121,24 +121,10 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
         if document.page_count == 0:
             raise ValueError("PDF 没有可读取的页面")
         page_lines = []
-        page_fonts: dict[int, dict[str, float]] = {}
-        heading_floor: dict[int, float] = {}
         for number, page in enumerate(document, 1):
-            lines = [line.strip() for line in page.get_text("text").splitlines() if line.strip()]
+            lines = [line.strip() for line in page.get_text("text").splitlines()
+                     if line.strip() and not RUNNING_HEADERS.fullmatch(line.strip())]
             page_lines.append((number, lines))
-            fonts: dict[str, float] = {}
-            sizes: list[float] = []
-            for block in page.get_text("dict")["blocks"]:
-                for line in block.get("lines", []):
-                    value = "".join(span["text"] for span in line["spans"]).strip()
-                    if value and line["spans"]:
-                        size = max(span["size"] for span in line["spans"])
-                        fonts[value] = max(size, fonts.get(value, 0))
-                        sizes.append(size)
-            page_fonts[number] = fonts
-            if sizes:
-                typical = median(sizes)
-                heading_floor[number] = typical + (0.35 if max(sizes) > typical + 0.8 else -0.2)
         stage("structure")
         # Select the prominent first-page text, not the first long line. Many
         # publisher PDFs begin with copyright notices before the actual title.
@@ -151,18 +137,21 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
         supplementary = False
         for page_number, lines in page_lines:
             for line_index, line in enumerate(lines):
-                if line.strip().lower() in {"references", "bibliography", "参考文献"}:
+                after_main_text = page_number > 1 or (current is not None and current.kind in {"RESULTS", "DISCUSSION", "CONCLUSION"})
+                if after_main_text and line.strip().lower() in {"references", "bibliography", "参考文献"}:
                     if current:
                         sections.append(current)
                         current = None
                     supplementary = True
                     continue
-                if SUPPLEMENT.match(line) or line.strip().lower() in {"appendix", "appendices", "附录"}:
+                if after_main_text and (SUPPLEMENT.fullmatch(line) or line.strip().lower() in {"appendix", "appendices", "附录"}):
                     supplementary = True
                 if supplementary:
                     continue
-                font_size = page_fonts[page_number].get(line, heading_floor.get(page_number, 0))
-                heading_kind = classify_heading(line) if font_size >= heading_floor.get(page_number, 0) else None
+                # Publisher manuscripts often print section labels in the same
+                # font as body text; the exact heading match is less fragile
+                # than a size threshold for these short standalone lines.
+                heading_kind = classify_heading(line)
                 if heading_kind:
                     if current:
                         sections.append(current)
