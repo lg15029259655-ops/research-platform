@@ -1,0 +1,504 @@
+"""Discovery, cross-paper synthesis, novelty review and research design."""
+
+import json
+import logging
+from datetime import datetime, timezone
+from hashlib import sha256
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import select
+
+from .auth import current_owner
+from .db import SessionLocal
+from .models import Paper, PaperImage, ReadingUnit, ResearchArtifact, DesignVersion, DiscoveryCache
+from .workspace import get_or_create
+from .papers import owned_paper, paper_data, process_paper
+from .services.openalex_service import DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, search_works
+from .services.remote_pdf import RemotePDFError, fetch_pdf
+from .services.research_ai import StructuredAIError, Design, run_task
+
+router = APIRouter(prefix="/api/research")
+logger = logging.getLogger(__name__)
+Owner = Depends(current_owner)
+
+
+def cache_key(kind: str, query: str, mode: str = "", page: int = 1) -> str:
+    canonical = json.dumps([kind, " ".join(query.casefold().split()), mode, page], ensure_ascii=False)
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def cache_time(value: datetime) -> str:
+    return value.replace(tzinfo=value.tzinfo or timezone.utc).isoformat()
+
+
+async def cached_discovery(key: str, kind: str, query: str, mode: str, page: int, fetch, refresh: bool = False) -> dict:
+    with SessionLocal() as db:
+        cached = db.get(DiscoveryCache, key)
+        if cached and not refresh:
+            return {**json.loads(cached.payload_json), "cached": True,
+                    "fetched_at": cache_time(cached.fetched_at)}
+    try:
+        result = await fetch()
+    except DiscoveryError:
+        if cached:
+            return {**json.loads(cached.payload_json), "cached": True, "stale": True,
+                    "fetched_at": cache_time(cached.fetched_at)}
+        raise
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        row = db.get(DiscoveryCache, key)
+        if row is None:
+            row = DiscoveryCache(cache_key=key, kind=kind, query=query, mode=mode,
+                                 page=page, payload_json="{}")
+            db.add(row)
+        row.payload_json = json.dumps(result, ensure_ascii=False)
+        row.fetched_at = now
+        db.commit()
+    return {**result, "cached": False, "fetched_at": now.isoformat()}
+
+
+def route_research(title: str, abstract: str = "", field: str = "") -> dict[str, str]:
+    content = f"{title} {abstract}".lower()
+    if any(term in content for term in ("meta-analysis", "systematic review", "scoping review",
+                                        "narrative review", "progress article", "荟萃分析", "系统综述")):
+        return {"domain": "review", "study_type": "evidence_synthesis", "template": "review_synthesis"}
+    if any(term in content for term in ("theorem", "lemma", "proof", "axiom", "定理", "引理", "证明")):
+        return {"domain": "theory", "study_type": "theoretical", "template": "theory_proof"}
+    if any(term in content for term in ("finite element simulation", "computational simulation", "numerical simulation", "分子动力学模拟", "数值模拟")):
+        return {"domain": "simulation", "study_type": "computational", "template": "simulation_validation"}
+    if any(term in content for term in ("randomized controlled trial", "cohort study", "case-control study", "retrospective study", "prospective study", "随机对照试验", "队列研究", "病例对照研究")):
+        return {"domain": "biomed", "study_type": "clinical_observational", "template": "clinical_study"}
+    groups = [
+        ("cs", ("algorithm", "neural network", "machine learning", "benchmark", "transformer", "算法", "计算机", "深度学习"), "cs_algorithm"),
+        ("materials", ("material", "catalyst", "polymer", "alloy", "electrode", "perovskite", "材料", "催化", "电池"), "material_experiment"),
+        ("engineering", ("engineering", "finite element", "robotics", "manufacturing", "control system", "structural design", "sensor network", "工程", "机器人", "传感器"), "engineering_design"),
+        ("social", ("survey", "regression", "policy", "sociology", "economics", "population study", "问卷", "社会", "政策"), "social_statistics"),
+        ("biomed", ("cell", "mouse", "clinical", "patient", "disease", "gene", "protein", "cancer", "tumor", "医学", "细胞", "临床", "肿瘤"), "biomed_experiment"),
+    ]
+    field_terms = {"cs": ("computer science",), "materials": ("materials science", "chemistry", "chemical engineering"),
+                   "engineering": ("engineering", "mechanical engineering", "electrical engineering", "civil engineering"),
+                   "social": ("social sciences", "economics", "psychology", "business"),
+                   "biomed": ("medicine", "biochemistry", "immunology", "neuroscience", "pharmacology")}
+    scored = [(sum(content.count(word) for word in words) +
+               4 * any(term in field.lower() for term in field_terms[domain]), domain, template)
+              for domain, words, template in groups]
+    score, domain, template = max(scored, key=lambda row: row[0])
+    if score == 0:
+        return {"domain": "general", "study_type": "unspecified", "template": "general_research"}
+    study_type = {
+        "cs": "algorithm", "materials": "experiment", "engineering": "design",
+        "social": "statistics", "biomed": "experiment",
+    }[domain]
+    return {"domain": domain, "study_type": study_type, "template": template}
+
+
+def save_artifact(owner: str, kind: str, paper_ids: list[str], payload: dict) -> dict:
+    artifact = ResearchArtifact(id=str(uuid4()), owner_id=owner, kind=kind,
+                                paper_ids_json=json.dumps(paper_ids),
+                                payload_json=json.dumps(payload, ensure_ascii=False))
+    with SessionLocal() as db:
+        db.add(artifact)
+        workspace = get_or_create(db, owner)
+        if kind == "paper_compare":
+            workspace.synthesis_id = artifact.id
+        elif kind == "novelty_analysis":
+            workspace.novelty_id = artifact.id
+            workspace.design_idea = payload.get("query", workspace.design_idea)
+        elif kind == "experiment_design":
+            workspace.design_version_id = artifact.id
+            workspace.design_idea = payload.get("goal", workspace.design_idea)
+        db.commit()
+    return {"id": artifact.id, "kind": kind, "paper_ids": paper_ids, "payload": payload,
+            "created_at": artifact.created_at.isoformat()}
+
+
+@router.get("/route")
+def classify(title: str, abstract: str = "", owner: str = Owner):
+    return route_research(title[:500], abstract[:4000])
+
+
+@router.get("/discover")
+async def discover(q: str, page: int = 1, mode: str = "semantic", refresh: bool = False, owner: str = Owner):
+    if not q.strip() or len(q) > 500 or page < 1 or page > 100 or mode not in {"semantic", "keyword"}:
+        raise HTTPException(422, "请输入有效的检索词")
+    if mode == "semantic" and page > 5:
+        raise HTTPException(422, "语义检索最多展示 50 篇，请改用关键词检索")
+    try:
+        result = await cached_discovery(cache_key("search", q, mode, page), "search", q.strip(), mode, page,
+            lambda: search_works(q.strip(), page, mode=mode), refresh)
+    except DiscoveryRateLimited as exc:
+        raise HTTPException(429, "OpenAlex 检索额度暂时耗尽。可稍后重试；如有 OpenAlex API Key，可填入后端 OPENALEX_API_KEY。") from exc
+    except DiscoveryError as exc:
+        logger.warning("OpenAlex discovery failed: %s", type(exc).__name__)
+        raise HTTPException(503, "文献检索服务暂时不可用，请重试") from exc
+    for item in result["items"]:
+        item.update(route_research(item["title"], item["abstract"], item["field"]))
+    return result
+
+
+@router.get("/discover/cached")
+def discover_cached(q: str, page: int = 1, mode: str = "semantic", owner: str = Owner):
+    """Restore a previous public search without contacting OpenAlex."""
+    if not q.strip() or len(q) > 500 or page < 1 or page > 100 or mode not in {"semantic", "keyword"}:
+        raise HTTPException(422, "请输入有效的检索词")
+    with SessionLocal() as db:
+        cached = db.get(DiscoveryCache, cache_key("search", q, mode, page))
+        if cached is None:
+            raise HTTPException(404, "暂无已保存的检索结果")
+        result = {**json.loads(cached.payload_json), "cached": True,
+                  "fetched_at": cache_time(cached.fetched_at)}
+    for item in result["items"]:
+        item.update(route_research(item["title"], item["abstract"], item.get("field", "")))
+    return result
+
+
+@router.get("/graph/{work_id}")
+async def work_graph(work_id: str, refresh: bool = False, owner: str = Owner):
+    try:
+        result = await cached_discovery(cache_key("graph", work_id), "graph", work_id, "", 1,
+            lambda: graph_for_work(work_id), refresh)
+        for item in result["nodes"]:
+            item.update(route_research(item["title"], item["abstract"], item.get("field", "")))
+        return result
+    except DiscoveryError as exc:
+        logger.warning("OpenAlex graph failed: %s", type(exc).__name__)
+        raise HTTPException(503, "文献关系暂时无法读取，请重试") from exc
+
+
+class ImportRequest(BaseModel):
+    openalex_id: str
+
+
+@router.post("/import")
+async def import_work(request: ImportRequest, owner: str = Owner):
+    try:
+        work = await get_work(request.openalex_id)
+    except DiscoveryError as exc:
+        raise HTTPException(422, "无法读取这篇文献的检索信息") from exc
+    with SessionLocal() as db:
+        existing = db.scalar(select(Paper).where(Paper.owner_id == owner, Paper.openalex_id == request.openalex_id))
+        if existing:
+            return paper_data(existing)
+        paper_id = str(uuid4())
+        routed = route_research(work["title"], work["abstract"], work.get("field", ""))
+        paper = Paper(id=paper_id, owner_id=owner, title=work["title"],
+                      original_filename="", stored_filename="", local_file_path="",
+                      mime_type="", file_size_bytes=0, sha256="", status="metadata_only",
+                      authors=", ".join(work["authors"]), year=work["year"],
+                      journal=work["journal"], doi=work["doi"],
+                      openalex_id=work["openalex_id"], abstract=work["abstract"],
+                      citation_count=work["citation_count"], oa_pdf_url=work["oa_pdf_url"],
+                      **routed)
+        db.add(paper)
+        db.commit()
+        return paper_data(paper)
+
+
+@router.post("/import-pdf")
+async def import_open_pdf(request: ImportRequest, background_tasks: BackgroundTasks, owner: str = Owner):
+    try:
+        work = await get_work(request.openalex_id)
+    except DiscoveryError as exc:
+        raise HTTPException(422, "无法读取这篇文献的检索信息") from exc
+    if not work["oa_pdf_url"]:
+        raise HTTPException(422, "未找到可用开放 PDF，请手动上传")
+    paper_data_item = await import_work(request, owner)
+    paper_id = paper_data_item["id"]
+    if paper_data_item["status"] == "parsed":
+        return paper_data_item
+    if paper_data_item["status"] not in {"metadata_only", "failed"}:
+        raise HTTPException(409, "PDF 已在处理中，请稍后打开论文库")
+    try:
+        path, size, digest = await fetch_pdf(work["oa_pdf_url"], owner, paper_id)
+    except RemotePDFError as exc:
+        logger.warning("Open PDF retrieval failed: %s", type(exc).__name__)
+        raise HTTPException(422, str(exc)) from exc
+    with SessionLocal() as db:
+        paper = owned_paper(db, paper_id, owner)
+        old_path = paper.local_file_path
+        db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
+        db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
+        paper.current_unit_id = None
+        paper.original_filename = f"{request.openalex_id}.pdf"
+        paper.stored_filename = Path(path).name
+        paper.local_file_path = path
+        paper.mime_type = "application/pdf"
+        paper.file_size_bytes = size
+        paper.sha256 = digest
+        paper.status = "uploaded"
+        db.commit()
+    if old_path and old_path != path and Path(old_path).resolve().parent == Path(path).resolve().parent:
+        Path(old_path).unlink(missing_ok=True)
+    background_tasks.add_task(process_paper, paper_id, owner, path)
+    return {"id": paper_id, "status": "uploaded"}
+
+
+class CompareRequest(BaseModel):
+    paper_ids: list[str] = Field(min_length=2, max_length=5)
+
+
+def fulltext_papers(owner: str, ids: list[str]) -> list[dict]:
+    if len(ids) != len(set(ids)):
+        raise HTTPException(422, "请选择不同的论文")
+    papers = []
+    with SessionLocal() as db:
+        owned = [owned_paper(db, paper_id, owner) for paper_id in ids]
+        for paper in owned:
+            paper_id = paper.id
+            if paper.status != "parsed":
+                raise HTTPException(422, "这项分析需要全文，请先上传对应 PDF")
+            units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id).order_by(ReadingUnit.position)).all()
+            excerpts = [{"unit_id": unit.id, "heading": unit.heading, "page": unit.page_start, "text": unit.source_text[:1100]}
+                        for unit in units if unit.kind != "RECAP"]
+            papers.append({"paper_id": paper.id, "title": paper.title,
+                           "domain": paper.domain or route_research(paper.title)["domain"],
+                           "evidence_scope": "PDF提取的全文片段", "sections": excerpts[:35]})
+    return papers
+
+
+@router.post("/xray/{paper_id}")
+async def paper_xray(paper_id: str, owner: str = Owner):
+    context = fulltext_papers(owner, [paper_id])[0]
+    with SessionLocal() as db:
+        existing = db.scalar(select(ResearchArtifact).where(
+            ResearchArtifact.owner_id == owner,
+            ResearchArtifact.kind == "paper_summary",
+            ResearchArtifact.paper_ids_json == json.dumps([paper_id]),
+        ).order_by(ResearchArtifact.created_at.desc()))
+        if existing:
+            return {"id": existing.id, "kind": existing.kind,
+                    "paper_ids": [paper_id], "payload": json.loads(existing.payload_json),
+                    "created_at": existing.created_at.isoformat()}
+    try:
+        payload = await run_task("paper_summary", context)
+    except StructuredAIError as exc:
+        logger.warning("Paper X-Ray failed: %s", type(exc).__name__)
+        raise HTTPException(503, str(exc)) from exc
+    with SessionLocal() as db:
+        ids = set(db.scalars(select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id)).all())
+    for stage in payload["stages"]:
+        stage["unit_ids"] = [item for item in stage["unit_ids"] if item in ids]
+    return save_artifact(owner, "paper_summary", [paper_id], payload)
+
+
+@router.post("/compare")
+async def compare(request: CompareRequest, owner: str = Owner):
+    papers = fulltext_papers(owner, request.paper_ids)
+    try:
+        payload = await run_task("paper_compare", {"papers": papers})
+    except StructuredAIError as exc:
+        logger.warning("Comparison AI failed: %s", type(exc).__name__)
+        raise HTTPException(503, str(exc)) from exc
+    allowed = set(request.paper_ids)
+    referenced = ({item["paper_id"] for item in payload["papers"]} |
+                  {cell["paper_id"] for row in payload["dimensions"] for cell in row["values"]} |
+                  {pid for claim in payload["controversies"] for pid in claim["paper_ids"]})
+    if not referenced.issubset(allowed):
+        raise HTTPException(503, "AI 返回的论文引用不匹配，请重试")
+    if not payload["controversies"]:
+        payload["controversies"] = [{"claim": "当前片段尚未形成可直接比较的共同命题",
+            "paper_ids": request.paper_ids, "stance": "INSUFFICIENT",
+            "reason": "本次结构化分析没有给出可核验的共同命题。请对照矩阵和论文原文后再判断。",
+            "evidence_refs": []}]
+    sources = {(paper["paper_id"], section["unit_id"]): section
+               for paper in papers for section in paper["sections"]}
+    for claim in payload["controversies"]:
+        verified_refs = []
+        for ref in claim.get("evidence_refs", []):
+            source = sources.get((ref.get("paper_id"), ref.get("unit_id")))
+            if source and ref["paper_id"] in claim["paper_ids"]:
+                verified_refs.append({"paper_id": ref["paper_id"], "unit_id": ref["unit_id"],
+                    "section": source["heading"], "page": source["page"],
+                    "snippet": source["text"][:260]})
+        claim["evidence_refs"] = verified_refs[:6]
+    return save_artifact(owner, "paper_compare", request.paper_ids, payload)
+
+
+class IdeaRequest(BaseModel):
+    query: str = Field(min_length=5, max_length=800)
+
+
+@router.post("/novelty")
+async def novelty(request: IdeaRequest, owner: str = Owner):
+    try:
+        found = await cached_discovery(cache_key("search", request.query, "semantic", 1),
+            "search", request.query, "semantic", 1,
+            lambda: search_works(request.query, per_page=10))
+        works = found["items"]
+        payload = await run_task("novelty_analysis", {
+            "query": request.query,
+            "evidence_scope": "OpenAlex 检索元数据与可用摘要，未读取全文",
+            "papers": [{"openalex_id": item["openalex_id"], "title": item["title"],
+                        "abstract": item["abstract"][:1800]} for item in works],
+        })
+    except (DiscoveryError, StructuredAIError) as exc:
+        logger.warning("Novelty analysis failed: %s", type(exc).__name__)
+        raise HTTPException(503, "新颖性分析暂时不可用，请重试") from exc
+    allowed = {item["openalex_id"] for item in works}
+    payload["similar_papers"] = [item for item in payload["similar_papers"] if item["openalex_id"] in allowed]
+    by_id = {item["openalex_id"]: item for item in works}
+    with SessionLocal() as db:
+        owned_pdf = {paper.openalex_id for paper in db.scalars(select(Paper).where(
+            Paper.owner_id == owner, Paper.status == "parsed", Paper.openalex_id.is_not(None))).all()}
+    for item in payload["similar_papers"]:
+        source = by_id[item["openalex_id"]]
+        item["abstract"] = source["abstract"][:1000]
+        item["year"] = source["year"]
+        item["full_text_available"] = item["openalex_id"] in owned_pdf
+    payload["query"] = request.query
+    payload["evidence_scope"] = "仅依据 OpenAlex 检索元数据及可用摘要，尚未核验全文。"
+    payload["search_cached"] = found["cached"]
+    payload["search_fetched_at"] = found["fetched_at"]
+    return save_artifact(owner, "novelty_analysis", [], payload)
+
+
+class DesignRequest(BaseModel):
+    goal: str = Field(min_length=5, max_length=1500)
+    constraints: str = Field(default="", max_length=1500)
+    action: str = "generate"
+    current_design: dict | None = None
+    node_id: str | None = None
+    instruction: str = Field(default="", max_length=1000)
+
+
+def design_changes(before: dict | None, after: dict) -> dict:
+    old = {item["id"]: item for item in (before or {}).get("nodes", []) if "id" in item}
+    new = {item["id"]: item for item in after["nodes"]}
+    return {"added": [new[key]["label"] for key in new.keys() - old.keys()],
+            "removed": [old[key]["label"] for key in old.keys() - new.keys()],
+            "modified": [new[key]["label"] for key in new.keys() & old.keys() if new[key] != old[key]]}
+
+
+def limit_node_revision(before: dict, after: dict, target: str) -> dict:
+    try:
+        original = Design.model_validate(before).model_dump()
+    except ValidationError as exc:
+        raise HTTPException(422, "当前设计数据无效，请重新生成方案") from exc
+    old_nodes = {item["id"]: item for item in original["nodes"]}
+    if target not in old_nodes:
+        raise HTTPException(422, "请选择现有设计节点")
+    downstream = {target}
+    while True:
+        expanded = downstream | {edge["target"] for edge in original["edges"] if edge["source"] in downstream}
+        if expanded == downstream:
+            break
+        downstream = expanded
+    generated = {item["id"]: item for item in after["nodes"]}
+    after["nodes"] = [generated.get(item["id"], item) if item["id"] in downstream else item
+                      for item in original["nodes"]]
+    included = {item["id"] for item in after["nodes"]}
+    unchanged_edges = [edge for edge in original["edges"]
+                       if edge["source"] not in downstream and edge["target"] not in downstream]
+    changed_edges = [edge for edge in after["edges"]
+                     if edge["source"] in included and edge["target"] in included
+                     and (edge["source"] in downstream or edge["target"] in downstream)]
+    after["edges"] = unchanged_edges + changed_edges
+    return after
+
+
+def version_data(version: DesignVersion, artifact: ResearchArtifact) -> dict:
+    return {"version_id": version.id, "number": version.version_number, "action": version.action,
+            "parent_version_id": version.parent_version_id,
+            "changes": json.loads(version.changed_nodes_json), "artifact_id": artifact.id,
+            "payload": json.loads(artifact.payload_json), "created_at": version.created_at.isoformat()}
+
+
+@router.post("/design")
+async def design(request: DesignRequest, owner: str = Owner):
+    actions = {"generate": "生成研究设计", "node": "局部优化节点", "causality": "加强因果识别", "cost": "降低成本",
+               "simplify": "简化方案", "mechanism": "增加机制验证", "application": "增强临床或应用意义"}
+    if request.action not in actions:
+        raise HTTPException(422, "不支持的设计操作")
+    if request.action == "node" and (not request.current_design or not request.node_id or not request.instruction.strip()):
+        raise HTTPException(422, "请选择节点并输入修改要求")
+    research_context = {}
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        if workspace.design_idea.strip() == request.goal.strip():
+            selected = json.loads(workspace.selected_paper_ids_json)
+            papers = db.scalars(select(Paper).where(Paper.owner_id == owner, Paper.id.in_(selected))).all() if selected else []
+            research_context = {
+                "research_gap": workspace.research_gap[:1500],
+                "synthesis_context": json.loads(workspace.gap_context_json),
+                "selected_papers": [{"paper_id": item.id, "title": item.title,
+                    "full_text_available": item.status == "parsed"} for item in papers],
+                "evidence_note": "此处是前序综合输出和论文状态，不等于已独立核验的直接实验事实。",
+            }
+    try:
+        payload = await run_task("experiment_design", {"goal": request.goal,
+            "constraints": request.constraints, "request": actions[request.action],
+            "current_design": request.current_design, "node_id": request.node_id,
+            "node_instruction": request.instruction.strip(),
+            "research_context": research_context})
+    except StructuredAIError as exc:
+        logger.warning("Design AI failed: %s", type(exc).__name__)
+        raise HTTPException(503, str(exc)) from exc
+    node_ids = {node["id"] for node in payload["nodes"]}
+    payload["edges"] = [edge for edge in payload["edges"]
+                        if edge["source"] in node_ids and edge["target"] in node_ids]
+    if request.action == "node":
+        payload = limit_node_revision(request.current_design or {}, payload, request.node_id or "")
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        active_parent = db.scalar(select(DesignVersion).where(
+            DesignVersion.owner_id == owner,
+            DesignVersion.workspace_id == workspace.id,
+            DesignVersion.artifact_id == workspace.design_version_id)) if workspace.design_version_id else None
+        previous = db.scalar(select(DesignVersion).where(
+            DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace.id
+        ).order_by(DesignVersion.version_number.desc()))
+        parent_id = active_parent.id if active_parent else None
+        next_number = previous.version_number + 1 if previous else 1
+        workspace_id = workspace.id
+    artifact = save_artifact(owner, "experiment_design", [], payload)
+    with SessionLocal() as db:
+        version = DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace_id,
+            artifact_id=artifact["id"], version_number=next_number,
+            parent_version_id=parent_id, action=request.action,
+            changed_nodes_json=json.dumps(design_changes(request.current_design, payload), ensure_ascii=False))
+        db.add(version)
+        db.commit()
+        artifact["version"] = version_data(version, db.get(ResearchArtifact, artifact["id"]))
+    return artifact
+
+
+@router.get("/design/versions")
+def design_versions(owner: str = Owner):
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        rows = db.scalars(select(DesignVersion).where(
+            DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace.id
+        ).order_by(DesignVersion.version_number.desc()).limit(20)).all()
+        return [version_data(row, db.get(ResearchArtifact, row.artifact_id)) for row in rows]
+
+
+@router.post("/design/versions/{version_id}/restore")
+def restore_design_version(version_id: str, owner: str = Owner):
+    with SessionLocal() as db:
+        version = db.scalar(select(DesignVersion).where(
+            DesignVersion.id == version_id, DesignVersion.owner_id == owner))
+        if not version:
+            raise HTTPException(404, "设计版本不存在")
+        workspace = get_or_create(db, owner)
+        if version.workspace_id != workspace.id:
+            raise HTTPException(404, "设计版本不存在")
+        artifact = db.get(ResearchArtifact, version.artifact_id)
+        workspace.design_version_id = artifact.id
+        db.commit()
+        return version_data(version, artifact)
+
+
+@router.get("/artifacts")
+def list_artifacts(kind: str | None = None, owner: str = Owner):
+    with SessionLocal() as db:
+        query = select(ResearchArtifact).where(ResearchArtifact.owner_id == owner)
+        if kind:
+            query = query.where(ResearchArtifact.kind == kind)
+        items = db.scalars(query.order_by(ResearchArtifact.created_at.desc()).limit(30)).all()
+        return [{"id": item.id, "kind": item.kind,
+                 "paper_ids": json.loads(item.paper_ids_json),
+                 "payload": json.loads(item.payload_json),
+                 "created_at": item.created_at.isoformat()} for item in items]

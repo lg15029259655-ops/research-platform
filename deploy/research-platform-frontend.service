@@ -1,0 +1,23 @@
+[Unit]
+Description=Research Platform Next.js frontend
+After=network.target
+
+[Service]
+Type=simple
+User=researchplatform
+Group=researchplatform
+WorkingDirectory=/opt/research-platform/current/frontend
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3100
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target
