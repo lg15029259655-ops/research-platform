@@ -5,7 +5,7 @@
 - 前端是 Next.js，源码在 `frontend/src/app` 和 `frontend/src/components`；后端是 FastAPI。
 - 前端访问 `/api`，线上由 Nginx 转发到后端。生产构建使用 `NEXT_PUBLIC_API_URL=''`。
 - 论文平台已在**阿里云香港 ECS**上线，域名是 `https://lunyu-lab.site`；校园雷达使用的是另一台腾讯云服务器，两者不要混淆。
-- 本地项目已初始化 Git，但尚未关联 GitHub 远端，也没有自动发布流水线。现有 `deploy/` 文件主要是早期准备时写的模板，不能当作线上实际部署状态。线上前端由 `research-platform-frontend.service` 从 `/opt/research-platform/current/frontend` 启动；`current` 指向一个带时间戳的发布目录。
+- 本地项目已关联私有 GitHub 仓库 `lg15029259655-ops/research-platform`，`main` 已推送；目前没有自动发布流水线。现有 `deploy/` 文件主要是早期准备时写的模板，不能当作线上实际部署状态。线上前端由 `research-platform-frontend.service` 从 `/opt/research-platform/current/frontend` 启动；`current` 指向一个带时间戳的发布目录。
 
 ## 推荐分工
 
@@ -31,7 +31,7 @@
 ## 让同学自行发布需要先完成
 
 1. 在阿里云 Workbench 中核对这台香港 ECS 上的前端发布目录、服务名、维护账号和现有发布方式；不要依据本地 `deploy/README.md` 猜测线上状态。
-2. 建立私有仓库并邀请同学；把 `.env`、`backend/data/`、上传 PDF、`node_modules/`、`.next/` 排除在版本控制外。
+2. 私有仓库已建立并推送代码，同学邀请已由项目负责人发出；`.env`、`backend/data/`、上传 PDF、`node_modules/`、`.next/` 已排除在版本控制外。同学接受邀请后即可克隆仓库。
 3. 配置只构建和替换前端的发布流程，服务器连接凭据由项目负责人保管在发布系统中。发布流程不读取或修改后端 Key、数据库和上传目录。
 4. 先在预览环境或本机验证，再用一版小改动试发布；确认域名、四个页面和 `/api/health` 正常，保留上一版以便回退。
 
