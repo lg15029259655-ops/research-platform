@@ -18,7 +18,7 @@ export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [showIntro, setShowIntro] = useState(false);
   useEffect(() => {
-    try { setShowIntro(window.localStorage.getItem("medread-intro-acknowledged") !== "1"); } catch { setShowIntro(true); }
+    try { setShowIntro(window.localStorage.getItem("medread-intro-acknowledged-v2") !== "1"); } catch { setShowIntro(true); }
     fetch(`${API}/api/health`)
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then(setHealth)
@@ -27,12 +27,12 @@ export default function Home() {
   const connected = health?.status === "ok" && health.database === "ok";
 
   function dismissIntro() {
-    try { window.localStorage.setItem("medread-intro-acknowledged", "1"); } catch { /* Storage may be unavailable. */ }
+    try { window.localStorage.setItem("medread-intro-acknowledged-v2", "1"); } catch { /* Storage may be unavailable. */ }
     setShowIntro(false);
   }
 
   return <main className="home-page"><div className="home-container">
-    {showIntro && <div className="home-intro-backdrop"><section className="home-intro-dialog" role="dialog" aria-modal="true" aria-labelledby="home-intro-title" aria-describedby="home-intro-description"><span className="home-intro-eyebrow">PROJECT NOTE / 项目说明</span><h2 id="home-intro-title">欢迎使用 MedRead</h2><p id="home-intro-description">本网站用于 AI+教育比赛作品展示及科研学习场景，演示文献发现、PDF 精读、跨论文比较与研究设计功能。AI 生成内容可能不准确，请以论文原文核对；本站并非学校官方平台，也不提供医疗诊断建议。</p><button type="button" onClick={dismissIntro} autoFocus>了解，进入网站 <span aria-hidden="true">→</span></button><small>确认后，此浏览器将不再重复显示本说明。</small></section></div>}
+    {showIntro && <div className="home-intro-backdrop"><section className="home-intro-dialog" role="dialog" aria-modal="true" aria-labelledby="home-intro-title" aria-describedby="home-intro-description"><span className="home-intro-eyebrow">PROJECT NOTE / 项目说明</span><h2 id="home-intro-title">AI+教育比赛展示项目</h2><p id="home-intro-description">MedRead 用于 AI+教育比赛作品展示及科研学习，演示文献发现、PDF 精读、跨论文比较与研究设计。AI 生成内容可能不准确，请以论文原文核对；本站并非学校官方平台，也不提供医疗诊断建议。</p><button type="button" onClick={dismissIntro} autoFocus>了解，进入网站 <span aria-hidden="true">→</span></button><small>确认后，此浏览器将不再自动显示本说明。</small></section></div>}
     <header className="home-header">
       <Link href="/" className="home-brand" aria-label="MedRead 首页"><span className="home-brand-symbol" aria-hidden="true"><span /><span /><span /></span><span className="home-brand-name">MedRead<small>科研工作台</small></span></Link>
       <nav className="home-nav" aria-label="主要功能"><Link href="/discover">发现</Link><Link href="/read">精读</Link><Link href="/synthesis">综合</Link><Link href="/design">设计</Link></nav>
@@ -40,6 +40,7 @@ export default function Home() {
     </header>
     <section className="home-hero" aria-labelledby="home-title">
       <div className="home-hero-main">
+        <button className="home-project-badge" type="button" onClick={() => setShowIntro(true)} aria-label="查看比赛项目说明"><span aria-hidden="true" />AI+教育比赛 · 作品展示 <span aria-hidden="true">↗</span></button>
         <span className="home-kicker"><span className="home-kicker-line" />给每一步研究一个依据</span>
         <h1 id="home-title">读懂证据，<br /><em>再提出下一步问题。</em></h1>
         <p>从发现论文到设计研究，在同一个工作台整理线索、精读全文、比较结果。始终分清哪些结论来自摘要，哪些有全文支持。</p>
