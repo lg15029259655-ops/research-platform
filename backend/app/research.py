@@ -273,7 +273,8 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
                         counts[unit.kind] = counts.get(unit.kind, 0) + 1
             else:
                 selected_units = [unit for unit in units if unit.kind != "RECAP"][:35]
-            excerpts = [{"unit_id": unit.id, "heading": unit.heading, "page": unit.page_start, "text": unit.source_text[:1100]}
+            excerpts = [{"unit_id": unit.id, "kind": unit.kind, "heading": unit.heading,
+                         "page": unit.page_start, "text": unit.source_text[:1100]}
                         for unit in selected_units]
             papers.append({"paper_id": paper.id, "title": paper.title,
                            "domain": paper.domain or route_research(paper.title)["domain"],
@@ -337,13 +338,23 @@ async def compare(request: CompareRequest, owner: str = Owner):
                for paper in papers for section in paper["sections"]}
     for claim in payload["controversies"]:
         verified_refs = []
+        direct_refs = []
         for ref in claim.get("evidence_refs", []):
             source = sources.get((ref.get("paper_id"), ref.get("unit_id")))
             if source and ref["paper_id"] in claim["paper_ids"]:
-                verified_refs.append({"paper_id": ref["paper_id"], "unit_id": ref["unit_id"],
+                verified = {"paper_id": ref["paper_id"], "unit_id": ref["unit_id"],
                     "section": source["heading"], "page": source["page"],
-                    "snippet": source["text"][:260]})
-        claim["evidence_refs"] = verified_refs[:6]
+                    "snippet": source["text"][:260]}
+                verified_refs.append(verified)
+                if source["kind"] in {"RESULTS", "DISCUSSION", "CONCLUSION"}:
+                    direct_refs.append(verified)
+        if claim["stance"] == "SUPPORTS" and not direct_refs:
+            claim["stance"] = "INSUFFICIENT"
+            claim["reason"] += " 当前未定位到结果或讨论中的直接证据，不能列为支持。"
+        elif claim["stance"] == "REFUTES" and len({ref["paper_id"] for ref in direct_refs}) < 2:
+            claim["stance"] = "INSUFFICIENT"
+            claim["reason"] += " 当前没有来自至少两篇论文的直接可比结果，不能列为结果不一致。"
+        claim["evidence_refs"] = (direct_refs if claim["stance"] != "INSUFFICIENT" else verified_refs)[:6]
     return save_artifact(owner, "paper_compare", request.paper_ids, payload)
 
 
@@ -364,9 +375,15 @@ async def novelty(request: IdeaRequest, owner: str = Owner):
             "papers": [{"openalex_id": item["openalex_id"], "title": item["title"],
                         "abstract": item["abstract"][:1800]} for item in works],
         })
-    except (DiscoveryError, StructuredAIError) as exc:
-        logger.warning("Novelty analysis failed: %s", type(exc).__name__)
-        raise HTTPException(503, "新颖性分析暂时不可用，请重试") from exc
+    except DiscoveryRateLimited as exc:
+        logger.warning("Novelty search rate limited")
+        raise HTTPException(429, str(exc)) from exc
+    except DiscoveryError as exc:
+        logger.warning("Novelty search failed: %s", type(exc.__cause__).__name__ if exc.__cause__ else type(exc).__name__)
+        raise HTTPException(503, str(exc)) from exc
+    except StructuredAIError as exc:
+        logger.warning("Novelty AI failed: %s", type(exc.__cause__).__name__ if exc.__cause__ else type(exc).__name__)
+        raise HTTPException(503, str(exc)) from exc
     allowed = {item["openalex_id"] for item in works}
     payload["similar_papers"] = [item for item in payload["similar_papers"] if item["openalex_id"] in allowed]
     by_id = {item["openalex_id"]: item for item in works}

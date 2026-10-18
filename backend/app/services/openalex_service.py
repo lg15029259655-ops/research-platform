@@ -1,5 +1,6 @@
 """Small OpenAlex adapter. Metadata never implies that a PDF was read."""
 
+import asyncio
 import re
 import os
 from typing import Any
@@ -60,17 +61,26 @@ def normalize_work(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            key = os.getenv("OPENALEX_API_KEY", "").strip().strip('"').strip("'")
-            headers = {"Authorization": f"Bearer {key}"} if key else None
-            response = await client.get(API + path, params=params, headers=headers)
-            if response.status_code == 429:
-                raise DiscoveryRateLimited("OpenAlex 检索额度暂时耗尽，请稍后重试")
-            response.raise_for_status()
-            return response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise DiscoveryError("文献检索服务暂时不可用，请稍后重试") from exc
+    key = os.getenv("OPENALEX_API_KEY", "").strip().strip('"').strip("'")
+    headers = {"Authorization": f"Bearer {key}"} if key else None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                response = await client.get(API + path, params=params, headers=headers)
+                if response.status_code == 429:
+                    raise DiscoveryRateLimited("OpenAlex 检索额度暂时耗尽，请稍后重试")
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise DiscoveryError("OpenAlex 拒绝了检索请求，请检查检索词或服务配置") from exc
+            if attempt == 2:
+                raise DiscoveryError("文献检索服务暂时不可用，请稍后重试") from exc
+        except (httpx.TransportError, ValueError) as exc:
+            if attempt == 2:
+                raise DiscoveryError("文献检索服务暂时不可用，请稍后重试") from exc
+        await asyncio.sleep(0.5 * (attempt + 1))
+    raise DiscoveryError("文献检索服务暂时不可用，请稍后重试")
 
 
 async def search_works(query: str, page: int = 1, per_page: int = 10,

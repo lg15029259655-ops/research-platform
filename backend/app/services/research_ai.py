@@ -1,12 +1,14 @@
 """Validated JSON tasks for structured research views."""
 
+import asyncio
 import json
 import re
 from typing import Any, Literal
 
+import httpx
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from .bailian_service import stream_completion
+from .bailian_service import AIConfigurationError, AIServiceResponseError, stream_completion
 
 
 class Cell(BaseModel):
@@ -140,7 +142,7 @@ SHAPES: dict[str, dict[str, Any]] = {
 
 TASKS = {
     "paper_summary": "用中文生成 Paper X-Ray：stages 约 5 项，每项只引用输入中真实存在的 unit_ids。按研究类型选择故事线：生物医学为问题→表型→机制→验证→结论；计算机为问题→方法→基准→消融→结论；材料为设计→制备→表征→性能→机制；工程为问题→系统→仿真→原型→验证；社会科学为问题→假设→样本→模型→结果；理论数学为问题→假设→定理→证明思路→结论；综述为问题→检索筛选→证据汇总→异质性→结论。未见证据的环节不得编造或强行补齐。只看到抽取片段时，不得断言整篇论文没有做某项分析；应说当前片段未见，需核对原文。",
-    "paper_compare": "用中文比较给出的论文。dimensions 至少包含研究问题、方法、关键结果、证据局限；另按领域增加适用维度：生医可比较模型/对照/外推，算法可比较基线/消融/泛化，材料可比较表征/稳定性，工程可比较设计约束/性能/可靠性，社科可比较混杂/测量。混合领域只选双方可比较的维度，不强行套用不适用字段。每格必须引用对应 paper_id 和源章节。controversies 请给出 1–3 个能够依据提供片段讨论的共同命题；如果片段不足以建立共同命题，只给 1 条 INSUFFICIENT，说明缺少直接可比证据，不能硬凑支持或冲突。stance 仅可为 SUPPORTS、REFUTES、INSUFFICIENT；evidence_refs 只可引用输入里实际存在的 paper_id 与 unit_id。没有直接证据时写证据不足并让 evidence_refs 为空。只基于提供的全文片段，禁止编造；片段未提供的信息不能写成论文未报告。",
+    "paper_compare": "用中文比较给出的论文。dimensions 至少包含研究问题、方法、关键结果、证据局限；另按领域增加适用维度：生医可比较模型/对照/外推，算法可比较基线/消融/泛化，材料可比较表征/稳定性，工程可比较设计约束/性能/可靠性，社科可比较混杂/测量。混合领域只选双方可比较的维度，不强行套用不适用字段。每格必须引用对应 paper_id 和源章节。controversies 请先从 Results、Discussion 或 Conclusion 片段提取 1–2 条范围明确、能直接引用原文的结果命题；即使只有一篇论文提供直接结果，也可以标为 SUPPORTS，并在 reason 中说明证据仅来自该论文及其研究条件。只有至少两篇论文针对同一对象、条件和结果指标给出相反或不一致的结果，才标为 REFUTES；研究主题不同、研究设计不同或某篇没提到该指标，不构成反对。用户可能关心但片段尚未证明的直接因果关系可单列 INSUFFICIENT。若没有可定位的结果证据，只给 1 条 INSUFFICIENT，不能硬凑支持或冲突。stance 仅可为 SUPPORTS、REFUTES、INSUFFICIENT；每条 SUPPORTS 或 REFUTES 必须提供输入中真实存在的 paper_id 与 unit_id 作为 evidence_refs。没有直接证据时写证据不足并让 evidence_refs 为空。只基于提供的全文片段，禁止编造；片段未提供的信息不能写成论文未报告。",
     "novelty_analysis": "比较研究想法与检索元数据和摘要。similarity_level 只能为高、中、低；每篇论文必须使用输入中的真实 openalex_id 与 title。不得宣称已经阅读全文，不得给出虚假精确相似度。",
     "experiment_design": "按研究领域提出可检验的研究设计，不要假设所有领域都有动物模型或实验组。若提供 research_context，先保持其中的研究对象、疾病、论文范围和证据边界；它是前序综合，不等于独立核验的事实。若问题指向特定疾病或人群，不得擅自换成其他疾病的细胞系、动物模型或人群；未给出具体模型时应写模型选择标准及待验证条件，不要自造具体名称。nodes 表示问题、方法、证据、验证、结论等步骤；edges 引用现有节点 id。说明关键对照、评估指标、假设及限制。change_summary 说明相较现有方案的具体变化；初次生成则写初稿。若 request 为降低成本，必须真正替换、合并或删减至少一个高成本节点，并在 change_summary 中指出替代方案与代价，不要仅增加新的检测和对照。若 request 为局部优化节点，保持现有节点 id，仅修改 node_id 指定节点及确有必要的下游节点；保留其他节点。未经输入资料支持，不要凭空设定具体细胞系、样本量、效应阈值、成本价格或统计显著性门槛；尤其不要编造节省百分比。确需举例时标为待预实验或功效分析确定。",
 }
@@ -169,16 +171,27 @@ async def run_task(name: str, context: dict[str, Any]) -> dict[str, Any]:
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": TASKS[name] + "\n资料：" + json.dumps(context, ensure_ascii=False)}]
     for attempt in range(2):
-        output = ""
-        try:
-            async for chunk in stream_completion(messages):
-                output += chunk
-                if len(output) > 80000:
-                    raise StructuredAIError("AI 输出过长，请缩小研究范围")
-        except StructuredAIError:
-            raise
-        except Exception as exc:
-            raise StructuredAIError("AI 服务暂时不可用，请重试") from exc
+        for service_attempt in range(3):
+            output = ""
+            try:
+                async for chunk in stream_completion(messages):
+                    output += chunk
+                    if len(output) > 80000:
+                        raise StructuredAIError("AI 输出过长，请缩小研究范围")
+                break
+            except AIConfigurationError as exc:
+                raise StructuredAIError("AI 模型尚未配置，请检查服务端设置") from exc
+            except (httpx.TransportError, AIServiceResponseError) as exc:
+                retryable = isinstance(exc, httpx.TransportError) or exc.status_code == 429 or exc.status_code >= 500
+                if not retryable:
+                    raise StructuredAIError("AI 服务请求被拒绝，请检查模型配置") from exc
+                if service_attempt == 2:
+                    raise StructuredAIError("AI 服务连接不稳定，重试后仍未成功") from exc
+                await asyncio.sleep(0.5 * (service_attempt + 1))
+            except StructuredAIError:
+                raise
+            except Exception as exc:
+                raise StructuredAIError("AI 服务暂时不可用，请重试") from exc
         try:
             result = parse_json(output, schema)
             if name == "experiment_design" and context.get("request") == "降低成本" and re.search(r"\d+(?:\.\d+)?\s*%|节省\s*\d|降低\s*\d", result["change_summary"]):

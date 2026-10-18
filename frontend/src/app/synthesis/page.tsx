@@ -33,6 +33,7 @@ export default function SynthesisPage() {
   const [selectedCell, setSelectedCell] = useState<{cell: Cell; dimension: string} | null>(null);
   const [activeDimension, setActiveDimension] = useState(0);
   const resultRef = useRef<HTMLElement>(null);
+  const selectionRef = useRef<HTMLElement>(null);
   const focusNewResult = useRef(false);
   const { workspace, refresh } = useWorkspace();
   const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
@@ -86,11 +87,15 @@ export default function SynthesisPage() {
   }, [data]);
   const label = (id: string) => papers.find((paper) => paper.id === id)?.title || data?.papers.find((paper) => paper.paper_id === id)?.title || "论文";
   const displayFinding = (value: string) => artifact?.paper_ids.reduce((text, id, index) => text.replaceAll(id, `「论文 ${String(index + 1).padStart(2, "0")}」`), value) || value;
+  function reviseSelection() {
+    setShowSelection(true);
+    selectionRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  }
   return <><ResearchNav current="/synthesis" /><main id="main" className="researchPage">
-    <div className="pageIntro"><div className="eyebrow">03 / SYNTHESIZE</div><h1>把多篇论文放在同一张证据桌上。</h1><p>选取 2–5 篇已有全文的论文，比较研究问题、方法、结论与证据边界。</p></div>
-    <section className="sectionBox"><div className="selectionHeading"><h2>选择论文 <small> {selected.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
-      {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇已解析全文的论文。下方可切换论文对比、证据关系和研究空白。</p>}
-      {showSelection && (fulltext.length ? <div className="selectionList">{fulltext.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => toggle(paper.id)} disabled={!selected.includes(paper.id) && selected.length >= 5} /><span>{paper.title}<small>{paper.domain || "领域待识别"} · 已解析全文</small></span></label>)}</div> : <p>论文库中尚无已解析的全文。先去 <Link href="/read" className="inlineLink">上传 PDF</Link>。</p>)}
+    <div className="pageIntro"><div className="eyebrow">03 / SYNTHESIZE</div><h1>把多篇论文放在同一张证据桌上。</h1><p>选取 2–5 篇已有可解析 PDF 的论文，比较研究问题、方法、结论与证据边界。</p></div>
+    <section className="sectionBox" ref={selectionRef}><div className="selectionHeading"><h2>选择论文 <small> {selected.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
+      {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇 PDF 提取的片段；不代表每篇都已完整解析。下方可切换论文对比、证据关系和研究空白。</p>}
+      {showSelection && (fulltext.length ? <div className="selectionList">{fulltext.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => toggle(paper.id)} disabled={!selected.includes(paper.id) && selected.length >= 5} /><span>{paper.title}<small>{paper.domain || "领域待识别"} · 已有 PDF，提取质量需核对</small></span></label>)}</div> : <p>论文库中尚无已解析的 PDF。先去 <Link href="/read" className="inlineLink">上传 PDF</Link>。</p>)}
       {selectionChanged && <p className="selectionChanged" role="status">论文选择已改变。下方保留的是上一次综合结果；重新生成后才会反映当前选择。</p>}
       {!!metadata.length && <div className="miniNotice">另有 {metadata.length} 篇只有元数据或正在解析的论文；完成 PDF 上传后可加入全文综合。{workspace?.selected_paper_ids.some((id) => metadata.some((paper) => paper.id === id)) && " 对比篮中待上传 PDF 的论文暂不能参与全文综合。"}</div>}
       {showSelection && <button className="primaryButton" onClick={compare} disabled={busy || selected.length < 2} aria-busy={busy}>{busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}</button>}
@@ -107,7 +112,7 @@ export default function SynthesisPage() {
         </div>
         <div className="compareTakeaways"><section><span>SHARED SIGNAL</span><h3>共同点</h3><p>{displayFinding(data.consensus[0] || "当前资料尚未形成可核对的共同结论。")}</p>{data.consensus.length > 0 && <details><summary>查看全部 {data.consensus.length} 条</summary><ul>{data.consensus.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section><section><span>WHERE THEY DIFFER</span><h3>关键差异</h3><p>{displayFinding(data.differences[0] || "当前资料尚未形成可核对的差异结论。")}</p>{data.differences.length > 0 && <details><summary>查看全部 {data.differences.length} 条</summary><ul>{data.differences.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section></div>
       </>}
-      {tab === "evidence" && <EvidenceMap claims={data.controversies} papers={data.papers} />}
+      {tab === "evidence" && <EvidenceMap claims={data.controversies} papers={data.papers} onReviseSelection={reviseSelection} />}
       {tab === "gaps" && <GapPath data={data} onUseQuestion={useQuestion} />}
     </section>}
     {selectedCell && <EvidenceDrawer title={selectedCell.dimension} eyebrow={label(selectedCell.cell.paper_id)} onClose={() => setSelectedCell(null)}><p>{selectedCell.cell.value || "未提取到证据"}</p><p className="miniNotice">此单元格是综合分析的概述，请核对原文；来源标记不能代替可点击的原文定位。</p>{selectedCell.cell.source && <dl><dt>来源标记</dt><dd>{selectedCell.cell.source}</dd></dl>}<Link className="drawerAction" href={`/read?paper=${selectedCell.cell.paper_id}`}>打开论文核对 ↗</Link></EvidenceDrawer>}

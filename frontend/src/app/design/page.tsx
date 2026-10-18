@@ -79,7 +79,6 @@ export default function DesignPage() {
   }, [workspace?.design_version_id, versions]);
   useEffect(() => {
     if (tab === "novelty" && !novelty && design && noveltyReady) setTab("canvas");
-    if (tab === "canvas" && !design && novelty) setTab("novelty");
   }, [novelty, design, tab, noveltyReady]);
   async function scan() {
     setBusy(true); setError("");

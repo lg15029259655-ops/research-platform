@@ -398,3 +398,58 @@ def test_design_version_pointer_outside_list_window_stays_reachable():
             assert exact[0]["payload"]["number"] == 1
         finally:
             clean(client)
+
+
+def test_structured_task_retries_transient_model_connection(monkeypatch):
+    import asyncio
+    import json
+    import httpx
+    from app.services.research_ai import run_task
+
+    calls = 0
+    async def flaky_completion(_messages):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("temporary connection failure")
+        yield json.dumps({"query": "test idea", "similar_papers": [],
+            "similarity_level": "低", "differences": [], "novel_angles": []})
+
+    monkeypatch.setattr("app.services.research_ai.stream_completion", flaky_completion)
+    result = asyncio.run(run_task("novelty_analysis", {"query": "test idea", "papers": []}))
+    assert calls == 2
+    assert result["similarity_level"] == "低"
+
+
+def test_comparison_requires_direct_result_refs_for_stance(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+
+    async def fake_run(_name, context):
+        first, second = context["papers"]
+        result_unit = next(unit for unit in first["sections"] if unit["kind"] == "RESULTS")
+        direct = {"paper_id": first["paper_id"], "unit_id": result_unit["unit_id"]}
+        ids = [first["paper_id"], second["paper_id"]]
+        return {"papers": [{"paper_id": pid, "title": "paper", "domain": "biomed"} for pid in ids],
+            "dimensions": [], "consensus": [], "differences": [], "gaps": [], "questions": [], "next_steps": [],
+            "controversies": [
+                {"claim": "第一篇报告了某项结果", "paper_ids": ids, "stance": "SUPPORTS",
+                 "reason": "结果片段来自第一篇", "evidence_refs": [direct]},
+                {"claim": "两篇结果相反", "paper_ids": ids, "stance": "REFUTES",
+                 "reason": "尚无第二篇的结果片段", "evidence_refs": [direct]},
+            ]}
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            ids = [client.post("/api/papers", files={"file":
+                (f"paper-{index}.pdf", pdf_bytes(f"Paper {index}"), "application/pdf")}).json()["id"]
+                for index in (1, 2)]
+            response = client.post("/api/research/compare", json={"paper_ids": ids})
+            assert response.status_code == 200
+            support, inconsistent = response.json()["payload"]["controversies"]
+            assert support["stance"] == "SUPPORTS"
+            assert len(support["evidence_refs"]) == 1
+            assert inconsistent["stance"] == "INSUFFICIENT"
+            assert "不能列为结果不一致" in inconsistent["reason"]
+        finally:
+            clean(client)

@@ -11,6 +11,12 @@ class AIConfigurationError(Exception):
     pass
 
 
+class AIServiceResponseError(RuntimeError):
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"百炼请求失败，HTTP {status_code}")
+
+
 def model_config(vision: bool = False) -> tuple[str, str, str]:
     key = os.getenv("BAILIAN_API_KEY", "").strip()
     base_url = os.getenv("BAILIAN_BASE_URL", "").strip().rstrip("/")
@@ -33,7 +39,7 @@ async def stream_completion(messages: list[dict[str, Any]], *, vision: bool = Fa
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=20)) as client:
         async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=body) as response:
             if response.status_code >= 400:
-                raise RuntimeError(f"百炼请求失败，HTTP {response.status_code}")
+                raise AIServiceResponseError(response.status_code)
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue
