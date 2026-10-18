@@ -1,5 +1,6 @@
 """Discovery, cross-paper synthesis, novelty review and research design."""
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -23,6 +24,9 @@ from .services.research_ai import StructuredAIError, Design, run_task
 router = APIRouter(prefix="/api/research")
 logger = logging.getLogger(__name__)
 Owner = Depends(current_owner)
+NOVELTY_AI_TIMEOUT = 15
+DESIGN_AI_TIMEOUT = 18
+FULLTEXT_AI_TIMEOUT = 35
 
 
 def cache_key(kind: str, query: str, mode: str = "", page: int = 1) -> str:
@@ -296,7 +300,9 @@ async def paper_xray(paper_id: str, owner: str = Owner):
                     "paper_ids": [paper_id], "payload": json.loads(existing.payload_json),
                     "created_at": existing.created_at.isoformat()}
     try:
-        payload = await run_task("paper_summary", context)
+        payload = await asyncio.wait_for(run_task("paper_summary", context), timeout=FULLTEXT_AI_TIMEOUT)
+    except TimeoutError as exc:
+        raise HTTPException(504, "论文精读超过等待上限，请缩小范围后重试") from exc
     except StructuredAIError as exc:
         logger.warning("Paper X-Ray failed: %s", type(exc).__name__)
         raise HTTPException(503, str(exc)) from exc
@@ -311,7 +317,9 @@ async def paper_xray(paper_id: str, owner: str = Owner):
 async def compare(request: CompareRequest, owner: str = Owner):
     papers = fulltext_papers(owner, request.paper_ids, compact=True)
     try:
-        payload = await run_task("paper_compare", {"papers": papers})
+        payload = await asyncio.wait_for(run_task("paper_compare", {"papers": papers}), timeout=FULLTEXT_AI_TIMEOUT)
+    except TimeoutError as exc:
+        raise HTTPException(504, "文献综合超过等待上限，请减少论文数量后重试") from exc
     except StructuredAIError as exc:
         logger.warning("Comparison AI failed: %s", type(exc).__name__)
         raise HTTPException(503, str(exc)) from exc
@@ -362,6 +370,15 @@ class IdeaRequest(BaseModel):
     query: str = Field(min_length=5, max_length=800)
 
 
+def search_only_novelty(query: str, works: list[dict]) -> dict:
+    """Keep verified search hits visible when the optional AI interpretation is slow."""
+    return {"query": query, "similar_papers": [{"openalex_id": item["openalex_id"],
+        "title": item["title"], "similarity_level": "中", "differences": []} for item in works[:8]],
+        "similarity_level": "中", "differences": [], "novel_angles": [],
+        "search_only": True, "search_message": ("已返回相关文献；模型解读未完成，暂不判断相似程度或新颖性。"
+            if works else "本次检索没有返回文献；不能据此断定该研究方向不存在。")}
+
+
 @router.post("/novelty")
 async def novelty(request: IdeaRequest, owner: str = Owner):
     try:
@@ -369,20 +386,21 @@ async def novelty(request: IdeaRequest, owner: str = Owner):
             "search", request.query, "semantic", 1,
             lambda: search_works(request.query, per_page=10))
         works = found["items"]
-        payload = await run_task("novelty_analysis", {
-            "query": request.query,
-            "evidence_scope": "OpenAlex 检索元数据与可用摘要，未读取全文",
-            "papers": [{"openalex_id": item["openalex_id"], "title": item["title"],
-                        "abstract": item["abstract"][:1800]} for item in works],
-        })
+        try:
+            payload = await asyncio.wait_for(run_task("novelty_analysis", {
+                "query": request.query,
+                "evidence_scope": "OpenAlex 检索元数据与可用摘要，未读取全文",
+                "papers": [{"openalex_id": item["openalex_id"], "title": item["title"],
+                            "abstract": item["abstract"][:1200]} for item in works[:8]],
+            }), timeout=NOVELTY_AI_TIMEOUT)
+        except (TimeoutError, StructuredAIError):
+            logger.warning("Novelty interpretation timed out or failed; returning search-only result")
+            payload = search_only_novelty(request.query, works)
     except DiscoveryRateLimited as exc:
         logger.warning("Novelty search rate limited")
         raise HTTPException(429, str(exc)) from exc
     except DiscoveryError as exc:
         logger.warning("Novelty search failed: %s", type(exc.__cause__).__name__ if exc.__cause__ else type(exc).__name__)
-        raise HTTPException(503, str(exc)) from exc
-    except StructuredAIError as exc:
-        logger.warning("Novelty AI failed: %s", type(exc.__cause__).__name__ if exc.__cause__ else type(exc).__name__)
         raise HTTPException(503, str(exc)) from exc
     allowed = {item["openalex_id"] for item in works}
     payload["similar_papers"] = [item for item in payload["similar_papers"] if item["openalex_id"] in allowed]
@@ -409,6 +427,24 @@ class DesignRequest(BaseModel):
     current_design: dict | None = None
     node_id: str | None = None
     instruction: str = Field(default="", max_length=1000)
+
+
+def quick_design(goal: str, constraints: str) -> dict:
+    """A clearly labelled, domain-neutral draft when generation exceeds the UI budget."""
+    nodes = [
+        {"id": "N1", "label": "明确问题与假设", "type": "question", "detail": f"围绕“{goal}”写出可证伪的主假设，并明确研究对象、干预或暴露、主要结局。"},
+        {"id": "N2", "label": "选择研究对象和资料", "type": "method", "detail": "确定适用的样本、数据或实验模型；记录纳入排除标准和资料来源。"},
+        {"id": "N3", "label": "设置对照与测量", "type": "method", "detail": "确定合适的对照、主要评价指标和测量时间点，先检查可行性。"},
+        {"id": "N4", "label": "检验与敏感性分析", "type": "validation", "detail": "验证主假设，并检查混杂、替代解释、批次差异或模型假设。"},
+        {"id": "N5", "label": "解释证据边界", "type": "conclusion", "detail": "区分观察到的结果与因果推断，说明外推范围和仍需验证的问题。"},
+    ]
+    return Design.model_validate({"goal": goal,
+        "change_summary": "快速设计草稿：模型解读未完成，以下为可立即编辑的通用研究框架；具体实验条件需结合领域文献核对。",
+        "constraints": [constraints] if constraints.strip() else [], "nodes": nodes,
+        "edges": [{"source": f"N{i}", "target": f"N{i+1}", "label": "下一步"} for i in range(1, 5)],
+        "controls": ["根据研究对象设置可比的对照条件"],
+        "readouts": ["预先定义主要结局及测量方法"],
+        "assumptions": ["资料质量和样本可满足研究目标；具体参数待预实验或功效分析确定"]}).model_dump()
 
 
 def design_changes(before: dict | None, after: dict) -> dict:
@@ -475,19 +511,24 @@ async def design(request: DesignRequest, owner: str = Owner):
                 "evidence_note": "此处是前序综合输出和论文状态，不等于已独立核验的直接实验事实。",
             }
     try:
-        payload = await run_task("experiment_design", {"goal": request.goal,
+        payload = await asyncio.wait_for(run_task("experiment_design", {"goal": request.goal,
             "constraints": request.constraints, "request": actions[request.action],
             "current_design": request.current_design, "node_id": request.node_id,
             "node_instruction": request.instruction.strip(),
-            "research_context": research_context})
-    except StructuredAIError as exc:
-        logger.warning("Design AI failed: %s", type(exc).__name__)
-        raise HTTPException(503, str(exc)) from exc
+            "research_context": research_context}), timeout=DESIGN_AI_TIMEOUT)
+    except (TimeoutError, StructuredAIError) as exc:
+        if request.action == "generate":
+            logger.warning("Design generation timed out or failed; returning quick draft: %s", type(exc).__name__)
+            payload = quick_design(request.goal, request.constraints)
+        else:
+            logger.warning("Design AI failed: %s", type(exc).__name__)
+            raise HTTPException(503, "本次调整未完成；原方案已保留，请稍后重试") from exc
     # 模型会用自己的话复述 goal。一旦复述版与用户原话不同，save_artifact 会把
     # workspace.design_idea 改写成复述版；紧接着 GET /api/workspace 的 prune_stale_idea_results
     # 发现 novelty payload 的 query 与 design_idea 不再相等，就把 novelty_id 静默清空——
     # 用户看到的是「生成设计后新颖性扫描结果消失」。这里强制回填用户原话，让三者始终同源。
     payload["goal"] = request.goal
+    payload["input_constraints"] = request.constraints.strip()
     node_ids = {node["id"] for node in payload["nodes"]}
     payload["edges"] = [edge for edge in payload["edges"]
                         if edge["source"] in node_ids and edge["target"] in node_ids]

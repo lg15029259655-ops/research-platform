@@ -63,9 +63,9 @@ def normalize_work(raw: dict[str, Any]) -> dict[str, Any]:
 async def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     key = os.getenv("OPENALEX_API_KEY", "").strip().strip('"').strip("'")
     headers = {"Authorization": f"Bearer {key}"} if key else None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=5), follow_redirects=True) as client:
                 response = await client.get(API + path, params=params, headers=headers)
                 if response.status_code == 429:
                     raise DiscoveryRateLimited("OpenAlex 检索额度暂时耗尽，请稍后重试")
@@ -74,10 +74,10 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code < 500:
                 raise DiscoveryError("OpenAlex 拒绝了检索请求，请检查检索词或服务配置") from exc
-            if attempt == 2:
+            if attempt == 1:
                 raise DiscoveryError("文献检索服务暂时不可用，请稍后重试") from exc
         except (httpx.TransportError, ValueError) as exc:
-            if attempt == 2:
+            if attempt == 1:
                 raise DiscoveryError("文献检索服务暂时不可用，请稍后重试") from exc
         await asyncio.sleep(0.5 * (attempt + 1))
     raise DiscoveryError("文献检索服务暂时不可用，请稍后重试")

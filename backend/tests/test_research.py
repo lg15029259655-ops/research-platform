@@ -56,6 +56,72 @@ def clean(client: TestClient):
                 db.commit()
 
 
+def test_novelty_timeout_keeps_real_search_hits(monkeypatch):
+    import asyncio
+
+    async def found(*_args, **_kwargs):
+        return {"items": [{"openalex_id": "W123", "title": "Real paper", "abstract": "Measured response",
+            "year": 2020}], "cached": False, "fetched_at": "2026-01-01T00:00:00+00:00"}
+
+    async def slow_run(*_args, **_kwargs):
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr("app.research.cached_discovery", found)
+    monkeypatch.setattr("app.research.run_task", slow_run)
+    monkeypatch.setattr("app.research.NOVELTY_AI_TIMEOUT", 0.001)
+    with TestClient(app) as client:
+        try:
+            response = client.post("/api/research/novelty", json={"query": "Test research idea"})
+            assert response.status_code == 200
+            result = response.json()["payload"]
+            assert result["search_only"] is True
+            assert result["similar_papers"][0]["openalex_id"] == "W123"
+            assert result["similar_papers"][0]["abstract"] == "Measured response"
+        finally:
+            clean(client)
+
+
+def test_design_timeout_returns_labelled_quick_draft(monkeypatch):
+    import asyncio
+
+    async def slow_run(*_args, **_kwargs):
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr("app.research.run_task", slow_run)
+    monkeypatch.setattr("app.research.DESIGN_AI_TIMEOUT", 0.001)
+    with TestClient(app) as client:
+        try:
+            response = client.post("/api/research/design", json={"goal": "Test a practical hypothesis"})
+            assert response.status_code == 200
+            result = response.json()["payload"]
+            assert result["goal"] == "Test a practical hypothesis"
+            assert "快速设计草稿" in result["change_summary"]
+            assert len(result["nodes"]) >= 3
+        finally:
+            clean(client)
+
+
+def test_comparison_timeout_returns_promptly(monkeypatch, tmp_path):
+    import asyncio
+
+    async def slow_run(*_args, **_kwargs):
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.research.run_task", slow_run)
+    monkeypatch.setattr("app.research.FULLTEXT_AI_TIMEOUT", 0.001)
+    with TestClient(app) as client:
+        try:
+            ids = [client.post("/api/papers", files={"file":
+                (f"{index}.pdf", pdf_bytes(f"Paper {index}"), "application/pdf")}).json()["id"]
+                for index in (1, 2)]
+            response = client.post("/api/research/compare", json={"paper_ids": ids})
+            assert response.status_code == 504
+            assert "等待上限" in response.json()["detail"]
+        finally:
+            clean(client)
+
+
 def test_cross_domain_templates():
     samples = [("Neural network algorithm benchmark", "cs_algorithm"),
                ("Perovskite material stability", "material_experiment"),

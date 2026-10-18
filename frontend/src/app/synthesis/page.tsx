@@ -29,6 +29,7 @@ export default function SynthesisPage() {
   const [showSelection, setShowSelection] = useState(true);
   const [tab, setTab] = useState<"matrix" | "evidence" | "gaps">("matrix");
   const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
   const [selectedCell, setSelectedCell] = useState<{cell: Cell; dimension: string} | null>(null);
   const [activeDimension, setActiveDimension] = useState(0);
@@ -37,6 +38,11 @@ export default function SynthesisPage() {
   const focusNewResult = useRef(false);
   const { workspace, refresh } = useWorkspace();
   const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
+  useEffect(() => {
+    if (!busy) { setElapsed(0); return; }
+    const timer = window.setInterval(() => setElapsed((seconds) => seconds + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [busy]);
   useEffect(() => {
     apiJson<Paper[]>("/api/papers").then(setPapers).catch(() => setError("无法读取论文库"));
   }, []);
@@ -62,6 +68,9 @@ export default function SynthesisPage() {
     updateWorkspace({selected_paper_ids: updated}).catch((e) => setError(e.message));
   }
   async function compare() {
+    if (artifact && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
+      setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
+    }
     setBusy(true); setError("");
     try { const result = await postJson<Artifact>("/api/research/compare", { paper_ids: selected }); focusNewResult.current = true; setArtifact(result); setActiveDimension(0); setShowSelection(false); setTab("matrix"); await refresh(); }
     catch (e) { setError(e instanceof Error ? e.message : "综合分析失败"); }
@@ -103,7 +112,7 @@ export default function SynthesisPage() {
     {!data && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div><div className="startGuideSteps"><div><b>01</b><strong>上传全文</strong><small>保留原始 PDF 与页码</small></div><div><b>02</b><strong>选择 2–5 篇</strong><small>使用已解析的论文</small></div><div><b>03</b><strong>核对综合结果</strong><small>逐条返回原文验证</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {busy && <StepLoading title="正在综合全文证据" steps={["读取已解析的论文片段", "比较研究问题与结果", "整理证据关系和研究空白"]} />}
-    {busy && <div className="floatingBusy" role="status"><span className="loadingPulse"/>正在综合全文，结果完成后将自动展示</div>}
+    {busy && <div className="floatingBusy" role="status"><span className="loadingPulse"/>已等待 {elapsed} 秒；超过等待上限会提示缩小范围</div>}
     {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
       {tab === "matrix" && <>
         <div className="compareFocus">
