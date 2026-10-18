@@ -16,7 +16,7 @@ export default function WorkspaceBar({ current }: { current: string }) {
   const step = steps[index];
   return <div className="workspaceStrip" aria-label="当前研究工作区">
     <div className="workspaceStage"><span>RESEARCH WORKSPACE</span><strong>{String(index + 1).padStart(2, "0")} <i>/ 04</i></strong></div>
-    <div className="workspaceSummary"><small>当前主题</small><strong title={workspace?.query || "尚未设置研究主题"}>{workspace?.query || "尚未设置研究主题"}</strong><span>{workspace?.selected_paper_ids.length || 0} 篇待综合</span></div>
+    <div className="workspaceSummary"><small>{current === "/design" ? "发现页检索主题" : "当前主题"}</small><strong title={workspace?.query || "尚未设置研究主题"}>{workspace?.query || "尚未设置研究主题"}</strong><span>{workspace?.selected_paper_ids.length || 0} 篇待综合</span></div>
     <Link className="workspaceNext" href={step.next}><small>{step.note}</small><strong>{step.nextLabel} <span aria-hidden="true">↗</span></strong></Link>
   </div>;
 }
