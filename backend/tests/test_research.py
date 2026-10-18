@@ -362,3 +362,39 @@ def test_artifact_pointer_outside_list_window_stays_reachable():
             assert exact[0]["payload"]["query"] == "最早的扫描"
         finally:
             clean(a)
+
+
+def test_design_version_pointer_outside_list_window_stays_reachable():
+    """当前工作区指向较早的设计版本时，前端仍能按 artifact_id 还原画布。"""
+    import json
+    from uuid import uuid4
+
+    from app.models import DesignVersion
+    from app.workspace import get_or_create
+
+    with TestClient(app) as client:
+        try:
+            client.get("/api/workspace")
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(
+                    User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+                workspace_id = get_or_create(db, owner).id
+            oldest_artifact = ""
+            for number in range(1, 22):
+                artifact = save_artifact(owner, "experiment_design", [], {"goal": "同一研究问题", "number": number})
+                if number == 1:
+                    oldest_artifact = artifact["id"]
+                with SessionLocal() as db:
+                    db.add(DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace_id,
+                        artifact_id=artifact["id"], version_number=number, parent_version_id=None,
+                        action="generate", changed_nodes_json=json.dumps({"added": [], "removed": [], "modified": []})))
+                    db.commit()
+            recent = client.get("/api/research/design/versions").json()
+            assert len(recent) == 20
+            assert oldest_artifact not in {item["artifact_id"] for item in recent}
+            exact = client.get(f"/api/research/design/versions?artifact_id={oldest_artifact}").json()
+            assert len(exact) == 1
+            assert exact[0]["artifact_id"] == oldest_artifact
+            assert exact[0]["payload"]["number"] == 1
+        finally:
+            clean(client)

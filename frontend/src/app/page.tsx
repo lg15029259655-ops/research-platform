@@ -30,14 +30,14 @@ type Fact = { value: string; unit: string } | { text: string };
 const facts: Fact[] = [
   { value: "4", unit: "个研究模块" },          // 依据：app/page.tsx 的 modules[] 长度 = 4
   { value: "2–5", unit: "篇全文同屏对照" },     // 依据：synthesis/page.tsx selected.length<5 上限、compare() 要求 ≥2
-  { text: "论文与 PDF 保存在本机" },            // 依据：read/page.tsx .libraryFoot「所有文件保存在本机」
+  { text: "研究记录与上传的 PDF 保存在服务端" },
   { text: "匿名会话，无需注册" },               // 依据：read/page.tsx initialize() 调 GET /api/session
   { text: "检索来自 OpenAlex" },                // 依据：discover/page.tsx 页首文案「自然语言检索 OpenAlex」
 ];
 
 // 真实 FAQ：文案逐字取自 design-spec §3.1 分区 6，只陈述代码里确实存在的行为
 const faq = [
-  { id: "storage", question: "我的文件和 PDF 保存在哪里？", answer: "保存在运行本机后端的机器上；页面文案即「所有文件保存在本机」。" },
+  { id: "storage", question: "我的文件和 PDF 保存在哪里？", answer: "上传的 PDF 和研究记录保存在运行本网站的服务器上；如果你在自己的电脑上运行本站，则保存在那台电脑上。" },
   { id: "account", question: "需要注册或登录吗？", answer: "不需要。系统建立匿名会话（GET /api/session）后即可使用。" },
   { id: "hallucination", question: "AI 会编造内容吗？", answer: "AI 基于已提供的文本/摘要生成，可能不准确，页面多处提示「请与原文核对」；检索阶段的相似度判断只依据摘要，未完成全文核验。" },
   { id: "search-mode", question: "和普通关键词搜索有什么区别？", answer: "提供「语义检索」与「关键词检索」两种模式：语义检索适合用研究问题提问，关键词检索适合精确题名。" },
