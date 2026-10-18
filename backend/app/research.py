@@ -257,7 +257,10 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
             if (len({unit.kind for unit in substantive}) < 2 or
                     sum(len(unit.source_text) for unit in substantive) < 60 or
                     paper.title.strip().casefold() in {"hhs public access", "author manuscript"}):
-                raise HTTPException(422, f"《{paper.original_filename}》未可靠提取论文正文，请先在精读页重新识别；若仍不足，请换用可复制文字的 PDF")
+                # 从 OpenAlex 导入的论文没有上传文件，original_filename 是空串，
+                # 直接拼出来就是「《》未可靠提取…」，用户看不出是哪一篇。回落用标题。
+                label = paper.original_filename.strip() or paper.title.strip() or "这篇论文"
+                raise HTTPException(422, f"《{label}》未可靠提取论文正文，请先在精读页重新识别；若仍不足，请换用可复制文字的 PDF")
             if compact:
                 quotas = {"TITLE": 1, "ABSTRACT": 1, "INTRODUCTION": 1,
                           "METHODS": 2, "RESULTS": 3, "DISCUSSION": 1,
@@ -463,6 +466,11 @@ async def design(request: DesignRequest, owner: str = Owner):
     except StructuredAIError as exc:
         logger.warning("Design AI failed: %s", type(exc).__name__)
         raise HTTPException(503, str(exc)) from exc
+    # 模型会用自己的话复述 goal。一旦复述版与用户原话不同，save_artifact 会把
+    # workspace.design_idea 改写成复述版；紧接着 GET /api/workspace 的 prune_stale_idea_results
+    # 发现 novelty payload 的 query 与 design_idea 不再相等，就把 novelty_id 静默清空——
+    # 用户看到的是「生成设计后新颖性扫描结果消失」。这里强制回填用户原话，让三者始终同源。
+    payload["goal"] = request.goal
     node_ids = {node["id"] for node in payload["nodes"]}
     payload["edges"] = [edge for edge in payload["edges"]
                         if edge["source"] in node_ids and edge["target"] in node_ids]
@@ -493,12 +501,16 @@ async def design(request: DesignRequest, owner: str = Owner):
 
 
 @router.get("/design/versions")
-def design_versions(owner: str = Owner):
+def design_versions(artifact_id: str | None = None, owner: str = Owner):
     with SessionLocal() as db:
         workspace = get_or_create(db, owner)
-        rows = db.scalars(select(DesignVersion).where(
-            DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace.id
-        ).order_by(DesignVersion.version_number.desc()).limit(20)).all()
+        query = select(DesignVersion).where(
+            DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace.id)
+        # 默认只回最近 20 条（版本历史列表）。但 workspace.design_version_id 可能指向更老的版本，
+        # 前端据此还原沙盘时会在 20 条里找不到 → 画布空白。允许按 artifact_id 精确取那一条。
+        if artifact_id:
+            query = query.where(DesignVersion.artifact_id == artifact_id)
+        rows = db.scalars(query.order_by(DesignVersion.version_number.desc()).limit(1 if artifact_id else 20)).all()
         return [version_data(row, db.get(ResearchArtifact, row.artifact_id)) for row in rows]
 
 
@@ -519,12 +531,16 @@ def restore_design_version(version_id: str, owner: str = Owner):
 
 
 @router.get("/artifacts")
-def list_artifacts(kind: str | None = None, owner: str = Owner):
+def list_artifacts(kind: str | None = None, artifact_id: str | None = None, owner: str = Owner):
     with SessionLocal() as db:
         query = select(ResearchArtifact).where(ResearchArtifact.owner_id == owner)
         if kind:
             query = query.where(ResearchArtifact.kind == kind)
-        items = db.scalars(query.order_by(ResearchArtifact.created_at.desc()).limit(30)).all()
+        # 默认只回最近 30 条。workspace 里的指针（novelty_id / synthesis_id）可能更老，
+        # 前端按 id 在 30 条里找不到就当成「结果丢了」——正是要避免的那种静默失效。
+        if artifact_id:
+            query = query.where(ResearchArtifact.id == artifact_id)
+        items = db.scalars(query.order_by(ResearchArtifact.created_at.desc()).limit(1 if artifact_id else 30)).all()
         return [{"id": item.id, "kind": item.kind,
                  "paper_ids": json.loads(item.paper_ids_json),
                  "payload": json.loads(item.payload_json),

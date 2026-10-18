@@ -307,3 +307,58 @@ def test_empty_comparison_claims_are_explicitly_insufficient(monkeypatch, tmp_pa
             assert claim["evidence_refs"] == []
         finally:
             clean(client)
+
+
+def test_design_generation_pins_idea_and_keeps_novelty(monkeypatch):
+    """设计生成时模型会用自己的话复述 goal。若不复述回用户原话，save_artifact 会把
+    workspace.design_idea 改写成复述版，紧接着 GET /api/workspace 的
+    prune_stale_idea_results 判定 novelty 的 query 与它不相等，就把 novelty_id 静默清空。"""
+    import copy
+
+    rewritten = {"goal": "模型改写过的研究目标", "change_summary": "初稿", "constraints": [],
+                 "nodes": [{"id": "N1", "label": "Question", "type": "question", "detail": "d"}],
+                 "edges": [], "controls": [], "readouts": [], "assumptions": []}
+
+    async def fake_run(_name, _context):
+        return copy.deepcopy(rewritten)
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as a:
+        try:
+            idea = "用更低成本的单细胞方法识别治疗前肿瘤耐药亚群"
+            a.patch("/api/workspace", json={"design_idea": idea})
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(
+                    User.session_hash == session_hash(a.cookies.get(COOKIE_NAME)))).id
+            save_artifact(owner, "novelty_analysis", [], {"query": idea})
+            assert a.get("/api/workspace").json()["novelty_id"] is not None
+            created = a.post("/api/research/design", json={"goal": idea}).json()
+            assert created["payload"]["goal"] == idea
+            after = a.get("/api/workspace").json()
+            assert after["design_idea"] == idea
+            assert after["novelty_id"] is not None
+        finally:
+            clean(a)
+
+
+def test_artifact_pointer_outside_list_window_stays_reachable():
+    """工作区指针可能指向第 30 条之后的老 artifact。列表默认只回最近 30 条，前端按 id
+    找不到就当成「结果丢了」——正是这次要堵的静默失效。artifact_id 必须能精确取到窗口外的记录，
+    设计版本同理（默认 20 条）。"""
+    with TestClient(app) as a:
+        try:
+            a.get("/api/workspace")  # 先落一次会话 cookie，否则拿不到 owner
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(
+                    User.session_hash == session_hash(a.cookies.get(COOKIE_NAME)))).id
+            oldest = save_artifact(owner, "novelty_analysis", [], {"query": "最早的扫描"})["id"]
+            for index in range(30):
+                save_artifact(owner, "novelty_analysis", [], {"query": f"后来的扫描 {index}"})
+            listing = a.get("/api/research/artifacts?kind=novelty_analysis").json()
+            assert len(listing) == 30
+            assert oldest not in {item["id"] for item in listing}
+            exact = a.get(f"/api/research/artifacts?kind=novelty_analysis&artifact_id={oldest}").json()
+            assert [item["id"] for item in exact] == [oldest]
+            assert exact[0]["payload"]["query"] == "最早的扫描"
+        finally:
+            clean(a)
