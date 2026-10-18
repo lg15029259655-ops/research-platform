@@ -9,19 +9,29 @@ type Work = { openalex_id: string; title: string; citation_count: number; year?:
 type Relation = { source: string; target: string; relation: string };
 type Satellite = { work: Work; kind: "related" | "references"; initial: [number, number, number]; size: number };
 
-function IndexTag({ position, index, selected }: { position: [number, number, number]; index: number; selected: boolean }) {
+/* 画布纹理读不到 CSS 变量，这四个值与 tokens.css 的 --c-surface / --c-primary / --c-on-primary 同值
+   （TAG_TEXT 与 TAG_SELECTED_BG 都取 --c-primary）。 */
+const TAG_BG = "#FFFFFF", TAG_TEXT = "#0A5AC2", TAG_SELECTED_BG = "#0A5AC2", TAG_SELECTED_TEXT = "#FFFFFF";
+
+/* 三维材质同样读不到 CSS 变量。这三个角色色与 tokens.css 的 --c-graph-core / --c-graph-related /
+   --c-graph-refs 同值，图例色点走 CSS 的那一份，改这里必须同步改 tokens.css，否则图例与球体又会不同色。 */
+const ROLE_CORE = "#0A5AC2", ROLE_RELATED = "#2F80ED", ROLE_REFS = "#5B7089";
+/* 补光只影响渲染氛围，不参与图例语义（无文字的纯装饰，近 --c-primary-glow 浅端）。 */
+const FILL_LIGHT = "#CFE4FF";
+
+function IndexTag({ position, index, selected, dim }: { position: [number, number, number]; index: number; selected: boolean; dim: boolean }) {
   const texture = useMemo(() => {
     const canvas = document.createElement("canvas"); canvas.width = 192; canvas.height = 96;
     const context = canvas.getContext("2d")!;
-    context.fillStyle = selected ? "#244f43" : "#fffdfa";
+    context.fillStyle = selected ? TAG_SELECTED_BG : TAG_BG;
     context.beginPath(); context.roundRect(4, 5, 184, 86, 28); context.fill();
-    context.fillStyle = selected ? "#ffffff" : "#2d5248";
+    context.fillStyle = selected ? TAG_SELECTED_TEXT : TAG_TEXT;
     context.font = "700 46px Arial"; context.textAlign = "center"; context.textBaseline = "middle";
     context.fillText(String(index + 1).padStart(2, "0"), 96, 49);
     const result = new CanvasTexture(canvas); result.colorSpace = SRGBColorSpace; return result;
   }, [index, selected]);
   useEffect(() => () => texture.dispose(), [texture]);
-  return <sprite position={[position[0], position[1] - .58, position[2]]} scale={[.54, .27, 1]}><spriteMaterial map={texture} transparent depthTest={false} /></sprite>;
+  return <sprite position={[position[0], position[1] - .58, position[2]]} scale={[.54, .27, 1]}><spriteMaterial map={texture} transparent opacity={dim ? .28 : 1} depthTest={false} /></sprite>;
 }
 
 function ResponsiveCamera() {
@@ -33,10 +43,10 @@ function ResponsiveCamera() {
   return null;
 }
 
-function Scene({ center, satellites, positions, move, selectedId, select, hover }: {
+function Scene({ center, satellites, positions, move, selectedId, hoveredId, select, hover }: {
   center: string;
   satellites: Satellite[]; positions: Record<string, [number, number, number]>;
-  move: (id: string, point: [number, number, number]) => void; selectedId?: string;
+  move: (id: string, point: [number, number, number]) => void; selectedId?: string; hoveredId?: string | null;
   select: (id: string) => void; hover: (id: string | null) => void;
 }) {
   const [dragging, setDragging] = useState(false);
@@ -44,10 +54,12 @@ function Scene({ center, satellites, positions, move, selectedId, select, hover 
   const constellation = useRef<Group>(null);
   const entrance = useRef(0);
   useLayoutEffect(() => {
-    entrance.current = 0;
+    // 运动敏感用户（prefers-reduced-motion）跳过入场缓动，直接把星座落在终态。
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    entrance.current = reduce ? 1 : 0;
     if (constellation.current) {
-      constellation.current.scale.setScalar(.78);
-      constellation.current.rotation.y = -.13;
+      constellation.current.scale.setScalar(reduce ? 1 : .78);
+      constellation.current.rotation.y = reduce ? 0 : -.13;
     }
   }, [center]);
   useFrame((_, delta) => {
@@ -82,16 +94,16 @@ function Scene({ center, satellites, positions, move, selectedId, select, hover 
     (event.target as HTMLElement).releasePointerCapture(event.pointerId);
   }
   return <>
-    <ambientLight intensity={1.75} /><directionalLight position={[5, 8, 8]} intensity={2.1} color="#ffffff" /><pointLight position={[-5, -2, 3]} intensity={2.4} color="#c2e6d6" />
+    <ambientLight intensity={1.75} /><directionalLight position={[5, 8, 8]} intensity={2.1} color="#ffffff" /><pointLight position={[-5, -2, 3]} intensity={2.4} color={FILL_LIGHT} />
     <group ref={constellation}>
-    <mesh><sphereGeometry args={[.67, 48, 32]} /><meshPhysicalMaterial color="#245e52" metalness={.05} roughness={.53} clearcoat={.1} clearcoatRoughness={.8} /></mesh>
-    <mesh><sphereGeometry args={[.99, 32, 20]} /><meshBasicMaterial color="#4c9a7f" transparent opacity={.065} depthWrite={false} /></mesh>
-    <mesh rotation={[Math.PI / 2.8, .28, .15]}><torusGeometry args={[.88, .012, 5, 96]} /><meshBasicMaterial color="#5a9c83" transparent opacity={.45} /></mesh>
+    <mesh><sphereGeometry args={[.67, 48, 32]} /><meshPhysicalMaterial color={ROLE_CORE} metalness={.05} roughness={.53} clearcoat={.1} clearcoatRoughness={.8} /></mesh>
+    <mesh><sphereGeometry args={[.99, 32, 20]} /><meshBasicMaterial color={ROLE_RELATED} transparent opacity={.065} depthWrite={false} /></mesh>
+    <mesh rotation={[Math.PI / 2.8, .28, .15]}><torusGeometry args={[.88, .012, 5, 96]} /><meshBasicMaterial color={ROLE_RELATED} transparent opacity={.45} /></mesh>
     {satellites.map((item, index) => {
       const id = item.work.openalex_id;
       const position = positions[id] || item.initial;
       const selected = id === selectedId;
-      const color = item.kind === "references" ? "#b38951" : "#5c9a83";
+      const color = item.kind === "references" ? ROLE_REFS : ROLE_RELATED;
       return <group key={id}>
         <Line points={[[0, 0, 0], [position[0] * .53, position[1] * .24, position[2] * .55], position]} color={color} opacity={selected ? .74 : .28} transparent lineWidth={selected ? 2 : 1} />
         <mesh position={position} onPointerDown={(event) => down(event, item)} onPointerMove={moving} onPointerUp={up}
@@ -99,7 +111,7 @@ function Scene({ center, satellites, positions, move, selectedId, select, hover 
           onPointerOut={() => { hover(null); document.body.style.cursor = ""; }}>
           <sphereGeometry args={[item.size, 32, 24]} /><meshPhysicalMaterial color={color} metalness={.03} roughness={.57} clearcoat={.09} clearcoatRoughness={.8} />
         </mesh>
-        <IndexTag position={position} index={index} selected={selected} />
+        <IndexTag position={position} index={index} selected={selected} dim={!selected && hoveredId !== id} />
         {selected && <mesh position={position}><sphereGeometry args={[item.size * 1.35, 20, 14]} /><meshBasicMaterial color={color} transparent opacity={.09} depthWrite={false} /></mesh>}
       </group>;
     })}
@@ -157,7 +169,7 @@ export default function CitationGraph({ works, links, center, selectedId, onSele
       <div className="networkClusterLabel references"><span>02 / FOUNDATION</span><strong>参考文献</strong><small>{groups.references.length} 篇 · 引用来源</small></div>
       <Canvas key={viewKey} camera={{ position: [0, 1.3, 10], fov: 48 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: "high-performance" }}>
         <ResponsiveCamera />
-        <Scene center={center} satellites={satellites} positions={positions} move={(id, point) => setPositionState((previous) => ({ center, values: { ...(previous.center === center ? previous.values : {}), [id]: point } }))} selectedId={selectedId} select={onSelect} hover={setHovered} />
+        <Scene center={center} satellites={satellites} positions={positions} move={(id, point) => setPositionState((previous) => ({ center, values: { ...(previous.center === center ? previous.values : {}), [id]: point } }))} selectedId={selectedId} hoveredId={hovered} select={onSelect} hover={setHovered} />
       </Canvas>
       <div className="networkCenterLabel">中心论文</div>
       <div className="networkArrival" key={center} aria-live="polite"><span>EXPLORING PAPER</span><strong>{workById.get(center)?.title || "正在展开文献关系"}</strong><small>{groups.related.length} 篇相关研究 / {groups.references.length} 篇参考文献</small></div>

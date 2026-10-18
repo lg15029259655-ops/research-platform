@@ -2,11 +2,12 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ResearchNav from "@/components/ResearchNav";
 import { apiJson, postJson } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
 import { updateWorkspace } from "@/lib/workspace";
+import { tabGroup } from "@/lib/tabs";
 import type { SimilarPaper } from "@/components/NoveltySpace";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
 import StepLoading from "@/components/StepLoading";
@@ -40,6 +41,9 @@ export default function DesignPage() {
   const [nodeInstruction, setNodeInstruction] = useState("");
   const [selectedChange, setSelectedChange] = useState<{label: string; kind: string} | null>(null);
   const { workspace, refresh } = useWorkspace();
+  // 记录已经按 artifact_id 精确补查过的指针，避免 effect 因 versions 变化反复发请求。
+  const versionLookups = useRef<Set<string>>(new Set());
+  const workspaceTabs = tabGroup(["novelty", "canvas"] as const, tab, setTab);
   useEffect(() => {
     const fromUrl = new URLSearchParams(window.location.search).get("idea");
     if (fromUrl) setIdea(fromUrl);
@@ -50,17 +54,28 @@ export default function DesignPage() {
     if (!workspace) return;
     if (!workspace.novelty_id) { setNovelty(null); setNoveltyReady(true); return; }
     setNoveltyReady(false);
-    apiJson<Artifact<Novelty>[]>("/api/research/artifacts?kind=novelty_analysis")
+    apiJson<Artifact<Novelty>[]>(`/api/research/artifacts?kind=novelty_analysis&artifact_id=${workspace.novelty_id}`)
       .then((items) => { const candidate = items.find((item) => item.id === workspace.novelty_id)?.payload;
         setNovelty(candidate?.query?.trim() === workspace.design_idea.trim() ? candidate : null); })
       .catch(() => setNovelty(null)).finally(() => setNoveltyReady(true));
   }, [workspace?.novelty_id]);
   useEffect(() => {
-    const match = versions.find((item) => item.artifact_id === workspace?.design_version_id);
-    if (match && match.payload.goal.trim() === workspace?.design_idea.trim()) {
-      setDesign(match.payload); setCurrentVersion(match.version_id);
-    }
-    else if (workspace) { setDesign(null); setCurrentVersion(null); }
+    const pointer = workspace?.design_version_id;
+    if (!workspace) return;
+    if (!pointer) { setDesign(null); setCurrentVersion(null); return; }
+    const apply = (version: DesignVersion) => {
+      // prune_stale_idea_results 的判据是 payload.goal 与 design_idea 同源，前端再核一次。
+      if (version.payload.goal.trim() === workspace.design_idea.trim()) { setDesign(version.payload); setCurrentVersion(version.version_id); }
+      else { setDesign(null); setCurrentVersion(null); }
+    };
+    const match = versions.find((item) => item.artifact_id === pointer);
+    if (match) { apply(match); return; }
+    // 版本列表只回最近 20 条，指针可能更老；按 artifact_id 精确补一次，否则沙盘会凭空空白。
+    if (versionLookups.current.has(pointer)) { setDesign(null); setCurrentVersion(null); return; }
+    versionLookups.current.add(pointer);
+    apiJson<DesignVersion[]>(`/api/research/design/versions?artifact_id=${pointer}`)
+      .then((rows) => { if (rows.length) { setVersions((items) => [...items, rows[0]]); apply(rows[0]); } else { setDesign(null); setCurrentVersion(null); } })
+      .catch(() => { setDesign(null); setCurrentVersion(null); });
   }, [workspace?.design_version_id, versions]);
   useEffect(() => {
     if (tab === "novelty" && !novelty && design && noveltyReady) setTab("canvas");
@@ -106,21 +121,30 @@ export default function DesignPage() {
   }
   async function addWork(paper: SimilarPaper) {
     setBusy(true); setError("");
-    try { const saved = await importWork(paper); const ids = workspace?.selected_paper_ids || [];
-      if (!ids.includes(saved.id)) await updateWorkspace({selected_paper_ids: [...ids, saved.id].slice(0, 5)});
+    try {
+      const ids = workspace?.selected_paper_ids || [];
+      // 先判上限再 import。原来的顺序是先入库再判上限，超限时论文已经写进论文库，
+      // 用户看到报错、回论文库却多了一条自己不想要的记录。
+      if (ids.length >= 5) throw new Error("对比篮最多 5 篇论文，请先在文献综合页移除一篇");
+      const saved = await importWork(paper);
+      if (ids.includes(saved.id)) return;
+      await updateWorkspace({selected_paper_ids: [...ids, saved.id]});
       await refresh();
     } catch (e) { setError(e instanceof Error ? e.message : "加入对比失败"); }
     finally { setBusy(false); }
   }
-  return <><ResearchNav current="/design" /><main className="researchPage">
+  return <><ResearchNav current="/design" /><main id="main" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">04 / DESIGN</div><h1>让研究想法成为可检验的方案。</h1><p>先依据检索摘要做定性新颖性扫描，再生成可拖动的研究设计图。相似程度只有高、中、低，不代表精确评分或已读全文。</p></div>
-    <section className="sectionBox"><label className="fieldLabel" htmlFor="idea">我的研究想法</label><textarea id="idea" className="largeTextarea" value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="例如：用更低成本的单细胞方法识别治疗前肿瘤耐药亚群" /><label className="fieldLabel" htmlFor="constraints" style={{ marginTop: 15 }}>约束条件（可选）</label><input id="constraints" className="largeInput" value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="经费、样本量、数据来源、周期等" /><div className="actionRow"><button className="primaryButton" disabled={busy || idea.trim().length < 5} onClick={scan}>{busy ? "分析中…" : "检索相似研究"}</button><button disabled={busy || idea.trim().length < 5} onClick={() => generate()}>生成研究设计 →</button></div></section>
+    <section className="sectionBox"><label className="fieldLabel" htmlFor="idea">我的研究想法</label><textarea id="idea" className="largeTextarea" value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="例如：用更低成本的单细胞方法识别治疗前肿瘤耐药亚群" /><label className="fieldLabel" htmlFor="constraints">约束条件（可选）</label><input id="constraints" className="largeInput" value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="经费、样本量、数据来源、周期等" /><div className="actionRow"><button className="primaryButton" disabled={busy || idea.trim().length < 5} aria-busy={busy} onClick={scan}>{busy ? "分析中…" : "检索相似研究"}</button><button disabled={busy || idea.trim().length < 5} aria-busy={busy} onClick={() => generate()}>生成研究设计 →</button></div></section>
     {!novelty && !design && !busy && <section className="startGuide" aria-label="科研设计使用引导"><div className="startGuideIntro"><span>START HERE</span><h2>把一个想法，推进为可核验的研究路径。</h2><p>先填入自己的研究问题。你可以检索相似研究，也可以直接生成设计草稿；两项结果会清楚标注证据范围。</p><div className="sampleIdeas"><b>试一个示例</b>{["如何降低肿瘤单细胞测序的样本与计算成本？", "如何验证新型电池材料在高温下的长期稳定性？", "如何评估教育干预对不同地区学生的长期影响？"].map((sample) => <button key={sample} onClick={() => { setIdea(sample); document.getElementById("idea")?.focus(); }}>{sample} ↗</button>)}</div></div><div className="startGuideSteps"><div><b>01</b><strong>提出问题</strong><small>明确对象、变量与目标</small></div><div><b>02</b><strong>核对相似研究</strong><small>基于摘要做定性扫描</small></div><div><b>03</b><strong>搭建设计草稿</strong><small>检查对照、读数与假设</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {busy && <StepLoading title="正在处理研究设计" steps={["读取研究想法和约束", "检索相关摘要或调整结构化设计", "组织节点与证据边界"]} />}
     {busy && <div className="floatingBusy" role="status"><span className="loadingPulse"/>正在处理，完成后会自动更新当前工作区</div>}
-    {(novelty || design) && <div className="resultBar"><strong>工作区</strong><div className="tabBar"><button className={tab === "novelty" ? "active" : ""} onClick={() => setTab("novelty")}>新颖性扫描</button><button className={tab === "canvas" ? "active" : ""} onClick={() => setTab("canvas")}>设计沙盘</button></div></div>}
-    {tab === "novelty" && novelty && <section className="sectionBox"><h2>新颖性扫描 <small style={{ fontSize: 12, color: "#809486" }}>整体相似：{novelty.similarity_level}</small></h2><NoveltySpace novelty={novelty} busy={busy} onView={viewWork} onAdd={addWork} /><button className="primaryButton" style={{ marginTop: 20 }} disabled={busy} onClick={() => generate()}>基于这个想法生成方案 →</button></section>}
-    {tab === "canvas" && design && <><div className="versionBar"><strong>当前版本 V{activeVersion?.number || 1}</strong><div>{versions.slice().reverse().map((item) => <button className={item.version_id === currentVersion ? "active" : ""} key={item.version_id} disabled={busy} onClick={() => restoreVersion(item)}>V{item.number} · {item.action}</button>)}</div>{priorVersion && <button onClick={() => restoreVersion(priorVersion)} disabled={busy}>撤回上一版本</button>}</div><div className="designGrid"><section className="sectionBox designSidebar" style={{ marginTop: 0 }}><div className="designSideHeader"><span>方案概览</span><h2>设计调整</h2><p title={design.goal}>{design.goal}</p></div><div className="designSummary"><b>本版思路</b><p>{design.change_summary || "当前为方案草稿。"}</p><details><summary>阅读完整说明</summary><p>{design.change_summary || "当前为方案草稿。"}</p></details></div><div className="designActions"><b>调整方向</b><div className="actionRow">{actions.map(([action, label]) => <button key={action} disabled={busy} onClick={() => generate(action)}>{label}</button>)}</div></div><details className="designDetails"><summary>本次修改 <small>{activeVersion ? activeVersion.changes.added.length + activeVersion.changes.removed.length + activeVersion.changes.modified.length : 0} 项</small></summary><div className="versionChanges">{activeVersion ? <>{activeVersion.changes.added.map((item) => <button key={`a${item}`} onClick={() => openChange(item, "新增")}>＋ {item} ↗</button>)}{activeVersion.changes.removed.map((item) => <button key={`r${item}`} onClick={() => openChange(item, "移除")}>－ {item} ↗</button>)}{activeVersion.changes.modified.map((item) => <button key={`m${item}`} onClick={() => openChange(item, "修改")}>◌ {item} ↗</button>)}</> : "初始方案"}</div></details><details className="designDetails"><summary>对照与评价 <small>{design.controls.length + design.readouts.length} 项</small></summary><h4>对照</h4><ul>{design.controls.map((item, i) => <li key={i}>{item}</li>)}</ul><h4>评价指标</h4><ul>{design.readouts.map((item, i) => <li key={i}>{item}</li>)}</ul></details><details className="designDetails"><summary>关键假设 <small>{design.assumptions.length} 项</small></summary><ul>{design.assumptions.map((item, i) => <li key={i}>{item}</li>)}</ul></details></section><section><DesignFlow design={design} onSelectNode={setSelectedNode} /><p className="miniNotice">拖动或点击节点，查看并局部优化方案。具体参数需预实验、功效分析或领域专家核对。</p></section></div>{nodeDetail && <EvidenceDrawer title={nodeDetail.label} eyebrow="研究设计节点" onClose={() => setSelectedNode(null)}><p>{nodeDetail.detail}</p><div className="nodeRelations"><strong>连接逻辑</strong>{design.edges.filter((edge) => edge.source === nodeDetail.id || edge.target === nodeDetail.id).map((edge, index) => <p key={index}>{edge.label || `${design.nodes.find((item) => item.id === edge.source)?.label || edge.source} → ${design.nodes.find((item) => item.id === edge.target)?.label || edge.target}`}</p>)}</div><dl><dt>节点类型</dt><dd>{nodeDetail.type}</dd><dt>版本</dt><dd>V{activeVersion?.number || 1}</dd></dl><label className="fieldLabel">希望怎样修改这个节点？</label><textarea className="largeTextarea" value={nodeInstruction} onChange={(e) => setNodeInstruction(e.target.value)} placeholder="例如：改用成本更低的数据来源，并保持评估目标不变" /><button className="drawerAction" disabled={busy || !nodeInstruction.trim()} onClick={() => generate("node", nodeDetail.id, nodeInstruction)}>AI 优化此节点 →</button></EvidenceDrawer>}{selectedChange && <EvidenceDrawer title={selectedChange.label} eyebrow={`版本差异 · ${selectedChange.kind}`} onClose={() => setSelectedChange(null)}><p>这条记录属于 V{activeVersion?.number || 1} 的版本变化。当前方案中没有同名节点；可切换历史版本查看当时的完整结构。</p></EvidenceDrawer>}</>}
+    {(novelty || design) && <div className="resultBar"><strong>工作区</strong><div className="tabBar" {...workspaceTabs.list} aria-label="工作区视图"><button {...workspaceTabs.item("novelty")}>新颖性扫描</button><button {...workspaceTabs.item("canvas")}>设计沙盘</button></div></div>}
+    {/* D10：某个 tab 无数据时给出空态，不留白。 */}
+    {tab === "novelty" && !novelty && <div className="miniNotice">暂无新颖性扫描结果。填写研究想法后点击「检索相似研究」，或切到「设计沙盘」查看已有的设计草稿。</div>}
+    {tab === "canvas" && !design && <div className="miniNotice">暂无设计草稿。可切到「新颖性扫描」基于想法生成方案，或点击上方「生成研究设计」直接生成。</div>}
+    {tab === "novelty" && novelty && <section className="sectionBox"><h2>新颖性扫描 <small>整体相似：{novelty.similarity_level}</small></h2><NoveltySpace novelty={novelty} busy={busy} onView={viewWork} onAdd={addWork} /><button className="primaryButton stepForward" disabled={busy} aria-busy={busy} onClick={() => generate()}>基于这个想法生成方案 →</button></section>}
+    {tab === "canvas" && design && <><div className="versionBar"><strong>当前版本 V{activeVersion?.number || 1}</strong><div>{versions.slice().reverse().map((item) => <button className={item.version_id === currentVersion ? "active" : ""} key={item.version_id} disabled={busy} aria-busy={busy} onClick={() => restoreVersion(item)}>V{item.number} · {item.action}</button>)}</div>{priorVersion && <button onClick={() => restoreVersion(priorVersion)} disabled={busy} aria-busy={busy}>撤回上一版本</button>}</div><div className="designGrid"><section className="sectionBox designSidebar"><div className="designSideHeader"><span>方案概览</span><h2>设计调整</h2><p title={design.goal}>{design.goal}</p></div><div className="designSummary"><b>本版思路</b><p>{design.change_summary || "当前为方案草稿。"}</p><details><summary>阅读完整说明</summary><p>{design.change_summary || "当前为方案草稿。"}</p></details></div><div className="designActions"><b>调整方向</b><div className="actionRow">{actions.map(([action, label]) => <button key={action} disabled={busy} aria-busy={busy} onClick={() => generate(action)}>{label}</button>)}</div></div><details className="designDetails"><summary>本次修改 <small>{activeVersion ? activeVersion.changes.added.length + activeVersion.changes.removed.length + activeVersion.changes.modified.length : 0} 项</small></summary><div className="versionChanges">{activeVersion ? <>{activeVersion.changes.added.map((item) => <button key={`a${item}`} onClick={() => openChange(item, "新增")}>＋ {item} ↗</button>)}{activeVersion.changes.removed.map((item) => <button key={`r${item}`} onClick={() => openChange(item, "移除")}>－ {item} ↗</button>)}{activeVersion.changes.modified.map((item) => <button key={`m${item}`} onClick={() => openChange(item, "修改")}>◌ {item} ↗</button>)}</> : "初始方案"}</div></details><details className="designDetails"><summary>对照与评价 <small>{design.controls.length + design.readouts.length} 项</small></summary><h4>对照</h4><ul>{design.controls.map((item, i) => <li key={i}>{item}</li>)}</ul><h4>评价指标</h4><ul>{design.readouts.map((item, i) => <li key={i}>{item}</li>)}</ul></details><details className="designDetails"><summary>关键假设 <small>{design.assumptions.length} 项</small></summary><ul>{design.assumptions.map((item, i) => <li key={i}>{item}</li>)}</ul></details></section><section><DesignFlow design={design} onSelectNode={setSelectedNode} />{/* D12：xyflow 节点 Enter/Space 只切换画布选中态，不触发 onNodeClick，键盘无法打开抽屉；补一份同源按钮索引作为等效路径。 */}<div className="planetariumIndex"><div className="planetariumIndexHead"><strong>节点索引</strong><span>键盘可用的等效入口；点击节点打开详情</span></div><section className="planetariumTier"><div className="planetariumTierLabel"><strong>设计节点</strong><span>{design.nodes.length} 个</span></div><div className="planetariumPapers">{design.nodes.slice(0, 16).map((node, index) => <button key={node.id} onClick={() => setSelectedNode(node.id)} title={node.label}><strong>{String(index + 1).padStart(2, "0")} · {node.label}</strong><small>{node.type || "研究步骤"} ↗</small></button>)}</div></section></div><p className="miniNotice">拖动或点击节点，查看并局部优化方案。具体参数需预实验、功效分析或领域专家核对。</p></section></div>{nodeDetail && <EvidenceDrawer title={nodeDetail.label} eyebrow="研究设计节点" onClose={() => setSelectedNode(null)}><p>{nodeDetail.detail}</p><div className="nodeRelations"><strong>连接逻辑</strong>{design.edges.filter((edge) => edge.source === nodeDetail.id || edge.target === nodeDetail.id).map((edge, index) => <p key={index}>{edge.label || `${design.nodes.find((item) => item.id === edge.source)?.label || edge.source} → ${design.nodes.find((item) => item.id === edge.target)?.label || edge.target}`}</p>)}</div><dl><dt>节点类型</dt><dd>{nodeDetail.type}</dd><dt>版本</dt><dd>V{activeVersion?.number || 1}</dd></dl><label className="fieldLabel">希望怎样修改这个节点？</label><textarea className="largeTextarea" value={nodeInstruction} onChange={(e) => setNodeInstruction(e.target.value)} placeholder="例如：改用成本更低的数据来源，并保持评估目标不变" /><button className="drawerAction" disabled={busy || !nodeInstruction.trim()} aria-busy={busy} onClick={() => generate("node", nodeDetail.id, nodeInstruction)}>AI 优化此节点 →</button></EvidenceDrawer>}{selectedChange && <EvidenceDrawer title={selectedChange.label} eyebrow={`版本差异 · ${selectedChange.kind}`} onClose={() => setSelectedChange(null)}><p>这条记录属于 V{activeVersion?.number || 1} 的版本变化。当前方案中没有同名节点；可切换历史版本查看当时的完整结构。</p></EvidenceDrawer>}</>}
   </main></>;
 }

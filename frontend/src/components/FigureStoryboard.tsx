@@ -26,7 +26,7 @@ export default function FigureStoryboard({ paperId, units, messages, onJump }: {
       const hasVisual = messages.some((item) => item.role === "assistant" && item.reading_unit_id === unit.id && item.visual_verified);
       return <div className="storyItem" key={unit.id}><button className="storyTile" onClick={() => setSelected(unit)}>
         <span>{String(index + 1).padStart(2, "0")} / {unit.heading} · PDF {unit.page_start || "?"}</span>
-        {unit.page_start && <img src={`${API}/api/papers/${paperId}/pages/${unit.page_start}/thumbnail`} alt={`${unit.heading} 所在 PDF 第 ${unit.page_start} 页`} loading="lazy" />}
+        {unit.page_start && <img src={`${API}/api/papers/${paperId}/pages/${unit.page_start}/thumbnail`} alt={`${unit.heading} 所在 PDF 第 ${unit.page_start} 页`} width={220} height={170} loading="lazy" decoding="async" />}
         <strong>{short(unit.caption, 80)}</strong><small>{unit.kind === "FIGURE" ? hasVisual ? "✓ 已完成一次视觉核验" : "图像未核验" : "表格原文待核对"}</small>
       </button>{index < visuals.length - 1 && <span className="storyArrow">→</span>}</div>;
     })}</div> : <div className="miniNotice">未可靠定位到主文 Figure 或 Table。Results 仍可按结果正文精读。</div>}

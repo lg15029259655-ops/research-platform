@@ -1,0 +1,111 @@
+/* MedRead 设计系统 —— 全站唯一的变量来源。
+   规则：颜色/圆角/阴影/字号只允许引用这里的变量，不再写裸值。
+   底色只有两种面：极淡冷蓝中性底 + 纯白卡片。深色面只用于品牌标记、落地页唯一深色 CTA 与三维核心节点。
+   蓝只做"标记"：出现在图标、当前项、链接、焦点环、图例色点、蓝实底按钮上；
+   亮蓝 --c-primary-bright / 浅蓝 --c-primary-glow 只用于大字号文字（≥24px）与无文字的纯装饰形状，不用于图标与小字。 */
+:root {
+  /* 主色：只干两件事——标记"你在哪"、每屏唯一的主动作。白底 6.45:1，可承载白字。 */
+  --c-primary: #0A5AC2;
+  --c-primary-hover: #0847A6;
+  --c-primary-weak: #EAF4FF;
+  --c-primary-line: #BEDAF8;
+  /* WisPaper 签名亮蓝：只用于大字号文字（常规 ≥24px / 粗体 ≥18.66px）与纯图形，白底 4.05:1，禁止承载小字。 */
+  --c-primary-bright: #0079FF;
+  /* 亮蓝浅端：只用于渐变与装饰图形（白底 2.67:1），任何情况下不承载文字、不作为图标色。 */
+  --c-primary-glow: #4DA1FF;
+
+  /* 面 */
+  --c-bg: #F6FAFF;
+  --c-surface: #FFFFFF;
+  --c-surface-2: #F5F8FC;
+  --c-surface-3: #EBF1FA;
+
+  /* 深色面（品牌标记 / 落地页唯一深色 CTA / 三维核心节点 / 深色浮层） */
+  --c-ink: #23282F;
+  --c-ink-2: #2C333D;
+  --c-ink-3: #3D4450;
+
+  /* 线 */
+  --c-line: #E9EDF4;
+  --c-line-strong: #D7E0EE;
+  --c-scrim: rgba(35, 40, 47, .58);      /* 引导层遮罩 */
+
+  /* 文字四级：14.83:1 / 9.81:1 / 5.88:1 / 3.06:1（末位仅 placeholder 与禁用，非 AA） */
+  --c-text: #23282F;
+  --c-text-mid: #3D4450;
+  --c-text-soft: #5B6577;
+  --c-text-faint: #8A94A6;              /* 仅 placeholder / disabled / 纯装饰，禁止用于正文或关键信息 */
+  --c-text-on-dark: #F4F7FB;
+  --c-on-primary: #FFFFFF;              /* 主色面与深色面之上 */
+  --c-text-on-dark-dim: #AEB8C7;
+
+  /* 语义 */
+  --c-danger: #B42318;
+  --c-danger-bg: #FDECEA;
+  --c-warn: #8A5A12;
+  --c-warn-bg: #FBF3E4;
+  --c-ok: #0E7A54;
+  --c-ok-bg: #E6F5EF;
+
+  /* 相似度层级：三维球体与图例共用同一组值。
+     三维侧写在 NoveltySpace 的 levels 常量里，改这里要同步改那里，否则图例与球体不同色。 */
+  --c-tier-high: #0A5AC2;
+  --c-tier-mid: #2F80ED;
+  --c-tier-low: #5B7089;
+
+  /* 引用图谱三类角色：图例色点与三维球体共用同一组值。
+     三维侧材质读不到 CSS 变量，写在 CitationGraph 的 ROLE_* 常量里，改这里要同步改那里。 */
+  --c-graph-core: #0A5AC2;
+  --c-graph-related: #2F80ED;
+  --c-graph-refs: #5B7089;
+
+  /* 设计沙盘的画布元素（@xyflow）：连线与缩略图节点。
+     节点描边 / 文字 / 底色 / 阴影直接复用 --c-primary-line / --c-ink-3 / --c-surface / --sh-2，
+     画布网格点复用 --c-surface-3，不再单列。 */
+  --c-flow-edge: #9CC4F5;
+  --c-flow-mini: #9CC4F5;
+
+  /* 落地页专用渐变端点：只在 app/page.tsx + home-studio.css 使用，工具页一律不得引用。
+     这两个是纯装饰渐变端点，不属于语义色板——不承载文字、不参与对比度约束。 */
+  --grad-module-end: #DBECFF;            /* 模块入口卡渐变终点：白 → 极淡蓝 */
+  --grad-hero-end: #F0F8FF;              /* Hero 顶部渐变终点：--c-bg → 极淡蓝 */
+
+  /* 圆角阶梯：大容器 16 / 嵌套工具面板 12(--r-panel) / 图标块·节点卡 12(--r-3) / 小元件 8 / pill 999 */
+  --r-0: 0px;
+  --r-1: 8px;
+  --r-2: 16px;
+  /* 中圆角：--r-3 与 --r-panel 当前同值（12px），但语义不同——前者是图标块/节点卡，
+     后者是嵌套工具面板。将来若要单独调整，请明确这是有意分叉，不要只改其中一个。 */
+  --r-3: 12px;
+  --r-panel: 12px;
+  --r-pill: 999px;
+
+  /* 阴影：平面一律不用，只有浮层允许四档：hairline → 面板/抽屉 → 搜索/托盘 → 弹窗 */
+  --sh-1: 0 1px 2px rgba(35, 40, 47, .06);
+  --sh-2: 0 6px 22px rgba(35, 40, 47, .10);
+  --sh-3: 0 10px 34px rgba(35, 40, 47, .08);
+  --sh-4: 0 24px 70px rgba(35, 40, 47, .12);
+
+  /* 布局节奏 */
+  --nav-h: 64px;
+  --strip-h: 44px;
+
+  /* 字号七级 */
+  --fs-caption: 12px;
+  --fs-label: 13px;
+  --fs-body: 15px;
+  --fs-title: 20px;
+  --fs-h1: 26px;
+  --fs-section: 34px;      /* 仅落地页区块标题；工具页标题用 --fs-h1 */
+  --fs-display: 48px;      /* 仅落地页 Hero 主标题 */
+
+  /* 动效：hover/focus 140ms，常规过渡 220ms，入场/抽屉 350ms */
+  --dur-1: 140ms;
+  --dur-2: 220ms;
+  --dur-3: 350ms;
+  --ease: cubic-bezier(.2, .7, .3, 1);
+
+  /* 字体：中文优先堆栈 */
+  --font-sans: "Microsoft YaHei", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}

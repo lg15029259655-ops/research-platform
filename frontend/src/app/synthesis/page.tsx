@@ -7,6 +7,7 @@ import ResearchNav from "@/components/ResearchNav";
 import StepLoading from "@/components/StepLoading";
 import { apiJson, postJson } from "@/lib/api";
 import { updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { tabGroup } from "@/lib/tabs";
 import EvidenceMap, { type Claim } from "@/components/EvidenceMap";
 import GapPath from "@/components/GapPath";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
@@ -34,13 +35,14 @@ export default function SynthesisPage() {
   const resultRef = useRef<HTMLElement>(null);
   const focusNewResult = useRef(false);
   const { workspace, refresh } = useWorkspace();
+  const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
   useEffect(() => {
     apiJson<Paper[]>("/api/papers").then(setPapers).catch(() => setError("无法读取论文库"));
   }, []);
   useEffect(() => {
     if (!workspace) return;
     if (!workspace.synthesis_id) { setArtifact(null); return; }
-    apiJson<Artifact[]>("/api/research/artifacts?kind=paper_compare")
+    apiJson<Artifact[]>(`/api/research/artifacts?kind=paper_compare&artifact_id=${workspace.synthesis_id}`)
       .then((items) => setArtifact(items.find((item) => item.id === workspace.synthesis_id) || null))
       .catch(() => setArtifact(null));
   }, [workspace?.synthesis_id]);
@@ -50,7 +52,10 @@ export default function SynthesisPage() {
     if (workspace && papers.length) setSelected(workspace.selected_paper_ids.filter((id) => papers.some((paper) => paper.id === id && paper.status === "parsed")));
   }, [workspace?.selected_paper_ids.join(","), papers]);
   function toggle(id: string) {
-    const updated = selected.includes(id) ? selected.filter((item) => item !== id) : selected.length < 5 ? [...selected, id] : selected;
+    // 原来是超限就静默 no-op（selected.length < 5 ? … : selected），点了没反应也没提示。
+    if (!selected.includes(id) && selected.length >= 5) { setError("对比篮最多 5 篇论文，请先移除一篇"); return; }
+    const updated = selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id];
+    setError("");
     setSelected(updated);
     setShowSelection(true);
     updateWorkspace({selected_paper_ids: updated}).catch((e) => setError(e.message));
@@ -81,20 +86,20 @@ export default function SynthesisPage() {
   }, [data]);
   const label = (id: string) => papers.find((paper) => paper.id === id)?.title || data?.papers.find((paper) => paper.paper_id === id)?.title || "论文";
   const displayFinding = (value: string) => artifact?.paper_ids.reduce((text, id, index) => text.replaceAll(id, `「论文 ${String(index + 1).padStart(2, "0")}」`), value) || value;
-  return <><ResearchNav current="/synthesis" /><main className="researchPage">
+  return <><ResearchNav current="/synthesis" /><main id="main" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">03 / SYNTHESIZE</div><h1>把多篇论文放在同一张证据桌上。</h1><p>选取 2–5 篇已有全文的论文，比较研究问题、方法、结论与证据边界。</p></div>
-    <section className="sectionBox"><div className="selectionHeading"><h2>选择论文 <small style={{ fontSize: 12, color: "#8aa090" }}> {selected.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
+    <section className="sectionBox"><div className="selectionHeading"><h2>选择论文 <small> {selected.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
       {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇已解析全文的论文。下方可切换论文对比、证据关系和研究空白。</p>}
-      {showSelection && (fulltext.length ? <div className="selectionList">{fulltext.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => toggle(paper.id)} disabled={!selected.includes(paper.id) && selected.length >= 5} /><span>{paper.title}<small>{paper.domain || "领域待识别"} · 已解析全文</small></span></label>)}</div> : <p>论文库中尚无已解析的全文。先去 <Link href="/read" style={{ color: "#126e60" }}>上传 PDF</Link>。</p>)}
+      {showSelection && (fulltext.length ? <div className="selectionList">{fulltext.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => toggle(paper.id)} disabled={!selected.includes(paper.id) && selected.length >= 5} /><span>{paper.title}<small>{paper.domain || "领域待识别"} · 已解析全文</small></span></label>)}</div> : <p>论文库中尚无已解析的全文。先去 <Link href="/read" className="inlineLink">上传 PDF</Link>。</p>)}
       {selectionChanged && <p className="selectionChanged" role="status">论文选择已改变。下方保留的是上一次综合结果；重新生成后才会反映当前选择。</p>}
       {!!metadata.length && <div className="miniNotice">另有 {metadata.length} 篇只有元数据或正在解析的论文；完成 PDF 上传后可加入全文综合。{workspace?.selected_paper_ids.some((id) => metadata.some((paper) => paper.id === id)) && " 对比篮中待上传 PDF 的论文暂不能参与全文综合。"}</div>}
-      {showSelection && <button className="primaryButton" onClick={compare} disabled={busy || selected.length < 2}>{busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}</button>}
+      {showSelection && <button className="primaryButton" onClick={compare} disabled={busy || selected.length < 2} aria-busy={busy}>{busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}</button>}
     </section>
     {!data && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div><div className="startGuideSteps"><div><b>01</b><strong>上传全文</strong><small>保留原始 PDF 与页码</small></div><div><b>02</b><strong>选择 2–5 篇</strong><small>使用已解析的论文</small></div><div><b>03</b><strong>核对综合结果</strong><small>逐条返回原文验证</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {busy && <StepLoading title="正在综合全文证据" steps={["读取已解析的论文片段", "比较研究问题与结果", "整理证据关系和研究空白"]} />}
     {busy && <div className="floatingBusy" role="status"><span className="loadingPulse"/>正在综合全文，结果完成后将自动展示</div>}
-    {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar" style={{ marginTop: 0 }}><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar"><button className={tab === "matrix" ? "active" : ""} onClick={() => setTab("matrix")}>论文对比</button><button className={tab === "evidence" ? "active" : ""} onClick={() => setTab("evidence")}>证据关系</button><button className={tab === "gaps" ? "active" : ""} onClick={() => setTab("gaps")}>研究空白</button></div></div>
+    {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
       {tab === "matrix" && <>
         <div className="compareFocus">
           <nav className="compareDimensions" aria-label="选择对比维度"><span>COMPARISON INDEX</span><strong>{data.dimensions.length} 个对比维度</strong>{data.dimensions.map((row, index) => <button key={`${row.name}-${index}`} type="button" className={activeDimension === index ? "active" : ""} aria-current={activeDimension === index ? "true" : undefined} onClick={() => setActiveDimension(index)}><b>{String(index + 1).padStart(2, "0")}</b><span>{row.name}</span><i>↗</i></button>)}</nav>

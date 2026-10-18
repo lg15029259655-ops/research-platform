@@ -8,6 +8,7 @@ import ResearchNav from "@/components/ResearchNav";
 import StepLoading from "@/components/StepLoading";
 import { API, apiJson, postJson } from "@/lib/api";
 import { updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { tabGroup } from "@/lib/tabs";
 import "../research.css";
 import "../studio.css";
 
@@ -39,17 +40,43 @@ export default function DiscoverPage() {
   const [error, setError] = useState("");
   const searchVersion = useRef(0);
   const graphVersion = useRef(0);
+  const qHandled = useRef(false);
+  const uploadRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const { workspace } = useWorkspace();
+  const resultTabs = tabGroup(["list", "graph"] as const, tab, setTab);
+  // 后端语义检索最多放行 5 页（50 篇），第 6 页直接 422。与其让「加载更多」点出一个错误横幅，
+  // 不如在到顶时把按钮改成明确的下一步提示。
+  const semanticExhausted = mode === "semantic" && result.items.length >= 50;
   useEffect(() => { apiJson<Paper[]>("/api/papers").then(setSaved).catch(() => {}); }, []);
   useEffect(() => {
     if (!workspace?.query || query) return;
     const previousQuery = workspace.query;
     const version = searchVersion.current;
+    // 缓存键含 mode：还原时必须用上次实际检索用的模式，否则 cache_key 对不上、回来以后一片空白。
+    // 工作区里没存 mode（后端 Workspace 无此字段），所以记在 localStorage——纯前端偏好，不动接口。
+    const remembered = window.localStorage.getItem("medread-search-mode");
+    const restoredMode: "semantic" | "keyword" = remembered === "keyword" ? "keyword" : "semantic";
     setQuery(previousQuery);
-    apiJson<Search>(`/api/research/discover/cached?q=${encodeURIComponent(previousQuery)}&page=1&mode=semantic`)
+    setMode(restoredMode);
+    apiJson<Search>(`/api/research/discover/cached?q=${encodeURIComponent(previousQuery)}&page=1&mode=${restoredMode}`)
       .then((data) => { if (searchVersion.current === version) setResult(data); })
       .catch(() => {});
   }, [workspace?.query]);
+  // 首页 Hero 搜索框跳转 /discover?q=… 的落地侧：仅首次挂载读一次，用 ref 防重入（design-spec §3.1）。
+  useEffect(() => {
+    if (qHandled.current) return;
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (!q || query) return;
+    qHandled.current = true;
+    setQuery(q);
+    search(1, q);
+  }, []); // 空依赖：仅首次挂载执行一次
+  // 关系图谱 tab 被选中时按需加载：方向键只走 tabGroup 的 select，不会触发 item 的 onClick，
+  // 若只在 onClick 里加载，方向键选中后会留下空图谱。这里统一兜底（loadingGraph 守卫避免重复请求）。
+  useEffect(() => {
+    if (tab !== "graph" || graph || loadingGraph || !result.items.length) return;
+    showGraph(result.items[0].openalex_id);
+  }, [tab, graph, loadingGraph, result.items.length]);
 
   async function search(page = 1, term = query, refresh = false) {
     if (!term.trim()) return;
@@ -58,6 +85,9 @@ export default function DiscoverPage() {
     try {
       const data = await apiJson<Search>(`/api/research/discover?q=${encodeURIComponent(term.trim())}&page=${page}&mode=${mode}${refresh ? "&refresh=true" : ""}`);
       if (searchVersion.current !== version) return;
+      // 首页 Hero 的 ?q= 落地直接调 search()，不经过模式按钮的 onClick：只在那里写 key 的话，
+      // 这次检索用的模式不会被记住，下次回 /discover 仍按旧模式取缓存 → 404 空白页。
+      window.localStorage.setItem("medread-search-mode", mode);
       setResult((prior) => ({ ...data, items: page === 1 ? data.items : [...prior.items, ...data.items] }));
       if (page === 1) {
         const next = term.trim();
@@ -164,23 +194,23 @@ export default function DiscoverPage() {
       <div className="workMeta"><span>{domains[work.domain || ""] || "跨学科"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${paper?.status === "parsed" ? "fulltext" : ""}`}>{paper?.status === "parsed" ? "已有全文" : "尚无全文"}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
       <h3>{work.title}</h3><p className="workAuthors">{work.authors.slice(0, 4).join(" · ") || "作者未提供"}</p>
       {work.abstract && <p className="workAbstract">{work.abstract}</p>}
-      <div className="workPrimaryActions"><button onClick={() => showGraph(work.openalex_id)} disabled={busy || !!pendingWorkId}>浏览文献关系 <span>↗</span></button>{paper?.status === "parsed" ? <Link href={`/read?paper=${paper.id}`}>打开全文精读 <span>→</span></Link> : <label>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
-      <details className="workMore"><summary>保存、对比与其他操作 <span>＋</span></summary><div className="workActions"><button onClick={() => runWorkAction(work.openalex_id, () => setCore(work))} disabled={busy || !!pendingWorkId}>设为研究中心</button><button onClick={() => runWorkAction(work.openalex_id, () => addToCompare(work))} disabled={busy || !!pendingWorkId}>{workspace?.selected_paper_ids.includes(paper?.id || "") ? "已加入对比" : "加入对比"}</button>{paper ? <span className="workSaved">已存入论文库</span> : <button onClick={() => runWorkAction(work.openalex_id, () => save(work))} disabled={busy || !!pendingWorkId}>保存检索记录</button>}{work.oa_pdf_url && paper?.status !== "parsed" && <button onClick={() => importOpenPdf(work)} disabled={busy}>尝试获取开放 PDF</button>}</div></details>
+      <div className="workPrimaryActions"><button onClick={() => showGraph(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献关系 <span>↗</span></button>{paper?.status === "parsed" ? <Link href={`/read?paper=${paper.id}`}>打开全文精读 <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
+      <details className="workMore"><summary>保存、对比与其他操作 <span>＋</span></summary><div className="workActions"><button onClick={() => runWorkAction(work.openalex_id, () => setCore(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>设为研究中心</button><button onClick={() => runWorkAction(work.openalex_id, () => addToCompare(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>{workspace?.selected_paper_ids.includes(paper?.id || "") ? "已加入对比" : "加入对比"}</button>{paper ? <span className="workSaved">已存入论文库</span> : <button onClick={() => runWorkAction(work.openalex_id, () => save(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>保存检索记录</button>}{work.oa_pdf_url && paper?.status !== "parsed" && <button onClick={() => importOpenPdf(work)} disabled={busy} aria-busy={busy}>尝试获取开放 PDF</button>}</div></details>
       {paper?.status !== "parsed" && <small className="evidenceNote">当前仅展示检索信息与可用摘要；逐页精读需先取得全文。</small>}
     </article>;
   }
 
-  return <><ResearchNav current="/discover" /><main className="researchPage">
+  return <><ResearchNav current="/discover" /><main id="main" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">01 / DISCOVER</div><h1>从一个问题，找到值得深读的论文。</h1><p>自然语言检索 OpenAlex；先看研究关系，再决定哪些论文需要全文精读。</p></div>
-    <form className="searchBox" onSubmit={(e) => { e.preventDefault(); search(1); }}><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="例如：单细胞测序如何揭示肿瘤耐药机制？" aria-label="论文检索" /><button disabled={busy || !query.trim()}>{busy ? "检索中…" : "检索论文 ↗"}</button></form>
-    <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("semantic"); setResult({ items: [], count: 0, page: 0, mode: "semantic" }); }}>语义检索</button><button className={mode === "keyword" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("keyword"); setResult({ items: [], count: 0, page: 0, mode: "keyword" }); }}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
+    <form className="searchBox" onSubmit={(e) => { e.preventDefault(); search(1); }}><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="例如：单细胞测序如何揭示肿瘤耐药机制？" aria-label="论文检索" /><button disabled={busy || !query.trim()} aria-busy={busy}>{busy ? "检索中…" : "检索论文 ↗"}</button></form>
+    <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("semantic"); window.localStorage.setItem("medread-search-mode", "semantic"); setResult({ items: [], count: 0, page: 0, mode: "semantic" }); }}>语义检索</button><button className={mode === "keyword" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("keyword"); window.localStorage.setItem("medread-search-mode", "keyword"); setResult({ items: [], count: 0, page: 0, mode: "keyword" }); }}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
     {!result.items.length && <div className="suggestions">试试：{["single cell RNA sequencing cancer", "transformer model efficiency", "perovskite solar cell stability", "education policy regression"].map((term) => <button key={term} onClick={() => { setQuery(term); search(1, term); }}>{term}</button>)}</div>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {busy && !loadingGraph && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
     {result.page === 0 && !busy && !error && <div className="discoverStarter"><div><span className="sectionLabel">HOW IT WORKS</span><h2>先检索，再决定读哪篇</h2><p>输入研究问题后，先查看摘要和论文关系；找到相关文献，再获取或上传 PDF 进入全文精读。</p></div><ol><li><b>01</b><span>检索主题</span></li><li><b>02</b><span>查看论文关系</span></li><li><b>03</b><span>取得 PDF 后精读</span></li></ol></div>}
-    {!!result.items.length && <><div className="resultBar"><div><strong>{result.count.toLocaleString()}</strong> 条相关记录 <span>· 当前展示 {result.items.length} 篇</span>{result.cached && <small className="cacheStamp"> · 缓存结果{result.fetched_at ? ` · ${new Date(result.fetched_at).toLocaleString("zh-CN")}` : ""}{result.stale ? " · 当前网络不可用" : ""}</small>}</div><div className="tabBar"><button disabled={busy} onClick={() => search(1, query, true)}>刷新结果</button><button className={tab === "list" ? "active" : ""} onClick={() => setTab("list")}>列表</button><button className={tab === "graph" ? "active" : ""} onClick={() => { setTab("graph"); if (!graph) showGraph(result.items[0].openalex_id); }}>关系图谱</button></div></div>
-      {tab === "list" ? <><div className="workList">{result.items.map((work) => workCard(work))}</div><button className="moreButton" disabled={busy || result.items.length >= result.count} onClick={() => search(result.page + 1)}>{busy ? "加载中…" : "加载更多论文"}</button></> :
-      <div className="graphLayout"><div className="graphRegion">{graph?.cached && <p className="graphInstruction">缓存图谱 · {graph.fetched_at ? new Date(graph.fetched_at).toLocaleString("zh-CN") : ""}</p>}{graph && <CitationGraph works={graph.nodes} links={graph.links} center={center} selectedId={selected?.openalex_id} onSelect={(id) => { const work = graph.nodes.find((item) => item.openalex_id === id); if (work) setSelected(work); }} />}{loadingGraph && <div className="graphLoading" role="status"><div className="graphLoadingTrack"><i /></div><span>正在切换中心论文</span><strong>{graph?.nodes.find((item) => item.openalex_id === pendingCenter)?.title || result.items.find((item) => item.openalex_id === pendingCenter)?.title || "正在读取文献关系"}</strong><small>保留当前视图，关系数据就绪后展开新图谱</small></div>}</div><aside className="graphAside" key={center}>{selected ? <><div className="relationSummary"><strong>与中心论文的关系</strong><p>{selected.openalex_id === center ? "当前中心论文" : graph?.links.find((item) => item.target === selected.openalex_id)?.relation === "references" ? "当前论文的参考文献；关系来自 OpenAlex 引用元数据。" : "OpenAlex 标记的相关研究；具体研究重合点需查看摘要或原文。"}</p></div>{workCard(selected, true)}<button className="moreButton" onClick={() => showGraph(selected.openalex_id)} disabled={busy || selected.openalex_id === center}>{busy ? "正在展开…" : selected.openalex_id === center ? "当前中心论文" : "以这篇论文为中心展开 →"}</button></> : <p>选择一篇论文查看摘要与可用操作。</p>}</aside></div>}
+    {!!result.items.length && <><div className="resultBar"><div><strong>{result.count.toLocaleString()}</strong> 条相关记录 <span>· 当前展示 {result.items.length} 篇</span>{result.cached && <small className="cacheStamp"> · 缓存结果{result.fetched_at ? ` · ${new Date(result.fetched_at).toLocaleString("zh-CN")}` : ""}{result.stale ? " · 当前网络不可用" : ""}</small>}</div><div className="resultBarActions"><button className="quietButton" disabled={busy} aria-busy={busy} onClick={() => search(1, query, true)}>刷新结果</button><div className="tabBar" {...resultTabs.list} aria-label="结果视图"><button {...resultTabs.item("list")}>列表</button><button {...resultTabs.item("graph", () => { setTab("graph"); if (!graph) showGraph(result.items[0].openalex_id); })}>关系图谱</button></div></div></div>
+      {tab === "list" ? <><div className="workList">{result.items.map((work) => workCard(work))}</div><button className="moreButton" disabled={busy || semanticExhausted || result.items.length >= result.count} aria-busy={busy} onClick={() => search(result.page + 1)}>{semanticExhausted ? "语义检索上限 50 篇，请改用关键词检索" : busy ? "加载中…" : "加载更多论文"}</button></> :
+      <div className="graphLayout"><div className="graphRegion">{graph?.cached && <p className="graphInstruction">缓存图谱 · {graph.fetched_at ? new Date(graph.fetched_at).toLocaleString("zh-CN") : ""}</p>}{graph && <CitationGraph works={graph.nodes} links={graph.links} center={center} selectedId={selected?.openalex_id} onSelect={(id) => { const work = graph.nodes.find((item) => item.openalex_id === id); if (work) setSelected(work); }} />}{loadingGraph && <div className="graphLoading" role="status"><div className="graphLoadingTrack"><i /></div><span>正在切换中心论文</span><strong>{graph?.nodes.find((item) => item.openalex_id === pendingCenter)?.title || result.items.find((item) => item.openalex_id === pendingCenter)?.title || "正在读取文献关系"}</strong><small>保留当前视图，关系数据就绪后展开新图谱</small></div>}</div><aside className="graphAside" key={center}>{selected ? <><div className="relationSummary"><strong>与中心论文的关系</strong><p>{selected.openalex_id === center ? "当前中心论文" : graph?.links.find((item) => item.target === selected.openalex_id)?.relation === "references" ? "当前论文的参考文献；关系来自 OpenAlex 引用元数据。" : "OpenAlex 标记的相关研究；具体研究重合点需查看摘要或原文。"}</p></div>{workCard(selected, true)}<button className="moreButton" onClick={() => showGraph(selected.openalex_id)} disabled={busy || selected.openalex_id === center} aria-busy={busy}>{busy ? "正在展开…" : selected.openalex_id === center ? "当前中心论文" : "以这篇论文为中心展开 →"}</button></> : <p>选择一篇论文查看摘要与可用操作。</p>}</aside></div>}
     </>}
     {!!workspace?.selected_paper_ids.length && <div className="compareTray"><strong>待综合 · {workspace.selected_paper_ids.length} / 5</strong><div>{workspace.selected_paper_ids.map((id) => <span key={id} title={saved.find((item) => item.id === id)?.title || "已选论文"}>{saved.find((item) => item.id === id)?.title || "已选论文"}<button title="移出待综合论文" aria-label={`移出 ${saved.find((item) => item.id === id)?.title || "论文"}`} onClick={() => updateWorkspace({selected_paper_ids: workspace.selected_paper_ids.filter((item) => item !== id)}).catch((e) => setError(e.message))}>×</button></span>)}</div><Link href="/synthesis">开始综合 →</Link></div>}
   </main></>;
