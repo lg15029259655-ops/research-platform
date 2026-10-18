@@ -101,6 +101,32 @@ def test_design_timeout_returns_labelled_quick_draft(monkeypatch):
             clean(client)
 
 
+def test_design_repeated_click_reuses_version_and_history_is_scoped(monkeypatch):
+    calls = []
+
+    async def fake_run(_name, context):
+        calls.append(context["goal"])
+        return {"goal": context["goal"], "change_summary": "初稿", "constraints": [],
+            "nodes": [{"id": "N1", "label": "问题", "type": "question", "detail": "待核验"}],
+            "edges": [], "controls": [], "readouts": [], "assumptions": []}
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            first = client.post("/api/research/design", json={"goal": "First test idea"}).json()
+            repeated = client.post("/api/research/design", json={"goal": "First test idea"}).json()
+            assert repeated["id"] == first["id"]
+            assert len(calls) == 1
+            forced = client.post("/api/research/design", json={"goal": "First test idea", "regenerate": True}).json()
+            assert forced["id"] != first["id"]
+            client.post("/api/research/design", json={"goal": "Second test idea"})
+            scoped = client.get("/api/research/design/versions", params={"goal": "First test idea"}).json()
+            assert len(scoped) == 2
+            assert {item["payload"]["goal"] for item in scoped} == {"First test idea"}
+        finally:
+            clean(client)
+
+
 def test_comparison_timeout_returns_promptly(monkeypatch, tmp_path):
     import asyncio
 

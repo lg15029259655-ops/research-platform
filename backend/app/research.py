@@ -373,8 +373,8 @@ class IdeaRequest(BaseModel):
 def search_only_novelty(query: str, works: list[dict]) -> dict:
     """Keep verified search hits visible when the optional AI interpretation is slow."""
     return {"query": query, "similar_papers": [{"openalex_id": item["openalex_id"],
-        "title": item["title"], "similarity_level": "中", "differences": []} for item in works[:8]],
-        "similarity_level": "中", "differences": [], "novel_angles": [],
+        "title": item["title"], "similarity_level": "待核验", "differences": []} for item in works[:8]],
+        "similarity_level": "待核验", "differences": [], "novel_angles": [],
         "search_only": True, "search_message": ("已返回相关文献；模型解读未完成，暂不判断相似程度或新颖性。"
             if works else "本次检索没有返回文献；不能据此断定该研究方向不存在。")}
 
@@ -427,6 +427,7 @@ class DesignRequest(BaseModel):
     current_design: dict | None = None
     node_id: str | None = None
     instruction: str = Field(default="", max_length=1000)
+    regenerate: bool = False
 
 
 def quick_design(goal: str, constraints: str) -> dict:
@@ -497,6 +498,20 @@ async def design(request: DesignRequest, owner: str = Owner):
         raise HTTPException(422, "不支持的设计操作")
     if request.action == "node" and (not request.current_design or not request.node_id or not request.instruction.strip()):
         raise HTTPException(422, "请选择节点并输入修改要求")
+    if request.action == "generate" and not request.regenerate:
+        with SessionLocal() as db:
+            workspace = get_or_create(db, owner)
+            artifact = db.get(ResearchArtifact, workspace.design_version_id) if workspace.design_version_id else None
+            if artifact and artifact.owner_id == owner and artifact.kind == "experiment_design":
+                existing = json.loads(artifact.payload_json)
+                if (existing.get("goal", "").strip() == request.goal.strip() and
+                        existing.get("input_constraints", "") == request.constraints.strip()):
+                    version = db.scalar(select(DesignVersion).where(
+                        DesignVersion.owner_id == owner, DesignVersion.artifact_id == artifact.id))
+                    if version:
+                        return {"id": artifact.id, "kind": artifact.kind, "paper_ids": [],
+                            "payload": existing, "created_at": artifact.created_at.isoformat(),
+                            "version": version_data(version, artifact)}
     research_context = {}
     with SessionLocal() as db:
         workspace = get_or_create(db, owner)
@@ -559,7 +574,7 @@ async def design(request: DesignRequest, owner: str = Owner):
 
 
 @router.get("/design/versions")
-def design_versions(artifact_id: str | None = None, owner: str = Owner):
+def design_versions(artifact_id: str | None = None, goal: str | None = None, owner: str = Owner):
     with SessionLocal() as db:
         workspace = get_or_create(db, owner)
         query = select(DesignVersion).where(
@@ -568,8 +583,16 @@ def design_versions(artifact_id: str | None = None, owner: str = Owner):
         # 前端据此还原沙盘时会在 20 条里找不到 → 画布空白。允许按 artifact_id 精确取那一条。
         if artifact_id:
             query = query.where(DesignVersion.artifact_id == artifact_id)
-        rows = db.scalars(query.order_by(DesignVersion.version_number.desc()).limit(1 if artifact_id else 20)).all()
-        return [version_data(row, db.get(ResearchArtifact, row.artifact_id)) for row in rows]
+        rows = db.scalars(query.order_by(DesignVersion.version_number.desc()).limit(1 if artifact_id else 200)).all()
+        result = []
+        for row in rows:
+            artifact = db.get(ResearchArtifact, row.artifact_id)
+            if goal is not None and not artifact_id and json.loads(artifact.payload_json).get("goal", "").strip() != goal.strip():
+                continue
+            result.append(version_data(row, artifact))
+            if len(result) == (1 if artifact_id else 20):
+                break
+        return result
 
 
 @router.post("/design/versions/{version_id}/restore")
