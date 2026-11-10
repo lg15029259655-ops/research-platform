@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Claim a PDF replacement before starting parsing
+
+- Status: verified locally for simultaneous manual attachments and failed replacements; the equivalent remote import concurrency path is not separately exercised.
+- Evidence: a file upload yields while saving, after an earlier status check. Two requests could both replace the same record and start parsing, and failed legacy records could lose existing units before a replacement succeeded.
+- Action: atomically update only when the owner, original status and path still match for manual attachment and remote import; claim reparse with a conditional update. Keep previous files and reading units until parsing succeeds, and remove only the losing request's newly created file.
+- Verification: isolated tests synchronize two competing uploads and observe one success and one conflict; another test confirms a failed replacement retains old units. The full backend suite passes (80 tests).
+- Boundary: process-crash recovery and behavior with a worker from older application code still need separate work. Tests do not establish remote service reliability.
+
 ## 2026-11-10 — Resume polling when reopening a parsing paper
 
 - Status: type-checked locally; browser timing and production network behavior remain unverified.

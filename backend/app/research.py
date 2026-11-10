@@ -11,11 +11,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .auth import current_owner
 from .db import SessionLocal
-from .models import Paper, PaperImage, ReadingUnit, ResearchArtifact, DesignVersion, DiscoveryCache
+from .models import Paper, ReadingUnit, ResearchArtifact, DesignVersion, DiscoveryCache
 from .workspace import get_or_create
 from .papers import owned_paper, paper_data, pdf_is_readable, process_paper
 from .services.openalex_service import (
@@ -266,28 +266,32 @@ async def import_open_pdf(request: ImportRequest, background_tasks: BackgroundTa
         return paper_data_item
     if paper_data_item["status"] not in {"metadata_only", "failed"}:
         raise HTTPException(409, "PDF 已在处理中，请稍后打开论文库")
+    with SessionLocal() as db:
+        paper = owned_paper(db, paper_id, owner)
+        previous_status, previous_path = paper.status, paper.local_file_path
+        if previous_status not in {"metadata_only", "failed"}:
+            raise HTTPException(409, "PDF 已在处理中，请稍后打开论文库")
     try:
         path, size, digest = await fetch_pdf(work["oa_pdf_url"], owner, paper_id)
     except RemotePDFError as exc:
         logger.warning("Open PDF retrieval failed: %s", type(exc).__name__)
         raise HTTPException(422, str(exc)) from exc
     with SessionLocal() as db:
-        paper = owned_paper(db, paper_id, owner)
-        old_path = paper.local_file_path
-        db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
-        db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
-        paper.current_unit_id = None
-        paper.original_filename = f"{request.openalex_id}.pdf"
-        paper.stored_filename = Path(path).name
-        paper.local_file_path = path
-        paper.mime_type = "application/pdf"
-        paper.file_size_bytes = size
-        paper.sha256 = digest
-        paper.status = "uploaded"
+        claimed = db.execute(update(Paper).where(
+            Paper.id == paper_id, Paper.owner_id == owner,
+            Paper.status == previous_status, Paper.local_file_path == previous_path,
+        ).values(original_filename=f"{request.openalex_id}.pdf", stored_filename=Path(path).name,
+                 local_file_path=path, mime_type="application/pdf",
+                 file_size_bytes=size, sha256=digest, status="uploaded"))
+        if claimed.rowcount != 1:
+            db.rollback()
+            Path(path).unlink(missing_ok=True)
+            raise HTTPException(409, "论文状态已变化，请刷新后重试")
+        replace_existing = db.scalar(
+            select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id).limit(1)
+        ) is not None
         db.commit()
-    if old_path and old_path != path and Path(old_path).resolve().parent == Path(path).resolve().parent:
-        Path(old_path).unlink(missing_ok=True)
-    background_tasks.add_task(process_paper, paper_id, owner, path)
+    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing)
     return {"id": paper_id, "status": "uploaded"}
 
 

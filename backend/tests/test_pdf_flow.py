@@ -560,6 +560,55 @@ def test_precompute_failure_does_not_invalidate_successful_parse(monkeypatch, tm
         assert not (after["warning"] or "").startswith("重新解析失败")
 
 
+def test_failed_record_keeps_previous_units_when_replacement_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Previously Read Study")
+        with SessionLocal() as db:
+            db.get(Paper, paper["id"]).status = "failed"
+            db.commit()
+        response = client.post(f"/api/papers/{paper['id']}/attach", files={"file":
+            ("broken.pdf", b"%PDF-broken", "application/pdf")})
+        assert response.status_code == 200
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["status"] == "parsed"
+        assert after["units"] == paper["units"]
+        assert "重新解析失败" in after["warning"]
+
+
+def test_simultaneous_attachments_only_start_one_parse(monkeypatch, tmp_path):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app import papers as papers_module
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Concurrent Attachment Study")
+        with SessionLocal() as db:
+            db.get(Paper, paper["id"]).status = "failed"
+            db.commit()
+        original_save = papers_module.save_pdf
+        barrier = Barrier(2)
+
+        async def synchronized_save(*args):
+            result = await original_save(*args)
+            await asyncio.to_thread(barrier.wait, 5)
+            return result
+
+        monkeypatch.setattr(papers_module, "save_pdf", synchronized_save)
+
+        def attach(title):
+            return client.post(f"/api/papers/{paper['id']}/attach", files={"file":
+                ("paper.pdf", make_pdf(title), "application/pdf")})
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(attach, ["Replacement One", "Replacement Two"]))
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["status"] == "parsed" and after["units"]
+
+
 def test_figures_after_references_are_not_main_results(tmp_path):
     document = pymupdf.open()
     first = document.new_page()

@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from .db import SessionLocal
@@ -209,24 +209,25 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
                              (paper.parse_warning or "").startswith("重新解析失败")))
         if paper.status not in {"metadata_only", "failed"} and not replace_existing:
             raise HTTPException(409, "这篇论文已有 PDF")
+        previous_status, previous_path = paper.status, paper.local_file_path
     original, path, size, digest = await save_pdf(file, owner, paper_id)
     with SessionLocal() as db:
-        paper = owned_paper(db, paper_id, owner)
-        old_path = paper.local_file_path
-        if not replace_existing:
-            db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
-            db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
-            paper.current_unit_id = None
-        paper.original_filename = original
-        paper.stored_filename = Path(path).name
-        paper.local_file_path = path
-        paper.mime_type = "application/pdf"
-        paper.file_size_bytes = size
-        paper.sha256 = digest
-        paper.status = "uploaded"
+        claimed = db.execute(update(Paper).where(
+            Paper.id == paper_id, Paper.owner_id == owner,
+            Paper.status == previous_status, Paper.local_file_path == previous_path,
+        ).values(original_filename=original, stored_filename=Path(path).name,
+                 local_file_path=path, mime_type="application/pdf",
+                 file_size_bytes=size, sha256=digest, status="uploaded"))
+        if claimed.rowcount != 1:
+            db.rollback()
+            Path(path).unlink(missing_ok=True)  # Only this request's newly saved file.
+            raise HTTPException(409, "论文状态已变化，请刷新后重试")
+        # Legacy failed records can still contain reading units. Do not delete
+        # them until the replacement has been parsed and can be committed.
+        replace_existing = replace_existing or db.scalar(
+            select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id).limit(1)
+        ) is not None
         db.commit()
-    if not replace_existing and old_path and old_path != path and Path(old_path).resolve().parent == (file_service.upload_dir() / owner / paper_id).resolve():
-        Path(old_path).unlink(missing_ok=True)
     background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing)
     return {"id": paper_id, "status": "uploaded"}
 
@@ -238,7 +239,13 @@ def reparse_paper(paper_id: str, background_tasks: BackgroundTasks, owner: str =
         if paper.status != "parsed" or not paper.local_file_path or not Path(paper.local_file_path).is_file():
             raise HTTPException(422, "当前 PDF 无法重新解析")
         path = paper.local_file_path
-        paper.status = "uploaded"
+        claimed = db.execute(update(Paper).where(
+            Paper.id == paper_id, Paper.owner_id == owner,
+            Paper.status == "parsed", Paper.local_file_path == path,
+        ).values(status="uploaded"))
+        if claimed.rowcount != 1:
+            db.rollback()
+            raise HTTPException(409, "论文状态已变化，请刷新后重试")
         db.commit()
     background_tasks.add_task(process_paper, paper_id, owner, path, True)
     return {"id": paper_id, "status": "uploaded"}
