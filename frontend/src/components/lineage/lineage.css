@@ -1,0 +1,381 @@
+/* 文献谱系图（三维）
+   深色内嵌面板：卡片外仍是页面浅色 token，卡片内自成一套"星图"色阶。
+   仅服务 components/lineage/LineageGraph.tsx，所有类名 lg- 前缀。 */
+
+.lg-panel {
+  --lg-surface: #0B1B33;
+  --lg-surface-deep: #071427;
+  --lg-line: rgba(124, 162, 216, .28);
+  --lg-line-strong: rgba(124, 162, 216, .48);
+  --lg-text: #E4EEFF;
+  --lg-text-mid: #A9BEDC;
+  --lg-text-dim: #7E93B4;
+  --lg-accent: #9CC4F5;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--c-line-strong);
+  border-radius: var(--r-2);
+  overflow: hidden;
+  background: linear-gradient(150deg, var(--lg-surface) 0%, var(--lg-surface-deep) 100%);
+  color: var(--lg-text);
+}
+
+.lg-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--lg-line);
+  background: rgba(6, 18, 35, .35);
+}
+
+.lg-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.lg-kicker {
+  font-size: 11px;
+  letter-spacing: .18em;
+  font-weight: 800;
+  color: var(--lg-accent);
+}
+
+.lg-title strong {
+  font-size: 17px;
+  letter-spacing: -.01em;
+  color: var(--lg-text);
+}
+
+.lg-title small {
+  font-size: 12px;
+  color: var(--lg-text-dim);
+}
+
+.lg-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.lg-btn {
+  border: 1px solid var(--lg-line-strong);
+  background: rgba(20, 44, 78, .55);
+  color: var(--lg-text-mid);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.lg-btn:hover:not(:disabled) {
+  background: rgba(38, 74, 124, .7);
+  border-color: var(--lg-accent);
+  color: var(--lg-text);
+}
+
+.lg-btn:focus-visible {
+  outline: 2px solid var(--lg-accent);
+  outline-offset: 2px;
+}
+
+.lg-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* ---------- 年份滑条 ---------- */
+.lg-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--lg-line);
+  border-radius: var(--r-pill);
+  background: rgba(12, 30, 55, .6);
+  font-size: 11px;
+  color: var(--lg-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.lg-range input[type="range"] {
+  width: 74px;
+  accent-color: #4C7FC4;
+  cursor: pointer;
+}
+
+/* ---------- 画布 ---------- */
+.lg-stage {
+  position: relative;
+  height: clamp(520px, 58vh, 640px);
+  min-height: 480px;
+}
+
+.lg-stage canvas {
+  display: block;
+  touch-action: none;
+}
+
+.lg-updating {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--lg-line-strong);
+  border-radius: var(--r-pill);
+  background: rgba(8, 22, 41, .88);
+  color: var(--lg-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lg-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lg-accent);
+  animation: lg-pulse 1s ease-in-out infinite;
+}
+
+@keyframes lg-pulse {
+  50% { opacity: .25; }
+}
+
+/* ---------- 图例/脚注 ---------- */
+.lg-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 20px 14px;
+  border-top: 1px solid var(--lg-line);
+  background: rgba(6, 18, 35, .45);
+  font-size: 12px;
+  color: var(--lg-text-dim);
+}
+
+.lg-foot small {
+  line-height: 1.6;
+}
+
+.lg-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--lg-text-mid);
+}
+
+.lg-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.lg-legend-line b {
+  font-size: 13px;
+  color: var(--lg-accent);
+  font-weight: 700;
+}
+
+.lg-legend-line b.is-dashed {
+  letter-spacing: -1px;
+}
+
+/* ---------- 状态 ---------- */
+.lg-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 64px 24px;
+  color: var(--lg-text-dim);
+}
+
+.lg-loading {
+  gap: 10px;
+}
+
+.lg-state strong {
+  font-size: 15px;
+  color: var(--lg-text);
+}
+
+.lg-state p {
+  margin: 0;
+  max-width: 520px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.lg-state-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--lg-line-strong);
+  color: var(--lg-accent);
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+
+.lg-skeleton {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  margin-bottom: 10px;
+}
+
+.lg-skeleton i {
+  position: absolute;
+  border-radius: 50%;
+  display: block;
+}
+
+.lg-skeleton-core {
+  inset: 46px;
+  background: var(--lg-accent);
+  opacity: .8;
+  animation: lg-breathe 1.6s ease-in-out infinite;
+}
+
+.lg-skeleton-ring {
+  inset: 20px;
+  border: 1px dashed var(--lg-line-strong);
+  animation: lg-spin 9s linear infinite;
+}
+
+.lg-skeleton-dot {
+  inset: 56px;
+  border: 1px solid var(--lg-line-strong);
+}
+
+@keyframes lg-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes lg-breathe {
+  50% { opacity: .35; }
+}
+
+/* ---------- WebGL 降级列表 ---------- */
+.lg-fallback {
+  max-height: 520px;
+  overflow: auto;
+  padding: 16px 20px 22px;
+}
+
+.lg-fallback-note {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px dashed var(--lg-line-strong);
+  border-radius: var(--r-1);
+  color: var(--lg-text-mid);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.lg-fallback-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--lg-line);
+}
+
+.lg-fallback-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  border: 0;
+  background: none;
+  color: var(--lg-text);
+  cursor: pointer;
+  padding: 0;
+}
+
+.lg-fallback-main strong {
+  font-size: 13px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.lg-fallback-main small {
+  color: var(--lg-text-dim);
+  font-size: 11px;
+}
+
+.lg-fallback-main:hover strong {
+  color: var(--lg-accent);
+}
+
+.lg-fallback-action {
+  flex: none;
+  border: 1px solid var(--lg-line-strong);
+  background: rgba(20, 44, 78, .55);
+  color: var(--lg-text-mid);
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+
+.lg-fallback-action:hover {
+  border-color: var(--lg-accent);
+  color: var(--lg-text);
+}
+
+@media (max-width: 860px) {
+  .lg-head {
+    flex-direction: column;
+  }
+
+  .lg-actions {
+    justify-content: flex-start;
+  }
+
+  .lg-stage {
+    height: 460px;
+    min-height: 420px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lg-pulse,
+  .lg-skeleton-core,
+  .lg-skeleton-ring {
+    animation: none;
+  }
+
+  .lg-btn {
+    transition: none;
+  }
+}

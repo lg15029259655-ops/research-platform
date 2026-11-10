@@ -1,0 +1,357 @@
+/* 精读区 · 思维导图面板
+   仅服务 components/mindmap/MindMapPanel.tsx；颜色全部来自 tokens.css，
+   不新增全局样式。导出 SVG 时由 JS 把计算样式内联，这里只负责屏幕呈现。 */
+
+.mm-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--c-line-strong);
+  border-radius: var(--r-2);
+  background: var(--c-surface);
+  overflow: hidden;
+}
+
+.mm-panel.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  border-radius: 0;
+  border: 0;
+  height: 100vh;
+}
+
+.mm-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--c-line);
+  background: var(--c-surface);
+}
+
+.mm-head-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.mm-kicker {
+  font-size: var(--fs-caption);
+  letter-spacing: .14em;
+  font-weight: 800;
+  color: var(--c-primary);
+}
+
+.mm-head-title strong {
+  font-size: 17px;
+  letter-spacing: -.015em;
+  color: var(--c-text);
+}
+
+.mm-head-title small {
+  font-size: var(--fs-caption);
+  color: var(--c-text-soft);
+}
+
+.mm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.mm-btn {
+  border: 1px solid var(--c-line-strong);
+  background: var(--c-surface);
+  color: var(--c-text-mid);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  padding: 7px 11px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+
+.mm-btn:hover:not(:disabled) {
+  background: var(--c-primary-weak);
+  border-color: var(--c-primary-line);
+  color: var(--c-primary);
+}
+
+.mm-btn:focus-visible {
+  outline: 2px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
+.mm-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.mm-refresh {
+  padding: 8px 20px;
+  font-size: var(--fs-caption);
+  color: var(--c-primary);
+  background: var(--c-primary-weak);
+  border-bottom: 1px solid var(--c-primary-line);
+}
+
+/* ---------- 画布 ---------- */
+.mm-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 560px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  background-color: var(--c-surface);
+  background-image: radial-gradient(var(--c-surface-3) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.mm-panel.is-fullscreen .mm-viewport {
+  min-height: 0;
+}
+
+.mm-viewport[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.mm-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.mm-svg {
+  display: block;
+  overflow: visible;
+}
+
+.mm-svg text {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  fill: var(--c-text);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ---------- 连线 ---------- */
+.mm-edges path {
+  fill: none;
+  stroke: var(--c-line-strong);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+/* ---------- 节点 ---------- */
+.mm-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.mm-node .mm-node-bg {
+  fill: var(--c-surface);
+  stroke-width: 1;
+  transition: fill var(--dur-1) var(--ease);
+}
+
+.mm-node.is-hover .mm-node-bg {
+  fill: var(--c-primary-weak);
+}
+
+.mm-node.is-selected .mm-node-bg {
+  fill: var(--c-primary-weak);
+  stroke-width: 2;
+}
+
+.mm-node.is-root text {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.mm-node.is-root .mm-node-bg {
+  fill: var(--c-primary-weak);
+}
+
+.mm-node:focus-visible .mm-node-bg {
+  stroke-width: 2;
+  stroke: var(--c-primary);
+}
+
+.mm-badge rect {
+  fill: var(--c-warn-bg);
+  stroke: var(--c-warn);
+  stroke-width: .8;
+}
+
+.mm-badge text {
+  font-size: 9px;
+  fill: var(--c-warn);
+  text-anchor: middle;
+}
+
+.mm-toggle circle {
+  fill: var(--c-surface);
+  stroke: var(--c-line-strong);
+  stroke-width: 1;
+}
+
+.mm-toggle text {
+  font-size: 11px;
+  fill: var(--c-text-soft);
+  text-anchor: middle;
+}
+
+.mm-toggle {
+  cursor: pointer;
+}
+
+.mm-toggle:hover circle {
+  stroke: var(--c-primary);
+  fill: var(--c-primary-weak);
+}
+
+.mm-toggle:hover text {
+  fill: var(--c-primary);
+}
+
+/* ---------- 状态 ---------- */
+.mm-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 56px 24px;
+  color: var(--c-text-soft);
+}
+
+.mm-empty {
+  padding-top: 64px;
+}
+
+.mm-loading {
+  gap: 10px;
+}
+
+.mm-state strong {
+  font-size: 15px;
+  color: var(--c-text);
+}
+
+.mm-state p {
+  margin: 0;
+  max-width: 560px;
+  font-size: var(--fs-label);
+  line-height: 1.7;
+}
+
+.mm-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-1);
+  background: var(--c-primary-weak);
+  color: var(--c-primary);
+  font-size: 20px;
+  margin-bottom: 4px;
+}
+
+.mm-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+
+.mm-skeleton i {
+  display: block;
+  height: 10px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(90deg, var(--c-surface-3) 0%, var(--c-surface-2) 50%, var(--c-surface-3) 100%);
+  background-size: 220% 100%;
+  animation: mm-shimmer 1.6s linear infinite;
+}
+
+.mm-skeleton i:nth-child(1) { width: 220px; }
+.mm-skeleton i:nth-child(2) { width: 180px; }
+.mm-skeleton i:nth-child(3) { width: 240px; }
+.mm-skeleton i:nth-child(4) { width: 140px; }
+
+@keyframes mm-shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -80% 0; }
+}
+
+/* ---------- 图例/脚注 ---------- */
+.mm-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  border-top: 1px solid var(--c-line);
+  background: var(--c-surface-2);
+  font-size: var(--fs-caption);
+  color: var(--c-text-soft);
+}
+
+.mm-foot small {
+  flex: 1 1 320px;
+  min-width: 0;
+  line-height: 1.6;
+}
+
+.mm-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mm-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--c-text-mid);
+}
+
+.mm-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+@media (max-width: 760px) {
+  .mm-head {
+    flex-direction: column;
+  }
+
+  .mm-actions {
+    justify-content: flex-start;
+  }
+
+  .mm-viewport {
+    min-height: 420px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mm-skeleton i {
+    animation: none;
+  }
+
+  .mm-btn,
+  .mm-node .mm-node-bg {
+    transition: none;
+  }
+}
