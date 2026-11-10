@@ -136,11 +136,21 @@ def route_research(title: str, abstract: str = "", field: str = "") -> dict[str,
     return {"domain": domain, "study_type": study_type, "template": template}
 
 
-def save_artifact(owner: str, kind: str, paper_ids: list[str], payload: dict) -> dict:
+def save_artifact(owner: str, kind: str, paper_ids: list[str], payload: dict, *,
+                  expected_revisions: dict[str, tuple[str | None, str]] | None = None) -> dict:
     artifact = ResearchArtifact(id=str(uuid4()), owner_id=owner, kind=kind,
                                 paper_ids_json=json.dumps(paper_ids),
                                 payload_json=json.dumps(payload, ensure_ascii=False))
     with SessionLocal() as db:
+        # Claim a SQLite write lock before checking revisions and keep it until
+        # the artifact commits, so a reparse cannot slip between check/save.
+        for paper_id, (revision, source_hash) in (expected_revisions or {}).items():
+            result = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.status == "parsed",
+                Paper.content_revision == revision, Paper.sha256 == source_hash,
+            ).values(updated_at=Paper.updated_at))
+            if result.rowcount != 1:
+                raise HTTPException(409, "论文内容在生成过程中发生变化，请重新生成结果")
         db.add(artifact)
         workspace = get_or_create(db, owner)
         if kind == "paper_compare":
@@ -366,7 +376,8 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
                         "text": text[offset:offset + 1100]})
             papers.append({"paper_id": paper.id, "title": paper.title,
                            "domain": paper.domain or route_research(paper.title)["domain"],
-                           "evidence_scope": "PDF提取的全文片段", "sections": excerpts})
+                           "evidence_scope": "PDF提取的全文片段", "sections": excerpts,
+                           "_revision": (paper.content_revision, paper.sha256)})
     return papers
 
 
@@ -374,6 +385,7 @@ async def execute_xray(owner: str, paper_id: str, *, emit=None, timeout: float |
     if emit is not None:
         await emit("stage", {"stage": "reading", "label": "读取论文单元"})
     context = (await run_in_threadpool(fulltext_papers, owner, [paper_id]))[0]
+    expected = {paper_id: context.pop("_revision")}
     with SessionLocal() as db:
         existing = db.scalar(select(ResearchArtifact).where(
             ResearchArtifact.owner_id == owner,
@@ -393,7 +405,7 @@ async def execute_xray(owner: str, paper_id: str, *, emit=None, timeout: float |
         ids = set(db.scalars(select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id)).all())
     for stage in payload["stages"]:
         stage["unit_ids"] = [item for item in stage["unit_ids"] if item in ids]
-    return save_artifact(owner, "paper_summary", [paper_id], payload)
+    return save_artifact(owner, "paper_summary", [paper_id], payload, expected_revisions=expected)
 
 
 @router.post("/xray/{paper_id}")
@@ -411,6 +423,7 @@ async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeou
     if emit is not None:
         await emit("stage", {"stage": "preparing", "label": "读取论文片段"})
     papers = await run_in_threadpool(fulltext_papers, owner, paper_ids, compact=True)
+    expected = {paper["paper_id"]: paper.pop("_revision") for paper in papers}
     if emit is not None:
         await emit("stage", {"stage": "comparing", "label": "比较研究问题与结果"})
     payload = await _run_task("paper_compare", {"papers": papers}, emit, timeout=timeout)
@@ -516,7 +529,7 @@ async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeou
             claim["stance"] = "INSUFFICIENT"
             claim["reason"] += " 当前没有来自至少两篇论文的可核对结果原文，不能列为结果不一致。"
         claim["evidence_refs"] = (direct_refs if claim["stance"] != "INSUFFICIENT" else verified_refs)[:6]
-    return save_artifact(owner, "paper_compare", paper_ids, payload)
+    return save_artifact(owner, "paper_compare", paper_ids, payload, expected_revisions=expected)
 
 
 @router.post("/compare")

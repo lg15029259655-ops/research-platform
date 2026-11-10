@@ -186,6 +186,7 @@ async def execute_mindmap(owner: str, paper_id: str, *, emit=None, timeout: floa
         if not units:
             raise ValueError("这篇论文还没有可用的阅读单元，请先完成解析")
         revision = parse_revision(paper, units)
+        expected_revision = (paper.content_revision, paper.sha256)
         skeleton = build_skeleton(paper, units)
 
     cached = _existing_artifact(owner, paper_id, revision)
@@ -222,4 +223,5 @@ async def execute_mindmap(owner: str, paper_id: str, *, emit=None, timeout: floa
                    "finding": "发现", "limitation": "局限/讨论", "extension": "延伸"},
         "annotation_count": len(annotations),
     }
-    return save_artifact(owner, "paper_mindmap", [paper_id], payload)
+    return save_artifact(owner, "paper_mindmap", [paper_id], payload,
+                         expected_revisions={paper_id: expected_revision})

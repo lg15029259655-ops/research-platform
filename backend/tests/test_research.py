@@ -58,6 +58,43 @@ def test_preparing_comparison_does_not_block_event_loop(monkeypatch):
     asyncio.run(exercise())
 
 
+def test_comparison_rejects_result_if_paper_is_reparsed_during_generation(monkeypatch, tmp_path):
+    from uuid import uuid4
+    from app.models import Paper, ResearchArtifact
+    from app.papers import process_paper
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+
+    async def fake_run(_name, context):
+        paper_id = context["papers"][0]["paper_id"]
+        with SessionLocal() as db:
+            paper = db.get(Paper, paper_id)
+            owner, path, token = paper.owner_id, paper.local_file_path, str(uuid4())
+            paper.status, paper.parse_token = "uploaded", token
+            db.commit()
+        process_paper(paper_id, owner, path, True, token)
+        return {"papers": [], "dimensions": [], "controversies": [{
+            "claim": "Old result", "paper_ids": [paper_id], "stance": "INSUFFICIENT",
+            "reason": "Old source", "evidence_refs": []}]}
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            ids = [client.post("/api/papers", files={"file":
+                (f"paper-{n}.pdf", pdf_bytes(f"Reparse Comparison {n}"), "application/pdf")}).json()["id"]
+                for n in (1, 2)]
+            result = client.post("/api/research/compare", json={"paper_ids": ids})
+            assert result.status_code == 409
+            assert "发生变化" in result.json()["detail"]
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(
+                    User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+                assert db.scalar(select(ResearchArtifact).where(
+                    ResearchArtifact.owner_id == owner, ResearchArtifact.kind == "paper_compare")) is None
+        finally:
+            clean(client)
+
+
 def test_comparison_rejects_pdf_without_readable_sections(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     document = pymupdf.open()

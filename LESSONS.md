@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Fence generated results against concurrent reparse
+
+- Status: verified using isolated PDFs with reparse during simulated model generation; production contention remains unmeasured.
+- Evidence: comparison, paper summary and mind-map generation could read old units, await AI, then save after reparse had replaced those units. Reused unit IDs could make the resulting citations appear to refer to new content.
+- Action: assign a new content revision when parsing commits. Before saving these three result types, conditionally claim each owner-scoped paper at the captured revision and source digest within the same SQLite write transaction as the artifact save. Reject changed or currently parsing papers with a retryable message.
+- Verification: tests run real reparses during simulated comparison and mind-map model calls and confirm no outdated artifact is saved; the migration test covers adding the column to existing databases. Full backend suite passes (90 tests).
+- Boundary: this guards new artifact saves, not every historical artifact or streamed chat response; legacy records receive a revision on their next successful parse. External edits outside the application are not detected. The transaction approach is tested on SQLite, the configured database.
+
 ## 2026-11-10 — Do not block the event loop preparing comparison evidence
 
 - Status: verified by an isolated synthetic concurrency test; production latency has not been measured.

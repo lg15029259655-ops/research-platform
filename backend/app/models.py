@@ -31,6 +31,7 @@ class Paper(Base):
     file_size_bytes: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
     source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_revision: Mapped[str | None] = mapped_column(String(36), nullable=True)
     authors: Mapped[str | None] = mapped_column(Text, nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     journal: Mapped[str | None] = mapped_column(String(500), nullable=True)

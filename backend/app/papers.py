@@ -201,6 +201,7 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
                                   local_file_path=item["path"], width=item["width"], height=item["height"]))
             paper.status = "parsed"
             paper.source_sha256 = paper.sha256
+            paper.content_revision = str(uuid4())
             paper.parse_token = None
             paper.parse_heartbeat = None
             db.commit()
