@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import ResearchNav from "@/components/ResearchNav";
 import StepLoading from "@/components/StepLoading";
+import type { LineageResponse } from "@/components/lineage/lineageLayout";
 import { API, apiJson, postJson } from "@/lib/api";
 import { updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
@@ -13,9 +14,10 @@ import "../research.css";
 import "../studio.css";
 
 const CitationGraph = dynamic(() => import("@/components/CitationGraph"), { ssr: false });
+const LineageGraph = dynamic(() => import("@/components/lineage/LineageGraph"), { ssr: false });
 type Work = { openalex_id: string; title: string; authors: string[]; year: number | null; journal: string;
   doi: string; abstract: string; citation_count: number; oa_pdf_url: string | null;
-  domain?: string; study_type?: string; related_ids: string[]; reference_ids: string[] };
+  domain?: string; study_type?: string; related_ids?: string[]; reference_ids?: string[] };
 type Paper = { id: string; title: string; openalex_id: string | null; status: string };
 type Search = { items: Work[]; count: number; page: number; mode: "semantic" | "keyword"; cached?: boolean; stale?: boolean; fetched_at?: string };
 type Graph = { nodes: Work[]; links: { source: string; target: string; relation: string }[]; cached?: boolean; fetched_at?: string };
@@ -30,6 +32,10 @@ export default function DiscoverPage() {
   const [saved, setSaved] = useState<Paper[]>([]);
   const [tab, setTab] = useState<"list" | "graph">("list");
   const [graph, setGraph] = useState<Graph | null>(null);
+  const [graphView, setGraphView] = useState<"lineage" | "constellation">("lineage");
+  const [lineage, setLineage] = useState<LineageResponse | null>(null);
+  const [lineageCenter, setLineageCenter] = useState("");
+  const [loadingLineage, setLoadingLineage] = useState(false);
   const [center, setCenter] = useState("");
   const [selected, setSelected] = useState<Work | null>(null);
   const [busy, setBusy] = useState(false);
@@ -40,6 +46,9 @@ export default function DiscoverPage() {
   const [error, setError] = useState("");
   const searchVersion = useRef(0);
   const graphVersion = useRef(0);
+  const lineageVersion = useRef(0);
+  const lineageTried = useRef<string | null>(null);
+  const graphTried = useRef<string | null>(null);
   const qHandled = useRef(false);
   const uploadRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const { workspace } = useWorkspace();
@@ -74,9 +83,14 @@ export default function DiscoverPage() {
   // 关系图谱 tab 被选中时按需加载：方向键只走 tabGroup 的 select，不会触发 item 的 onClick，
   // 若只在 onClick 里加载，方向键选中后会留下空图谱。这里统一兜底（loadingGraph 守卫避免重复请求）。
   useEffect(() => {
-    if (tab !== "graph" || graph || loadingGraph || !result.items.length) return;
-    showGraph(result.items[0].openalex_id);
-  }, [tab, graph, loadingGraph, result.items.length]);
+    if (tab !== "graph" || !result.items.length) return;
+    const first = result.items[0].openalex_id;
+    if (graphView === "lineage") {
+      if (!lineage && !loadingLineage && lineageTried.current !== first) showLineage(first);
+      return;
+    }
+    if (!graph && !loadingGraph && graphTried.current !== first) showGraph(first);
+  }, [tab, graphView, lineage, loadingLineage, graph, loadingGraph, result.items.length]);
 
   async function search(page = 1, term = query, refresh = false) {
     if (!term.trim()) return;
@@ -98,13 +112,18 @@ export default function DiscoverPage() {
             research_gap: "", gap_context: {}, design_idea: "", novelty_id: null,
             design_version_id: null } : {}) });
       }
-      if (page === 1) { setTab("list"); setSelected(null); setGraph(null); }
+      if (page === 1) {
+        setTab("list"); setSelected(null);
+        setGraph(null); setLineage(null); setLineageCenter("");
+        lineageTried.current = null; graphTried.current = null;
+      }
     } catch (e) { setError(e instanceof Error ? e.message : "检索失败"); }
     finally { setBusy(false); }
   }
 
   async function showGraph(workId: string, refresh = false) {
     if (workId === center && graph && !refresh) return;
+    graphTried.current = workId;
     const version = ++graphVersion.current;
     setBusy(true); setBusyLabel("正在读取文献关系"); setLoadingGraph(true); setPendingCenter(workId); setError(""); setTab("graph");
     try {
@@ -113,6 +132,43 @@ export default function DiscoverPage() {
       setGraph(data); setCenter(workId); setSelected(data.nodes.find((item) => item.openalex_id === workId) || null);
     } catch (e) { if (graphVersion.current === version) setError(e instanceof Error ? e.message : "关系图读取失败"); }
     finally { if (graphVersion.current === version) { setBusy(false); setLoadingGraph(false); setPendingCenter(null); } }
+  }
+
+  async function showLineage(workId: string, refresh = false) {
+    if (workId === lineageCenter && lineage && !refresh) return;
+    lineageTried.current = workId;
+    const version = ++lineageVersion.current;
+    setBusy(true); setBusyLabel("正在读取文献谱系"); setLoadingLineage(true); setError(""); setTab("graph"); setGraphView("lineage");
+    try {
+      const data = await apiJson<LineageResponse>(`/api/research/lineage/${workId}${refresh ? "?refresh=true" : ""}`);
+      if (lineageVersion.current !== version) return;
+      setLineage(data); setLineageCenter(workId);
+      const centerNode = data.nodes.find((item) => item.openalex_id === workId);
+      setSelected(centerNode || data.center);
+    } catch (e) {
+      if (lineageVersion.current === version) setError(e instanceof Error ? e.message : "谱系图读取失败");
+    } finally {
+      if (lineageVersion.current === version) { setBusy(false); setLoadingLineage(false); }
+    }
+  }
+
+  function selectLineageNode(id: string) {
+    if (!lineage) return;
+    if (lineage.center.openalex_id === id) { setSelected(lineage.center); return; }
+    const node = lineage.nodes.find((item) => item.openalex_id === id);
+    if (node) setSelected(node);
+  }
+
+  function relationText(work: Work) {
+    const role = (work as Work & { role?: string }).role;
+    if (graphView === "lineage" && work.openalex_id === lineageCenter) return "当前中心论文";
+    if (role === "reference") return "中心论文的参考文献；关系来自 OpenAlex 引用元数据。";
+    if (role === "cited_by") return "引用了中心论文的后续研究；箭头方向表示「它引用了中心论文」。";
+    if (role === "related") return "OpenAlex 标记的相关研究；具体研究重合点需查看摘要或原文。";
+    if (graph?.links.find((item) => item.target === work.openalex_id)?.relation === "references") {
+      return "当前论文的参考文献；关系来自 OpenAlex 引用元数据。";
+    }
+    return "OpenAlex 标记的相关研究；具体研究重合点需查看摘要或原文。";
   }
 
   async function save(work: Work): Promise<Paper> {
@@ -142,7 +198,7 @@ export default function DiscoverPage() {
   async function setCore(work: Work) {
     const paper = await save(work);
     await updateWorkspace({ core_paper_id: paper.id, domain: work.domain || "general" });
-    await showGraph(work.openalex_id);
+    await showLineage(work.openalex_id);
   }
 
   async function upload(work: Work, event: ChangeEvent<HTMLInputElement>) {
@@ -194,7 +250,7 @@ export default function DiscoverPage() {
       <div className="workMeta"><span>{domains[work.domain || ""] || "跨学科"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${paper?.status === "parsed" ? "fulltext" : ""}`}>{paper?.status === "parsed" ? "已有全文" : "尚无全文"}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
       <h3>{work.title}</h3><p className="workAuthors">{work.authors.slice(0, 4).join(" · ") || "作者未提供"}</p>
       {work.abstract && <p className="workAbstract">{work.abstract}</p>}
-      <div className="workPrimaryActions"><button onClick={() => showGraph(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献关系 <span>↗</span></button>{paper?.status === "parsed" ? <Link href={`/read?paper=${paper.id}`}>打开全文精读 <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
+      <div className="workPrimaryActions"><button onClick={() => showLineage(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献谱系 <span>↗</span></button>{paper?.status === "parsed" ? <Link href={`/read?paper=${paper.id}`}>打开全文精读 <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
       <details className="workMore"><summary>保存、对比与其他操作 <span>＋</span></summary><div className="workActions"><button onClick={() => runWorkAction(work.openalex_id, () => setCore(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>设为研究中心</button><button onClick={() => runWorkAction(work.openalex_id, () => addToCompare(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>{workspace?.selected_paper_ids.includes(paper?.id || "") ? "已加入对比" : "加入对比"}</button>{paper ? <span className="workSaved">已存入论文库</span> : <button onClick={() => runWorkAction(work.openalex_id, () => save(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>保存检索记录</button>}{work.oa_pdf_url && paper?.status !== "parsed" && <button onClick={() => importOpenPdf(work)} disabled={busy} aria-busy={busy}>尝试获取开放 PDF</button>}</div></details>
       {paper?.status !== "parsed" && <small className="evidenceNote">当前仅展示检索信息与可用摘要；逐页精读需先取得全文。</small>}
     </article>;
@@ -206,12 +262,44 @@ export default function DiscoverPage() {
     <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("semantic"); window.localStorage.setItem("medread-search-mode", "semantic"); setResult({ items: [], count: 0, page: 0, mode: "semantic" }); }}>语义检索</button><button className={mode === "keyword" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("keyword"); window.localStorage.setItem("medread-search-mode", "keyword"); setResult({ items: [], count: 0, page: 0, mode: "keyword" }); }}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
     {!result.items.length && <div className="suggestions">试试：{["single cell RNA sequencing cancer", "transformer model efficiency", "perovskite solar cell stability", "education policy regression"].map((term) => <button key={term} onClick={() => { setQuery(term); search(1, term); }}>{term}</button>)}</div>}
     {error && <div className="researchError" role="alert">{error}</div>}
-    {busy && !loadingGraph && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
+    {busy && !loadingGraph && !loadingLineage && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
     {result.page === 0 && !busy && !error && <div className="discoverStarter"><div><span className="sectionLabel">HOW IT WORKS</span><h2>先检索，再决定读哪篇</h2><p>输入研究问题后，先查看摘要和论文关系；找到相关文献，再获取或上传 PDF 进入全文精读。</p></div><ol><li><b>01</b><span>检索主题</span></li><li><b>02</b><span>查看论文关系</span></li><li><b>03</b><span>取得 PDF 后精读</span></li></ol></div>}
-    {!!result.items.length && <><div className="resultBar"><div><strong>{result.count.toLocaleString()}</strong> 条相关记录 <span>· 当前展示 {result.items.length} 篇</span>{result.cached && <small className="cacheStamp"> · 缓存结果{result.fetched_at ? ` · ${new Date(result.fetched_at).toLocaleString("zh-CN")}` : ""}{result.stale ? " · 当前网络不可用" : ""}</small>}</div><div className="resultBarActions"><button className="quietButton" disabled={busy} aria-busy={busy} onClick={() => search(1, query, true)}>刷新结果</button><div className="tabBar" {...resultTabs.list} aria-label="结果视图"><button {...resultTabs.item("list")}>列表</button><button {...resultTabs.item("graph", () => { setTab("graph"); if (!graph) showGraph(result.items[0].openalex_id); })}>关系图谱</button></div></div></div>
+    {!!result.items.length && <><div className="resultBar"><div><strong>{result.count.toLocaleString()}</strong> 条相关记录 <span>· 当前展示 {result.items.length} 篇</span>{result.cached && <small className="cacheStamp"> · 缓存结果{result.fetched_at ? ` · ${new Date(result.fetched_at).toLocaleString("zh-CN")}` : ""}{result.stale ? " · 当前网络不可用" : ""}</small>}</div><div className="resultBarActions"><button className="quietButton" disabled={busy} aria-busy={busy} onClick={() => search(1, query, true)}>刷新结果</button><div className="tabBar" {...resultTabs.list} aria-label="结果视图"><button {...resultTabs.item("list")}>列表</button><button {...resultTabs.item("graph", () => {
+    setTab("graph");
+    const first = result.items[0].openalex_id;
+    if (graphView === "lineage") { if (!lineage) showLineage(first); return; }
+    if (!graph) showGraph(first);
+  })}>文献谱系</button></div></div></div>
       {tab === "list" ? <><div className="workList">{result.items.map((work) => workCard(work))}</div><button className="moreButton" disabled={busy || semanticExhausted || result.items.length >= result.count} aria-busy={busy} onClick={() => search(result.page + 1)}>{semanticExhausted ? "语义检索上限 50 篇，请改用关键词检索" : busy ? "加载中…" : "加载更多论文"}</button></> :
-      <div className="graphLayout"><div className="graphRegion">{graph?.cached && <p className="graphInstruction">缓存图谱 · {graph.fetched_at ? new Date(graph.fetched_at).toLocaleString("zh-CN") : ""}</p>}{graph && <CitationGraph works={graph.nodes} links={graph.links} center={center} selectedId={selected?.openalex_id} onSelect={(id) => { const work = graph.nodes.find((item) => item.openalex_id === id); if (work) setSelected(work); }} />}{loadingGraph && <div className="graphLoading" role="status"><div className="graphLoadingTrack"><i /></div><span>正在切换中心论文</span><strong>{graph?.nodes.find((item) => item.openalex_id === pendingCenter)?.title || result.items.find((item) => item.openalex_id === pendingCenter)?.title || "正在读取文献关系"}</strong><small>保留当前视图，关系数据就绪后展开新图谱</small></div>}</div><aside className="graphAside" key={center}>{selected ? <><div className="relationSummary"><strong>与中心论文的关系</strong><p>{selected.openalex_id === center ? "当前中心论文" : graph?.links.find((item) => item.target === selected.openalex_id)?.relation === "references" ? "当前论文的参考文献；关系来自 OpenAlex 引用元数据。" : "OpenAlex 标记的相关研究；具体研究重合点需查看摘要或原文。"}</p></div>{workCard(selected, true)}<button className="moreButton" onClick={() => showGraph(selected.openalex_id)} disabled={busy || selected.openalex_id === center} aria-busy={busy}>{busy ? "正在展开…" : selected.openalex_id === center ? "当前中心论文" : "以这篇论文为中心展开 →"}</button></> : <p>选择一篇论文查看摘要与可用操作。</p>}</aside></div>}
-    </>}
+      <>
+        <div className="graphViews" style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+          <div className="tabBar" role="tablist" aria-label="文献关系视图">
+            <button type="button" role="tab" aria-selected={graphView === "lineage"} className={graphView === "lineage" ? "active" : ""} onClick={() => setGraphView("lineage")}>谱系图</button>
+            <button type="button" role="tab" aria-selected={graphView === "constellation"} className={graphView === "constellation" ? "active" : ""} onClick={() => setGraphView("constellation")}>星座视图</button>
+          </div>
+        </div>
+        <div className="graphLayout"><div className="graphRegion">
+          {graphView === "lineage" ? (
+            <>
+              {lineage?.cached && <p className="graphInstruction">缓存的谱系数据 · {lineage.fetched_at ? new Date(lineage.fetched_at).toLocaleString("zh-CN") : ""}</p>}
+              <LineageGraph
+                data={lineage}
+                selectedId={selected?.openalex_id}
+                onSelect={selectLineageNode}
+                onRecenter={(id) => showLineage(id)}
+                loading={loadingLineage}
+              />
+            </>
+          ) : (
+            <>
+              {graph?.cached && <p className="graphInstruction">缓存图谱 · {graph.fetched_at ? new Date(graph.fetched_at).toLocaleString("zh-CN") : ""}</p>}
+              {graph && <CitationGraph works={graph.nodes} links={graph.links} center={center} selectedId={selected?.openalex_id} onSelect={(id) => { const work = graph.nodes.find((item) => item.openalex_id === id); if (work) setSelected(work); }} />}
+              {loadingGraph && <div className="graphLoading" role="status"><div className="graphLoadingTrack"><i /></div><span>正在切换中心论文</span><strong>{graph?.nodes.find((item) => item.openalex_id === pendingCenter)?.title || result.items.find((item) => item.openalex_id === pendingCenter)?.title || "正在读取文献关系"}</strong><small>保留当前视图，关系数据就绪后展开新图谱</small></div>}
+            </>
+          )}
+        </div><aside className="graphAside" key={`${graphView}-${graphView === "lineage" ? lineageCenter : center}`}>{selected ? <><div className="relationSummary"><strong>与中心论文的关系</strong><p>{relationText(selected)}</p></div>{workCard(selected, true)}<button className="moreButton" onClick={() => (graphView === "lineage" ? showLineage(selected.openalex_id) : showGraph(selected.openalex_id))} disabled={busy || selected.openalex_id === (graphView === "lineage" ? lineageCenter : center)} aria-busy={busy}>{busy ? "正在展开…" : selected.openalex_id === (graphView === "lineage" ? lineageCenter : center) ? "当前中心论文" : "以这篇论文为中心展开 →"}</button></> : <p>选择一篇论文查看摘要与可用操作。</p>}</aside></div>
+      </>}
+</>}
     {!!workspace?.selected_paper_ids.length && <div className="compareTray"><strong>待综合 · {workspace.selected_paper_ids.length} / 5</strong><div>{workspace.selected_paper_ids.map((id) => <span key={id} title={saved.find((item) => item.id === id)?.title || "已选论文"}>{saved.find((item) => item.id === id)?.title || "已选论文"}<button title="移出待综合论文" aria-label={`移出 ${saved.find((item) => item.id === id)?.title || "论文"}`} onClick={() => updateWorkspace({selected_paper_ids: workspace.selected_paper_ids.filter((item) => item !== id)}).catch((e) => setError(e.message))}>×</button></span>)}</div><Link href="/synthesis">开始综合 →</Link></div>}
   </main></>;
 }

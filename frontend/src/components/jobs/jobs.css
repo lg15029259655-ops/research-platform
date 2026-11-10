@@ -1,0 +1,135 @@
+/* 任务进度卡：样式沿用 tokens.css 的细边框 / 12px 圆角 / 克制阴影，不引入新设计语言。 */
+.jobProgress {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 14px 0;
+  padding: 13px 16px;
+  border: 1px solid var(--c-line-strong);
+  border-radius: var(--r-panel);
+  background: var(--c-surface);
+  color: var(--c-text-mid);
+  font-size: var(--fs-caption);
+  box-shadow: none;
+}
+
+/* 综合/设计页右下角悬浮：与旧的 .floatingBusy 位置一致，避免用户适应两套位置。 */
+.jobProgress.fixed {
+  position: fixed;
+  right: 24px;
+  bottom: 22px;
+  z-index: 90;
+  width: max-content;
+  max-width: min(430px, calc(100vw - 32px));
+  margin: 0;
+  box-shadow: var(--sh-2);
+  font-weight: 700;
+}
+
+.jobProgressHead {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.jobProgressHead strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-primary);
+  font-size: var(--fs-caption);
+}
+
+.jobProgressHead small {
+  flex: none;
+  color: var(--c-text-soft);
+  font-weight: 400;
+}
+
+.jobProgressPulse {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-primary);
+  animation: jobProgressPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes jobProgressPulse {
+  50% { opacity: .25; }
+}
+
+.jobProgressBar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--c-surface-3);
+}
+
+.jobProgressBar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--c-primary);
+  transition: width var(--dur-2) var(--ease);
+}
+
+.jobProgressMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--c-text-soft);
+  font-weight: 400;
+}
+
+.jobProgressCount {
+  flex: none;
+  color: var(--c-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.jobProgressHint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jobProgressCancel {
+  flex: none;
+  border: 1px solid var(--c-line-strong);
+  border-radius: var(--r-pill);
+  background: var(--c-primary-weak);
+  color: var(--c-primary);
+  padding: 5px 11px;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.jobProgressCancel:hover {
+  border-color: var(--c-primary-line);
+}
+
+.jobProgressCancel:focus-visible {
+  outline: 2px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 680px) {
+  .jobProgress.fixed {
+    left: 16px;
+    right: 16px;
+    width: auto;
+    max-width: none;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jobProgressPulse { animation: none; opacity: .6; }
+  .jobProgressBar i { transition: none; }
+}

@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import ResearchNav from "@/components/ResearchNav";
-import StepLoading from "@/components/StepLoading";
-import { apiJson, postJson } from "@/lib/api";
+import JobProgress from "@/components/jobs/JobProgress";
+import { apiJson } from "@/lib/api";
+import { submitJob, watchJob, type JobProgress as JobProgressData } from "@/lib/jobs";
 import { updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 import EvidenceMap, { type Claim } from "@/components/EvidenceMap";
@@ -29,7 +30,11 @@ export default function SynthesisPage() {
   const [showSelection, setShowSelection] = useState(true);
   const [tab, setTab] = useState<"matrix" | "evidence" | "gaps">("matrix");
   const [busy, setBusy] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
+  // 慢任务改成后台 job：阶段与进度来自 SSE，开始时间交给 JobProgress 自己算"已等待 N 秒"。
+  const [jobStage, setJobStage] = useState("");
+  const [jobProgress, setJobProgress] = useState<JobProgressData | null>(null);
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const compareAbort = useRef<AbortController | null>(null);
   const [error, setError] = useState("");
   const [selectedCell, setSelectedCell] = useState<{cell: Cell; dimension: string} | null>(null);
   const [activeDimension, setActiveDimension] = useState(0);
@@ -40,11 +45,8 @@ export default function SynthesisPage() {
   const pendingSelections = useRef(0);
   const { workspace, refresh } = useWorkspace();
   const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
-  useEffect(() => {
-    if (!busy) { setElapsed(0); return; }
-    const timer = window.setInterval(() => setElapsed((seconds) => seconds + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [busy]);
+  // 离开页面时取消后台综合任务：用户不会再回来看的任务不该继续占用模型配额。
+  useEffect(() => () => { compareAbort.current?.abort(); }, []);
   useEffect(() => {
     apiJson<Paper[]>("/api/papers").then(setPapers).catch(() => setError("无法读取论文库"));
   }, []);
@@ -74,10 +76,32 @@ export default function SynthesisPage() {
     if (artifact && !artifact.payload.stale_after_reparse && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
-    setBusy(true); setError("");
-    try { await selectionWrites.current; const result = await postJson<Artifact>("/api/research/compare", { paper_ids: selected }); focusNewResult.current = true; setArtifact(result); setActiveDimension(0); setShowSelection(false); setTab("matrix"); await refresh(); }
-    catch (e) { setError(e instanceof Error ? e.message : "综合分析失败"); }
-    finally { setBusy(false); }
+    // 连点会各自建任务；先取消上一次再提交，避免两个结果互相覆盖。
+    compareAbort.current?.abort();
+    const controller = new AbortController();
+    compareAbort.current = controller;
+    setBusy(true); setError(""); setJobStage("正在提交综合任务"); setJobStartedAt(Date.now()); setJobProgress(null);
+    try {
+      await selectionWrites.current;
+      const job = await submitJob("compare", { paper_ids: selected });
+      const snapshot = await watchJob(job.id, {
+        onStage: (_stage, label) => setJobStage(label),
+        onProgress: (progress) => setJobProgress(progress),
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (snapshot.status !== "done") throw new Error(snapshot.error?.message || "综合分析未完成，请重试");
+      const result = snapshot.result as Artifact | null;
+      if (!result?.payload) throw new Error("综合分析没有返回可用结果");
+      focusNewResult.current = true;
+      setArtifact(result); setActiveDimension(0); setShowSelection(false); setTab("matrix");
+      await refresh();
+    } catch (e) {
+      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "综合分析失败");
+    } finally {
+      if (compareAbort.current === controller) {
+        compareAbort.current = null; setBusy(false); setJobStartedAt(null); setJobProgress(null); setJobStage("");
+      }
+    }
   }
   async function useQuestion(question: string) {
     try {
@@ -113,8 +137,8 @@ export default function SynthesisPage() {
     </section>
     {!data && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div><div className="startGuideSteps"><div><b>01</b><strong>上传全文</strong><small>保留原始 PDF 与页码</small></div><div><b>02</b><strong>选择 2–5 篇</strong><small>使用已解析的论文</small></div><div><b>03</b><strong>核对综合结果</strong><small>逐条返回原文验证</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
-    {busy && <StepLoading title="正在综合全文证据" steps={["读取已解析的论文片段", "比较研究问题与结果", "整理证据关系和研究空白"]} />}
-    {busy && <div className="floatingBusy" role="status"><span className="loadingPulse"/>已等待 {elapsed} 秒；超过等待上限会提示缩小范围</div>}
+    {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续，回来还能看到结果。 */}
+    <JobProgress variant="fixed" title="正在综合全文证据" stageLabel={jobStage} progress={jobProgress} startedAt={jobStartedAt} onCancel={() => compareAbort.current?.abort()} />
     {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
       {data.extraction_warnings?.map((warning) => <p className="miniNotice" role="note" key={warning}>{warning}</p>)}
       {data.stale_after_reparse && <p className="miniNotice" role="note">部分论文已重新识别，当前为旧版综合结果，引用位置可能已变化，请重新综合并核对原文。</p>}

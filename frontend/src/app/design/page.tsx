@@ -4,13 +4,14 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import ResearchNav from "@/components/ResearchNav";
+import JobProgress from "@/components/jobs/JobProgress";
 import { apiJson, postJson } from "@/lib/api";
+import { submitJob, watchJob, type JobProgress as JobProgressData } from "@/lib/jobs";
 import { useWorkspace } from "@/lib/workspace";
 import { updateWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 import type { SimilarPaper } from "@/components/NoveltySpace";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
-import StepLoading from "@/components/StepLoading";
 import "../research.css";
 import "../studio.css";
 
@@ -38,7 +39,11 @@ export default function DesignPage() {
   const [design, setDesign] = useState<Design | null>(null);
   const [tab, setTab] = useState<"novelty" | "canvas">("novelty");
   const [busy, setBusy] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
+  // 新颖性/设计都是慢调用，统一走后台任务；阶段与进度由 JobProgress 呈现。
+  const [jobStage, setJobStage] = useState("");
+  const [jobProgress, setJobProgress] = useState<JobProgressData | null>(null);
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const activeJobAbort = useRef<AbortController | null>(null);
   const [error, setError] = useState("");
   const [versions, setVersions] = useState<DesignVersion[]>([]);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
@@ -92,31 +97,75 @@ export default function DesignPage() {
   useEffect(() => {
     if (tab === "novelty" && !shownNovelty && shownDesign && noveltyReady && !busy && !error) setTab("canvas");
   }, [shownNovelty, shownDesign, tab, noveltyReady, busy, error]);
-  useEffect(() => {
-    if (!busy) { setElapsed(0); return; }
-    const timer = window.setInterval(() => setElapsed((seconds) => seconds + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [busy]);
+  // 离开页面时取消后台任务：用户不会再回来看的任务不该继续占用模型配额。
+  useEffect(() => () => { activeJobAbort.current?.abort(); }, []);
   async function scan(force = false) {
     if (!force && novelty?.query.trim() === idea.trim()) { setTab("novelty"); return; }
     const previous = novelty;
+    // 上一个任务还没结束时先取消，避免两个结果互相覆盖。
+    activeJobAbort.current?.abort();
+    const controller = new AbortController();
+    activeJobAbort.current = controller;
     setNovelty(null); setTab("novelty");
-    setBusy(true); setError("");
-    try { const artifact = await postJson<Artifact<Novelty>>("/api/research/novelty", { query: idea.trim() }); setNovelty(artifact.payload); setTab("novelty"); await refresh(); }
-    catch (e) { setNovelty(previous?.query.trim() === idea.trim() ? previous : null); setError(e instanceof Error ? e.message : "检索失败"); }
-    finally { setBusy(false); }
+    setBusy(true); setError(""); setJobStage("正在提交检索任务"); setJobStartedAt(Date.now()); setJobProgress(null);
+    try {
+      const job = await submitJob("novelty", { query: idea.trim() });
+      const snapshot = await watchJob(job.id, {
+        onStage: (_stage, label) => setJobStage(label),
+        onProgress: (progress) => setJobProgress(progress),
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (snapshot.status !== "done") throw new Error(snapshot.error?.message || "检索失败，请稍后重试");
+      const artifact = snapshot.result as Artifact<Novelty> | null;
+      if (!artifact?.payload) throw new Error("新颖性扫描没有返回可用结果");
+      setNovelty(artifact.payload); setTab("novelty"); await refresh();
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        setNovelty(previous?.query.trim() === idea.trim() ? previous : null);
+        setError(e instanceof Error ? e.message : "检索失败");
+      }
+    } finally {
+      if (activeJobAbort.current === controller) {
+        activeJobAbort.current = null; setBusy(false); setJobStartedAt(null); setJobProgress(null); setJobStage("");
+      }
+    }
   }
   async function generate(action = "generate", nodeId?: string, instruction = "", force = false) {
     if (action === "generate" && sameDesignInput && !force) { setTab("canvas"); return; }
     const previous = design;
     if (action === "generate") { setDesign(null); setTab("canvas"); }
-    setBusy(true); setError("");
-    try { const artifact = await postJson<Artifact<Design> & {version?: DesignVersion}>("/api/research/design", { goal: idea.trim(), constraints, action,
-      current_design: action === "generate" ? null : design, node_id: nodeId, instruction, regenerate: force }); setDesign(artifact.payload); setTab("canvas");
-      if (artifact.version) { setVersions((items) => [artifact.version!, ...items]); setCurrentVersion(artifact.version.version_id); }
-      await refresh(); }
-    catch (e) { setDesign(previous?.goal.trim() === idea.trim() ? previous : null); setError(e instanceof Error ? e.message : "方案生成失败"); }
-    finally { setBusy(false); }
+    activeJobAbort.current?.abort();
+    const controller = new AbortController();
+    activeJobAbort.current = controller;
+    setBusy(true); setError(""); setJobStage("正在提交设计任务"); setJobStartedAt(Date.now()); setJobProgress(null);
+    try {
+      const job = await submitJob("design", {
+        goal: idea.trim(), constraints, action,
+        current_design: action === "generate" ? null : design,
+        node_id: nodeId, instruction, regenerate: force,
+      });
+      const snapshot = await watchJob(job.id, {
+        onStage: (_stage, label) => setJobStage(label),
+        onProgress: (progress) => setJobProgress(progress),
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (snapshot.status !== "done") throw new Error(snapshot.error?.message || "方案生成失败，请重试");
+      const artifact = snapshot.result as (Artifact<Design> & { version?: DesignVersion }) | null;
+      if (!artifact?.payload) throw new Error("设计任务没有返回可用结果");
+      setDesign(artifact.payload); setTab("canvas");
+      const version = artifact.version;
+      if (version) { setVersions((items) => [version, ...items]); setCurrentVersion(version.version_id); }
+      await refresh();
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        setDesign(previous?.goal.trim() === idea.trim() ? previous : null);
+        setError(e instanceof Error ? e.message : "方案生成失败");
+      }
+    } finally {
+      if (activeJobAbort.current === controller) {
+        activeJobAbort.current = null; setBusy(false); setJobStartedAt(null); setJobProgress(null); setJobStage("");
+      }
+    }
   }
   async function restoreVersion(version: DesignVersion) {
     setBusy(true); setError("");
@@ -165,8 +214,8 @@ export default function DesignPage() {
     <section className="sectionBox"><label className="fieldLabel" htmlFor="idea">我的研究想法</label><textarea id="idea" className="largeTextarea" value={idea} onChange={(e) => { setIdea(e.target.value); setError(""); setTab("novelty"); }} placeholder="例如：用更低成本的单细胞方法识别治疗前肿瘤耐药亚群" /><label className="fieldLabel" htmlFor="constraints">约束条件（可选）</label><input id="constraints" className="largeInput" value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="经费、样本量、数据来源、周期等" /><div className="actionRow"><button className="primaryButton" disabled={busy || idea.trim().length < 5} aria-busy={busy} onClick={() => scan()}>{busy ? "分析中…" : "检索相似研究"}</button><button disabled={busy || idea.trim().length < 5} aria-busy={busy} onClick={() => generate()}>生成研究设计 →</button></div></section>
     {!idea.trim() && !shownNovelty && !shownDesign && !busy && <section className="startGuide" aria-label="科研设计使用引导"><div className="startGuideIntro"><span>START HERE</span><h2>把一个想法，推进为可核验的研究路径。</h2><p>先填入自己的研究问题。你可以检索相似研究，也可以直接生成设计草稿；两项结果会清楚标注证据范围。</p><div className="sampleIdeas"><b>试一个示例</b>{["如何降低肿瘤单细胞测序的样本与计算成本？", "如何验证新型电池材料在高温下的长期稳定性？", "如何评估教育干预对不同地区学生的长期影响？"].map((sample) => <button key={sample} onClick={() => { setIdea(sample); document.getElementById("idea")?.focus(); }}>{sample} ↗</button>)}</div></div><div className="startGuideSteps"><div><b>01</b><strong>提出问题</strong><small>明确对象、变量与目标</small></div><div><b>02</b><strong>核对相似研究</strong><small>基于摘要做定性扫描</small></div><div><b>03</b><strong>搭建设计草稿</strong><small>检查对照、读数与假设</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
-    {busy && <StepLoading title="正在处理研究设计" steps={["读取研究想法和约束", "检索相关摘要或调整结构化设计", "组织节点与证据边界"]} />}
-    {busy && <div className="floatingBusy" role="status"><span className="loadingPulse"/>已等待 {elapsed} 秒；超时会返回可用结果或明确提示</div>}
+    {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续。 */}
+    <JobProgress variant="fixed" title="正在处理研究设计" stageLabel={jobStage} progress={jobProgress} startedAt={jobStartedAt} onCancel={() => activeJobAbort.current?.abort()} />
     {(shownNovelty || shownDesign) && <div className="resultBar"><strong>工作区</strong><div className="tabBar" {...workspaceTabs.list} aria-label="工作区视图"><button {...workspaceTabs.item("novelty")}>新颖性扫描</button><button {...workspaceTabs.item("canvas")}>设计沙盘</button></div></div>}
     {/* D10：某个 tab 无数据时给出空态，不留白。 */}
     {tab === "novelty" && !shownNovelty && !!idea.trim() && !busy && <div className="miniNotice">当前想法「{idea.trim()}」尚无检索结果。请点击「检索相似研究」；若检索失败，请稍后重试。</div>}
