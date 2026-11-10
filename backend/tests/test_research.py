@@ -566,6 +566,24 @@ def test_structured_task_retries_transient_model_connection(monkeypatch):
     assert result["similarity_level"] == "低"
 
 
+def test_design_uses_fast_structured_mode(monkeypatch):
+    import asyncio
+    import json
+    from app.services.research_ai import run_task
+
+    calls = []
+    async def fake_completion(_messages, *, fast_structured=False):
+        calls.append(fast_structured)
+        yield json.dumps({"goal": "Test", "change_summary": "Draft", "constraints": [],
+            "nodes": [{"id": "N1", "label": "Hypothesis", "type": "question"}],
+            "edges": [], "controls": [], "readouts": []})
+
+    monkeypatch.setattr("app.services.research_ai.stream_completion", fake_completion)
+    result = asyncio.run(run_task("experiment_design", {"goal": "Test"}))
+    assert calls == [True]
+    assert result["nodes"][0]["id"] == "N1"
+
+
 def test_comparison_requires_direct_result_refs_for_stance(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
 

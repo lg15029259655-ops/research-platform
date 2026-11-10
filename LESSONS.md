@@ -1,5 +1,19 @@
 # Project lessons
 
+## 2026-11-09 — Evidence loss and page attribution in Results
+
+- Status: validated with synthetic multi-section and multi-page PDFs; representative publisher PDFs still need manual comparison.
+- Evidence: the parser skipped every Results section after the first, and every 5,500-character result chunk inherited the first page of the entire section.
+- Action: retain each Results section and calculate the page range of each chunk from its extracted page lines. Preserve text without standard headings as explicitly unclassified page units, excluding references.
+- Boundary: page ranges track extracted text, not semantic correctness or reading order in complex columns; no OCR is provided.
+
+## 2026-11-09 — Design generation timeout
+
+- Status: validated once through the local endpoint using an isolated synthetic request; model quality and production latency remain unverified.
+- Evidence: Qwen3.7 Flash with default reasoning exceeded the old 18-second design timeout; disabling thinking returned a structured seven-node result in 14.6 seconds, and a separate endpoint request returned six nodes in 17 seconds without the generic fallback.
+- Action: use fast structured mode for this model's design task, allow 35 seconds, and retain explicit fallback behavior on failure.
+- Boundary: timings vary, and structural validity is not scientific validation. Other models retain their existing configuration.
+
 ## 2026-11-09 — Reprocessing must preserve prior work
 
 - Status: validated in local automated tests and by read-only parsing of seven existing PDFs; accuracy across publishers remains unverified.

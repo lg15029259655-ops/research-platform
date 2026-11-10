@@ -60,6 +60,73 @@ def test_long_review_recovers_unclassified_body_per_page(tmp_path):
     assert "未分类" in parsed.warning
 
 
+def test_repeated_results_sections_keep_all_evidence(tmp_path):
+    doc = pymupdf.open()
+    for number in (1, 2):
+        page = doc.new_page()
+        for index, line in enumerate(("Results", f"Distinct finding number {number}.",
+                                      f"Figure {number}. Evidence for finding {number}.")):
+            page.insert_text((50, 60 + index * 25), line, fontsize=12)
+    path = tmp_path / "multiple-results.pdf"
+    path.write_bytes(doc.tobytes())
+    doc.close()
+    units = parse_pdf(path).units
+    results = [item for item in units if item.kind == "RESULTS"]
+    assert len(results) == 2
+    assert "finding number 1" in results[0].text
+    assert "finding number 2" in results[1].text
+    assert [item.heading for item in units if item.kind == "FIGURE"] == ["Figure 1", "Figure 2"]
+
+
+def test_results_chunks_preserve_page_ranges():
+    from app.services.pdf_service import ParsedUnit, result_text_units
+
+    pages = {1: ["a" * 3000], 2: ["b" * 3000], 3: ["c" * 3000]}
+    section = ParsedUnit("RESULTS", "Results", "".join(line + "\n" for lines in pages.values() for line in lines), 1, 3)
+    chunks = result_text_units(section, pages)
+    assert [(chunk.page_start, chunk.page_end) for chunk in chunks] == [(1, 2), (2, 3)]
+    assert chunks[1].text.startswith("b")
+
+
+def test_paper_without_standard_headings_keeps_readable_pages(tmp_path):
+    doc = pymupdf.open()
+    for number in (1, 2):
+        page = doc.new_page()
+        for index in range(22):
+            page.insert_text((40, 40 + index * 18), f"Page {number} reports a measured observation in this study {index}.", fontsize=9)
+    page = doc.new_page()
+    page.insert_text((40, 40), "References", fontsize=10)
+    for index in range(22):
+        page.insert_text((40, 60 + index * 18), f"Reference entry that must not be treated as body {index}.", fontsize=9)
+    path = tmp_path / "no-standard-headings.pdf"
+    path.write_bytes(doc.tobytes())
+    doc.close()
+    parsed = parse_pdf(path)
+    body = [unit for unit in parsed.units if unit.kind == "BODY"]
+    assert [unit.page_start for unit in body] == [1, 2]
+    assert all("Reference entry" not in unit.text for unit in body)
+    assert "未分类" in parsed.warning
+
+
+def test_long_introduction_fallback_keeps_page_order_before_conclusion(tmp_path):
+    doc = pymupdf.open()
+    for number in range(1, 5):
+        page = doc.new_page()
+        if number == 1:
+            page.insert_text((40, 25), "Introduction", fontsize=10)
+        for index in range(48):
+            page.insert_text((40, 45 + index * 12), f"Page {number} reports evidence and observations from this study {index}.", fontsize=8)
+    page = doc.new_page()
+    page.insert_text((40, 25), "Conclusion", fontsize=10)
+    page.insert_text((40, 45), "The conclusion requires further validation.", fontsize=9)
+    path = tmp_path / "long-introduction.pdf"
+    path.write_bytes(doc.tobytes())
+    doc.close()
+    units = parse_pdf(path).units
+    assert [unit.page_start for unit in units if unit.kind == "BODY"] == [1, 2, 3, 4]
+    assert next(i for i, unit in enumerate(units) if unit.kind == "CONCLUSION") > max(i for i, unit in enumerate(units) if unit.kind == "BODY")
+
+
 def upload(client: TestClient, title: str, **kwargs) -> dict:
     response = client.post("/api/papers", files={"file": ("unrelated-name.pdf", make_pdf(title, **kwargs), "application/pdf")})
     assert response.status_code == 200, response.text

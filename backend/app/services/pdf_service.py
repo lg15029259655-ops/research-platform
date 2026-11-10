@@ -94,20 +94,38 @@ def extract_unlabeled_abstract(page) -> str | None:
     return None
 
 
-def result_text_units(section: ParsedUnit) -> list[ParsedUnit]:
+def result_text_units(section: ParsedUnit, page_groups: dict[int, list[str]] | None = None) -> list[ParsedUnit]:
     lines = section.text.splitlines()
+    page_ends: list[tuple[int, int]] = []
+    total = 0
+    for page, page_lines in (page_groups or {}).items():
+        total += sum(len(line) + 1 for line in page_lines)
+        page_ends.append((total, page))
+
+    def page_at(offset: int) -> int | None:
+        return next((page for end, page in page_ends if offset < end), section.page_end)
+
+    def span(start: int, end: int) -> tuple[int | None, int | None]:
+        if not page_ends:
+            return section.page_start, section.page_end
+        return page_at(start), page_at(max(start, end - 1))
+
     headings = [(index, line) for index, line in enumerate(lines) if RESULT_SUBHEADING.fullmatch(line.strip())]
     if headings:
         parts: list[ParsedUnit] = []
+        offsets = [0]
+        for line in lines:
+            offsets.append(offsets[-1] + len(line) + 1)
         if headings[0][0] > 0:
-            parts.append(ParsedUnit("RESULTS", "Results 概览", "\n".join(lines[:headings[0][0]]), section.page_start, section.page_end))
+            end = headings[0][0]
+            parts.append(ParsedUnit("RESULTS", "Results 概览", "\n".join(lines[:end]), *span(0, offsets[end])))
         for number, (start, heading) in enumerate(headings):
             end = headings[number + 1][0] if number + 1 < len(headings) else len(lines)
-            parts.append(ParsedUnit("RESULTS", heading, "\n".join(lines[start + 1:end]), section.page_start, section.page_end))
+            parts.append(ParsedUnit("RESULTS", heading, "\n".join(lines[start + 1:end]), *span(offsets[start], offsets[end])))
         return parts
     chunks = [section.text[i:i + 5500] for i in range(0, len(section.text), 5500)] or [""]
     return [ParsedUnit("RESULTS", section.heading if len(chunks) == 1 else f"{section.heading} · {number}/{len(chunks)}",
-                       chunk, section.page_start, section.page_end) for number, chunk in enumerate(chunks, 1)]
+                       chunk, *span((number - 1) * 5500, (number - 1) * 5500 + len(chunk))) for number, chunk in enumerate(chunks, 1)]
 
 
 def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -> ParsedPDF:
@@ -180,7 +198,7 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
         recovered_body = False
         normalized_sections: list[ParsedUnit] = []
         for section in sections:
-            if (section.kind == "ABSTRACT" and len(section.text) >= 10000
+            if (section.kind in {"ABSTRACT", "INTRODUCTION"} and len(section.text) >= 10000
                     and section.page_start and section.page_end
                     and section.page_end - section.page_start >= 2):
                 recovered_body = True
@@ -191,24 +209,44 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
             else:
                 normalized_sections.append(section)
         sections = normalized_sections
+        # Some papers use descriptive headings rather than IMRaD labels and
+        # have no explicit abstract heading at all. Preserve readable pages
+        # rather than returning only a title; keep the text unclassified.
+        if not sections:
+            body_pages: list[ParsedUnit] = []
+            reached_references = False
+            for page_number, lines in page_lines:
+                captured: list[str] = []
+                for line in lines:
+                    if page_number > 1 and line.strip().lower() in {"references", "bibliography", "参考文献"}:
+                        reached_references = True
+                        break
+                    captured.append(line)
+                text = "\n".join(captured).strip()
+                if len(text) >= 200:
+                    body_pages.append(ParsedUnit("BODY", f"未分类原文 · 第 {page_number} 页", text, page_number, page_number))
+                if reached_references:
+                    break
+            if len(body_pages) >= 2:
+                sections.extend(body_pages)
+                recovered_body = True
         if not any(item.kind == "ABSTRACT" for item in sections):
             recovered = extract_unlabeled_abstract(document[0])
             if recovered:
                 sections.append(ParsedUnit("ABSTRACT", "摘要（首页正文块）", recovered, 1, 1))
         stage("figures")
         order = {"ABSTRACT": 0, "INTRODUCTION": 1, "METHODS": 2, "RESULTS": 3, "DISCUSSION": 4, "CONCLUSION": 5, "BODY": 6}
-        sections.sort(key=lambda item: (order[item.kind], item.page_start or 0))
+        sections.sort(key=lambda item: (item.page_start or 0, order[item.kind]))
         stage("manifest")
         results_added = False
         for section in sections:
             if section.kind != "RESULTS":
                 units.append(section)
                 continue
-            if results_added:
-                continue
+            first_results_section = not results_added
             results_added = True
             # Read figures first, but do not discard tables or non-visual Results.
-            visual_units = list(figures.values()) + list(tables.values())
+            visual_units = (list(figures.values()) + list(tables.values())) if first_results_section else []
             if visual_units:
                 for item in visual_units:
                     label = item.heading.lower()
@@ -226,7 +264,7 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
                     item.text = f"图注/表注：{item.text}\nResults 相关原文：\n{evidence or '正文中未定位到该图的明确引用。'}\n同页邻近文字：\n{nearby}\n表格页面文字：\n{table_text}"[:7500]
                     units.append(item)
             if section.text.strip():
-                units.extend(result_text_units(section))
+                units.extend(result_text_units(section, section_pages.get(id(section))))
         if not results_added:
             units.extend(list(figures.values()) + list(tables.values()))
         units.append(ParsedUnit("RECAP", "全文复盘", "", None, None))

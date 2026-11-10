@@ -36,8 +36,8 @@ async def stream_completion(messages: list[dict[str, Any]], *, vision: bool = Fa
     key, base_url, model = model_config(vision)
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     body = {"model": model, "messages": messages, "stream": True}
-    # Qwen 3.7 Flash enables thinking by default. Structured comparison is
-    # latency-sensitive; keep other models and reading/design tasks unchanged.
+    # Qwen 3.7 Flash enables thinking by default. Comparison and design use
+    # a latency-sensitive structured mode; other models and reading stay unchanged.
     if fast_structured and model.lower().startswith("qwen3.7-flash"):
         body["enable_thinking"] = False
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=20)) as client:

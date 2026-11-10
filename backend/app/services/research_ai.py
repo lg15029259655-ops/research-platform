@@ -174,7 +174,7 @@ async def run_task(name: str, context: dict[str, Any]) -> dict[str, Any]:
         for service_attempt in range(3):
             output = ""
             try:
-                stream = stream_completion(messages, fast_structured=True) if name == "paper_compare" else stream_completion(messages)
+                stream = stream_completion(messages, fast_structured=True) if name in {"paper_compare", "experiment_design"} else stream_completion(messages)
                 async for chunk in stream:
                     output += chunk
                     if len(output) > 80000:

@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/research")
 logger = logging.getLogger(__name__)
 Owner = Depends(current_owner)
 NOVELTY_AI_TIMEOUT = 15
-DESIGN_AI_TIMEOUT = 18
+DESIGN_AI_TIMEOUT = 35
 FULLTEXT_AI_TIMEOUT = 35
 # Multi-paper structured output and JSON repair take longer than one-paper X-Ray.
 # Keep the total deadline below the deployed proxy's 300-second limit.
