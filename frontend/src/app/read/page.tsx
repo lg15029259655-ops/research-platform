@@ -18,7 +18,7 @@ import "../studio.css";
 const PdfPane = dynamic(() => import("@/components/PdfPane"), { ssr: false });
 type Unit = { id: string; position: number; kind: string; heading: string; page_start: number | null; actual_pdf_page?: number | null; caption?: string | null; evidence_snippet?: string | null };
 type Message = { id: string; role: string; content: string; reading_unit_id: string | null; visual_verified?: boolean };
-type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number };
+type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean };
 type XRay = { question: string; domain: string; study_type: string; limitations: string[]; stages: { key: string; label: string; summary: string; unit_ids: string[] }[] };
 type Action = "START" | "NEXT" | "NAVIGATE" | "FIGURE" | "WHY_DESIGN" | "EVIDENCE" | "QUESTION";
 type Mode = "split" | "pdf" | "ai";
@@ -286,6 +286,8 @@ export default function ReadPage() {
   // 原先写死的 "hhs public access" 只是某一篇种子论文的标题，换一篇空解析的论文就不提示了。
   const needsReparse = !!paper && paper.status === "parsed"
     && (units.length === 0 || !!paper.warning?.includes("未可靠识别论文章节"));
+  const needsReplacement = !!paper && paper.status === "parsed" &&
+    (paper.file_available === false || !!paper.warning?.startsWith("重新解析失败"));
   const next = units[current ? current.position + 1 : 0];
   const figures = units.filter((unit) => unit.kind === "FIGURE");
   const figureIndex = current?.kind === "FIGURE" ? figures.findIndex((unit) => unit.id === current.id) + 1 : 0;
@@ -303,6 +305,7 @@ export default function ReadPage() {
       {error && <div className="alert" role="alert">{error}</div>}
       {parseStage && paper && <div className="parseNotice" role="status">{parseStage}</div>}
       {paper?.warning && <div className="alert" role="status">{paper.warning}</div>}
+      {needsReplacement && <div className="alert" role="status">当前 PDF 文件无法读取。重新上传后会保留旧精读记录和综合结果，但需要重新核对其与原文的对应关系。<label className="quietButton" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>重新上传 PDF<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label></div>}
       {needsReparse && <div className="alert" role="status">这篇 PDF 的标题或章节可能识别错误，会影响 AI 讲解与文献对比。<button type="button" onClick={reparse} disabled={pending} aria-busy={pending} className="quietButton">重新识别当前 PDF</button></div>}
       {!paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || (openingPaper ? "正在打开论文…" : "让阅读从原文开始")}</h2><p>上传本地 PDF 后，左侧查看原文，右侧按科学问题和证据链逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> : readerTab === "xray" ?

@@ -163,6 +163,112 @@ def test_progress_poll_is_lightweight_and_owner_scoped(monkeypatch, tmp_path):
                 db.commit()
 
 
+def test_missing_pdf_can_be_reattached_without_erasing_history(monkeypatch, tmp_path):
+    from app.research import save_artifact
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        owner = None
+        try:
+            paper = upload(client, "Missing source paper")
+            owner = owner_of(client)
+            other_paper = upload(client, "Readable comparison paper")
+            artifact = save_artifact(owner, "paper_compare", [paper["id"]], {"dimensions": []})
+            with SessionLocal() as db:
+                stored = db.get(Paper, paper["id"])
+                file_path = Path(stored.local_file_path)
+                db.add(Message(id="22222222-2222-4222-8222-222222222222", paper_id=paper["id"],
+                    role="assistant", content="Previous explanation", reading_unit_id=paper["units"][0]["id"]))
+                db.commit()
+            file_path.unlink()  # Disposable test fixture, not a user document.
+            assert client.get(f"/api/papers/{paper['id']}/file").status_code == 404
+            assert client.get(f"/api/papers/{paper['id']}/search", params={"q": "study"}).status_code == 404
+            assert client.get(f"/api/papers/{paper['id']}").json()["file_available"] is False
+            comparison = client.post("/api/research/compare", json={"paper_ids": [paper["id"], other_paper["id"]]})
+            assert comparison.status_code == 422
+            assert "PDF 文件不可用" in comparison.json()["detail"]
+            invalid = client.post(f"/api/papers/{paper['id']}/attach", files={"file":
+                ("invalid.pdf", b"%PDF-invalid", "application/pdf")})
+            assert invalid.status_code == 200
+            failed = client.get(f"/api/papers/{paper['id']}").json()
+            assert failed["status"] == "parsed" and failed["file_available"] is False
+            assert failed["messages"][0]["content"] == "Previous explanation"
+            assert "重新解析失败" in failed["warning"]
+            assert client.get(f"/api/papers/{paper['id']}/search", params={"q": "study"}).status_code == 422
+            assert client.post("/api/research/compare", json={"paper_ids": [paper["id"], other_paper["id"]]}).status_code == 422
+            replacement = client.post(f"/api/papers/{paper['id']}/attach", files={"file":
+                ("replacement.pdf", make_pdf("Unrelated oncology investigation"), "application/pdf")})
+            assert replacement.status_code == 200
+            after = client.get(f"/api/papers/{paper['id']}").json()
+            assert after["status"] == "parsed" and after["file_available"] is True
+            assert "标题与原论文记录可能不一致" in after["warning"]
+            assert after["messages"][0]["content"] == "Previous explanation"
+            assert after["messages"][0]["reading_unit_id"] is None
+            saved = client.get("/api/research/artifacts", params={"kind": "paper_compare", "artifact_id": artifact["id"]}).json()
+            assert saved[0]["payload"]["stale_after_reparse"] is True
+        finally:
+            if owner:
+                with SessionLocal() as db:
+                    user = db.get(User, owner)
+                    if user:
+                        db.delete(user)
+                        db.commit()
+
+
+def test_chat_waits_for_reparse_to_finish(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        owner = None
+        try:
+            paper = upload(client, "Parsing in progress paper")
+            owner = owner_of(client)
+            with SessionLocal() as db:
+                db.get(Paper, paper["id"]).status = "reading"
+                db.commit()
+            response = client.post(f"/api/papers/{paper['id']}/chat", json={"action": "START"})
+            assert response.status_code == 409
+            assert "解析" in response.json()["detail"]
+        finally:
+            if owner:
+                with SessionLocal() as db:
+                    user = db.get(User, owner)
+                    if user:
+                        db.delete(user)
+                        db.commit()
+
+
+def test_pdf_search_stops_after_thirty_matches(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        owner = None
+        try:
+            paper = upload(client, "Search limit paper")
+            owner = owner_of(client)
+            pages_read = []
+
+            class FakePage:
+                def get_text(self, _format):
+                    pages_read.append(1)
+                    return "A matching sentence appears on this page."
+
+            class FakeDocument:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def __iter__(self): return iter(FakePage() for _ in range(100))
+
+            monkeypatch.setattr("app.papers.pymupdf.open", lambda *_args, **_kwargs: FakeDocument())
+            response = client.get(f"/api/papers/{paper['id']}/search", params={"q": "matching"})
+            assert response.status_code == 200
+            assert len(response.json()) == 30
+            assert len(pages_read) == 30
+        finally:
+            if owner:
+                with SessionLocal() as db:
+                    user = db.get(User, owner)
+                    if user:
+                        db.delete(user)
+                        db.commit()
+
+
 def test_readable_short_pdf_is_not_misreported_as_scanned(tmp_path):
     path = tmp_path / "readable-short.pdf"
     path.write_bytes(make_pdf("Readable short paper"))

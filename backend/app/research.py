@@ -17,7 +17,7 @@ from .auth import current_owner
 from .db import SessionLocal
 from .models import Paper, PaperImage, ReadingUnit, ResearchArtifact, DesignVersion, DiscoveryCache
 from .workspace import get_or_create
-from .papers import owned_paper, paper_data, process_paper
+from .papers import owned_paper, paper_data, pdf_is_readable, process_paper
 from .services.openalex_service import DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, search_works
 from .services.remote_pdf import RemotePDFError, fetch_pdf
 from .services.research_ai import StructuredAIError, Design, run_task
@@ -259,6 +259,9 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
             paper_id = paper.id
             if paper.status != "parsed":
                 raise HTTPException(422, "这项分析需要全文，请先上传对应 PDF")
+            if not pdf_is_readable(paper.local_file_path):
+                label = paper.original_filename.strip() or paper.title.strip() or "这篇论文"
+                raise HTTPException(422, f"《{label}》的 PDF 文件不可用，请先重新上传并核对原文")
             units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id).order_by(ReadingUnit.position)).all()
             substantive = [unit for unit in units if unit.kind in {
                 "ABSTRACT", "INTRODUCTION", "METHODS", "RESULTS", "DISCUSSION", "CONCLUSION", "BODY"

@@ -37,6 +37,16 @@ def owned_paper(db, paper_id: str, owner: str) -> Paper:
     return paper
 
 
+def pdf_is_readable(path: str) -> bool:
+    if not path or not Path(path).is_file():
+        return False
+    try:
+        with pymupdf.open(path) as document:
+            return not document.needs_pass and document.page_count > 0
+    except Exception:
+        return False
+
+
 def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
     data = {"id": paper.id, "title": paper.title, "original_filename": paper.original_filename,
             "current_unit_id": paper.current_unit_id, "status": paper.status,
@@ -53,9 +63,10 @@ def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
     if units is not None:
         try:
             with pymupdf.open(paper.local_file_path) as document:
-                data["page_count"] = document.page_count
+                data["page_count"] = document.page_count if not document.needs_pass else None
         except Exception:
             data["page_count"] = None
+        data["file_available"] = data["page_count"] is not None and data["page_count"] > 0
         data["units"] = [{"id": unit.id, "position": unit.position, "kind": unit.kind,
                           "heading": unit.heading, "page_start": unit.page_start,
                           "page_end": unit.page_end,
@@ -88,7 +99,9 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
             embedded_images = []
         with SessionLocal() as db:
             paper = owned_paper(db, paper_id, owner)
-            metadata_title = paper.title if paper.openalex_id else None
+            # Existing local papers also have a previously identified title;
+            # check replacement PDFs against it before users reuse old notes.
+            metadata_title = paper.title if paper.openalex_id or replace_existing else None
             if replace_existing:
                 # Keep the conversation but detach old unit references, which
                 # may refer to different content after re-segmentation.
@@ -112,7 +125,7 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
             mismatch = (metadata_title and parsed.title != "标题未识别（请核对原文）" and
                         SequenceMatcher(None, metadata_title.casefold(), parsed.title.casefold()).ratio() < 0.5)
             paper.parse_warning = " ".join(filter(None, [parsed.warning,
-                "上传的 PDF 标题与检索记录可能不一致，请核对原文。" if mismatch else None])) or None
+                "上传的 PDF 标题与原论文记录可能不一致，请核对原文。" if mismatch else None])) or None
             for position, item in enumerate(parsed.units):
                 db.add(ReadingUnit(id=f"{paper_id}:{position}", paper_id=paper_id, position=position,
                                    kind=item.kind, heading=item.heading, page_start=item.page_start,
@@ -164,15 +177,19 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
                      file: UploadFile = File(...), owner: str = Owner):
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
-        if paper.status not in {"metadata_only", "failed"}:
+        replace_existing = (paper.status == "parsed" and
+                            (not pdf_is_readable(paper.local_file_path) or
+                             (paper.parse_warning or "").startswith("重新解析失败")))
+        if paper.status not in {"metadata_only", "failed"} and not replace_existing:
             raise HTTPException(409, "这篇论文已有 PDF")
     original, path, size, digest = await save_pdf(file, owner, paper_id)
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         old_path = paper.local_file_path
-        db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
-        db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
-        paper.current_unit_id = None
+        if not replace_existing:
+            db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
+            db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
+            paper.current_unit_id = None
         paper.original_filename = original
         paper.stored_filename = Path(path).name
         paper.local_file_path = path
@@ -181,9 +198,9 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
         paper.sha256 = digest
         paper.status = "uploaded"
         db.commit()
-    if old_path and old_path != path and Path(old_path).resolve().parent == (file_service.upload_dir() / owner / paper_id).resolve():
+    if not replace_existing and old_path and old_path != path and Path(old_path).resolve().parent == (file_service.upload_dir() / owner / paper_id).resolve():
         Path(old_path).unlink(missing_ok=True)
-    background_tasks.add_task(process_paper, paper_id, owner, path)
+    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing)
     return {"id": paper_id, "status": "uploaded"}
 
 
@@ -236,6 +253,8 @@ def get_file(paper_id: str, owner: str = Owner):
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
         path = paper.local_file_path
+        if not path or not Path(path).is_file():
+            raise HTTPException(404, "PDF 文件不存在，请重新上传")
     return FileResponse(path, media_type="application/pdf", filename="paper.pdf", content_disposition_type="inline")
 
 
@@ -260,20 +279,27 @@ def search_paper(paper_id: str, q: str, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
+        path = paper.local_file_path
     query = q.strip().lower()
     if len(query) < 2:
         return []
-    with SessionLocal() as db:
-        paper = owned_paper(db, paper_id, owner)
-        hits = []
-        with pymupdf.open(paper.local_file_path) as document:
+    if not path or not Path(path).is_file():
+        raise HTTPException(404, "PDF 文件不存在，请重新上传")
+    hits = []
+    try:
+        with pymupdf.open(path) as document:
             for number, page in enumerate(document, 1):
                 content = page.get_text("text")
                 index = content.lower().find(query)
                 if index >= 0:
                     hits.append({"page": number,
                                  "snippet": content[max(0, index - 60):index + len(query) + 100].replace("\n", " ")})
-        return hits[:30]
+                    if len(hits) >= 30:
+                        break
+    except Exception as exc:
+        logger.warning("PDF search failed: %s", type(exc).__name__)
+        raise HTTPException(422, "PDF 无法读取，请检查文件后重新上传") from exc
+    return hits
 
 
 @router.get("/{paper_id}/manifest")
@@ -376,6 +402,8 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
         raise HTTPException(400, "无效的精读操作")
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
+        if paper.status != "parsed":
+            raise HTTPException(409, "论文正在解析或尚未解析完成，请稍后再试")
         try:
             model_config(False)
         except AIConfigurationError as exc:

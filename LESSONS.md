@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Missing PDF recovery must preserve the research record
+
+- Status: validated with isolated API and browser tests; real deployment behavior and all damaged-file formats remain unverified.
+- Evidence: a parsed paper whose PDF disappeared produced server errors, while the attachment endpoint refused a replacement. Searching a large PDF also kept scanning after reaching its 30-result display limit. Chat could begin while reparse was changing its units.
+- Action: return explicit file/search errors, expose a replacement upload for missing or unreadable PDFs, preserve old conversations and mark old artifacts stale on replacement, compare replacement titles with the original record, reject full-text analysis when the file cannot be read, and stop search at 30 hits. Block chat while parsing.
+- Verification: tests cover missing files, an invalid first replacement followed by a valid replacement, history preservation, stale results, title mismatch, search limit and parsing-state chat. An isolated browser showed the replacement control; it did not submit a user file.
+- Boundary: parsing jobs interrupted by a process crash can still remain in an intermediate status. Automatic crash recovery is not implemented; current local records were checked and none are in an intermediate state. Existing original user PDFs were not replaced during testing.
+
 ## 2026-11-10 — PDF parsing must not block unrelated requests
 
 - Status: validated with local concurrency tests and seven existing PDFs read without changing their records; production workload and scan recognition remain unverified.
