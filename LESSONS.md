@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Task concurrency and test isolation
+
+- Status: verified locally with synthetic jobs and an isolated SQLite database; multi-process deployment is not supported.
+- Evidence: the prior worker had a configured concurrency of two but one loop awaited every job serially. After adding two workers, one owner's waiting job could still block another owner. Normal service shutdown also labeled unfinished work as user-canceled. Tests initially constructed the app with the real database, where startup could requeue real jobs.
+- Action: use a bounded worker pool, requeue jobs whose owner is at the limit, wake workers on new work and completion, cancel queued jobs promptly on the event loop, and requeue unfinished AI jobs on graceful shutdown. Configure pytest to use a disposable database and upload directory before app import; close database connections at teardown.
+- Verification: regression tests demonstrate parallel work across owners, the global and per-owner limits, fairness, queued cancellation, and restart of an unfinished AI job. A database-isolation test and the full 77-test suite pass.
+- Boundary: the task queue and limits are process-local; use one backend process. Retrying a job after restart can call the model again. PDF parsing still uses a separate background mechanism and is not covered by this recovery. Before isolation was added, test runs used the local project database and created anonymous test accounts; no current queued jobs were found, but earlier task interference cannot be ruled out and the accounts were not deleted without reliable attribution.
+
 ## 2026-11-10 — Missing PDF recovery must preserve the research record
 
 - Status: validated with isolated API and browser tests; real deployment behavior and all damaged-file formats remain unverified.

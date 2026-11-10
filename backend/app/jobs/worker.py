@@ -26,6 +26,7 @@ _loop: asyncio.AbstractEventLoop | None = None
 _running: dict[str, asyncio.Task] = {}
 _global_sem: asyncio.Semaphore | None = None
 _owner_sems: dict[str, asyncio.Semaphore] = {}
+_wakeup: asyncio.Event | None = None
 
 
 class JobCanceled(Exception):
@@ -85,6 +86,8 @@ async def enqueue(kind: str, owner: str, params: dict) -> dict:
     snapshot, reused = store.create_or_reuse(owner, kind, params, _dedupe_key(owner, kind, params))
     if not reused and _queue is not None:
         _queue.put_nowait(snapshot["id"])
+        if _wakeup is not None:
+            _wakeup.set()
         events.publish(snapshot["id"], "stage", {"stage": "queued", "label": "排队中"})
     return snapshot
 
@@ -103,6 +106,13 @@ def cancel(job_id: str) -> None:
     task = _running.get(job_id)
     if task is not None and not task.done():
         task.cancel()
+    else:
+        row = store.job_row(job_id)
+        if row and row["status"] == "queued":
+            store.cancel(job_id)
+            events.publish(job_id, "error", {"code": "canceled", "message": "任务已取消"})
+            if _wakeup is not None:
+                _wakeup.set()
 
 
 def _owner_semaphore(owner: str) -> asyncio.Semaphore:
@@ -115,7 +125,7 @@ def _owner_semaphore(owner: str) -> asyncio.Semaphore:
 
 async def _run(job_id: str) -> None:
     row = store.job_row(job_id)
-    if row is None:
+    if row is None or row["status"] in store.TERMINAL:
         return
     handler = _handlers.get(row["kind"])
     if handler is None:
@@ -127,10 +137,19 @@ async def _run(job_id: str) -> None:
         store.cancel(job_id)
         events.publish(job_id, "error", {"code": "canceled", "message": "任务已取消"})
         return
-    store.mark_running(job_id)
-    events.publish(job_id, "stage", {"stage": "thinking", "label": "正在处理"})
-    async with _global_sem or asyncio.Semaphore(1):
-        async with _owner_semaphore(owner):
+    async with _owner_semaphore(owner):
+        async with _global_sem or asyncio.Semaphore(1):
+            current = store.job_row(job_id)
+            if current is None or current["status"] in store.TERMINAL:
+                return
+            # A job can be canceled while waiting for a slot. Do not mark it
+            # running or invoke its handler after that point.
+            if store.is_cancel_requested(job_id):
+                store.cancel(job_id)
+                events.publish(job_id, "error", {"code": "canceled", "message": "任务已取消"})
+                return
+            store.mark_running(job_id)
+            events.publish(job_id, "stage", {"stage": "thinking", "label": "正在处理"})
             task = asyncio.create_task(handler(context))
             _running[job_id] = task
             try:
@@ -146,13 +165,18 @@ async def _run(job_id: str) -> None:
                 store.fail(job_id, exc.code, exc.message)
                 events.publish(job_id, "error", {"code": exc.code, "message": exc.message})
             except asyncio.CancelledError:
-                store.cancel(job_id)
-                events.publish(job_id, "error", {"code": "canceled", "message": "任务已取消"})
                 current = asyncio.current_task()
                 if current is not None and current.cancelling() > 0:
-                    # 外层在关闭 worker（应用退出）：必须把取消继续抛出去，
-                    # 否则 worker 循环会留在下一次 await 上，TestClient/uvicorn 关不掉。
+                    # Service shutdown is not a user cancellation: preserve
+                    # unfinished work for the next single-worker startup.
+                    if store.requeue_after_shutdown(job_id):
+                        events.publish(job_id, "stage", {"stage": "queued", "label": "服务重启后等待恢复"})
+                    elif store.is_cancel_requested(job_id):
+                        store.cancel(job_id)
+                        events.publish(job_id, "error", {"code": "canceled", "message": "任务已取消"})
                     raise
+                store.cancel(job_id)
+                events.publish(job_id, "error", {"code": "canceled", "message": "任务已取消"})
             except Exception as exc:  # noqa: BLE001 - 任务边界必须兜住所有异常
                 logger.warning("AI job failed: %s kind=%s error=%s", job_id, row["kind"], type(exc).__name__)
                 store.fail(job_id, "internal", "任务执行失败，请重试")
@@ -166,8 +190,25 @@ async def _run(job_id: str) -> None:
 
 async def _worker_loop() -> None:
     assert _queue is not None
+    blocked_streak = 0
     while True:
         job_id = await _queue.get()
+        row = store.job_row(job_id)
+        if row and row["status"] == "queued" and _owner_semaphore(row["owner_id"]).locked():
+            # Do not occupy a worker with a task whose owner is already at
+            # their limit: another owner's job may be behind it in the queue.
+            _queue.put_nowait(job_id)
+            _queue.task_done()
+            blocked_streak += 1
+            if blocked_streak >= _queue.qsize() and _wakeup is not None:
+                blocked_streak = 0
+                _wakeup.clear()
+                try:
+                    await asyncio.wait_for(_wakeup.wait(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    pass
+            continue
+        blocked_streak = 0
         try:
             await _run(job_id)
         except asyncio.CancelledError:
@@ -176,23 +217,37 @@ async def _worker_loop() -> None:
             logger.exception("AI job worker crashed on %s", job_id)
         finally:
             _queue.task_done()
+            if _wakeup is not None:
+                _wakeup.set()
+
+
+async def _worker_pool() -> None:
+    workers = [asyncio.create_task(_worker_loop()) for _ in range(config.max_ai_concurrency())]
+    try:
+        await asyncio.gather(*workers)
+    finally:
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
 
 
 def start_worker() -> None:
-    global _loop, _queue, _loop_task, _global_sem
+    global _loop, _queue, _loop_task, _global_sem, _wakeup, _owner_sems
     if _loop_task is not None:
         return
     _loop = asyncio.get_running_loop()
     _queue = asyncio.Queue()
     _global_sem = asyncio.Semaphore(config.max_ai_concurrency())
-    _loop_task = asyncio.create_task(_worker_loop())
+    _owner_sems = {}
+    _wakeup = asyncio.Event()
+    _loop_task = asyncio.create_task(_worker_pool())
     for job_id in store.resumable_ids():
         _queue.put_nowait(job_id)
     logger.info("AI job worker started; resumed %s jobs", _queue.qsize())
 
 
 async def stop_worker() -> None:
-    global _loop_task, _loop
+    global _loop_task, _loop, _queue, _global_sem, _wakeup, _owner_sems
     if _loop_task is not None:
         _loop_task.cancel()
         try:
@@ -203,3 +258,7 @@ async def stop_worker() -> None:
         task.cancel()
     _loop_task = None
     _loop = None
+    _queue = None
+    _global_sem = None
+    _wakeup = None
+    _owner_sems = {}

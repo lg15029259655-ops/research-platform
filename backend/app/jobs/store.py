@@ -110,6 +110,20 @@ def mark_running(job_id: str) -> None:
         db.commit()
 
 
+def requeue_after_shutdown(job_id: str) -> bool:
+    """Keep unfinished work resumable when this process is stopping."""
+    with SessionLocal() as db:
+        job = db.get(AiJob, job_id)
+        if job is None or job.status != "running" or job.cancel_requested:
+            return False
+        job.status = "queued"
+        job.stage = "queued"
+        job.stage_label = "服务重启后等待恢复"
+        job.started_at = None
+        db.commit()
+        return True
+
+
 def set_stage(job_id: str, stage: str, label: str) -> None:
     with SessionLocal() as db:
         job = db.get(AiJob, job_id)
