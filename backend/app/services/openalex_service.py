@@ -119,3 +119,65 @@ async def graph_for_work(work_id: str) -> dict[str, Any]:
               "relation": "references" if item["openalex_id"] in referenced else "related"}
              for item in neighbors if item["openalex_id"] in related | referenced]
     return {"nodes": [center, *neighbors], "links": links}
+
+
+async def lineage_for_work(work_id: str, *, max_references: int = 24,
+                           max_cited_by: int = 24, max_related: int = 12) -> dict[str, Any]:
+    """三向谱系：参考文献（上游）、被引（下游）、相关研究（旁系）。
+
+    与 graph_for_work 的区别：带方向（cites）与角色（role），供 3D 谱系图渲染
+    "时间 × 引用方向"。节点抽象截断到 600 字，避免 50 节点把响应撑到几百 KB。
+    """
+    if not WORK_ID.fullmatch(work_id):
+        raise DiscoveryError("无效的文献编号")
+    raw = await _get(f"/works/{work_id}")
+    center = normalize_work(raw)
+    reference_ids = [(item or "").rsplit("/", 1)[-1] for item in (raw.get("referenced_works") or [])][:max_references]
+    related_ids = [(item or "").rsplit("/", 1)[-1] for item in (raw.get("related_works") or [])][:max_related]
+
+    # 中心节点缺省按 role=center 标记；后续同一篇论文不会再被覆盖角色。
+    nodes: dict[str, dict[str, Any]] = {}
+    def add_node(work: dict[str, Any], role: str) -> dict[str, Any]:
+        item = {**work, "abstract": (work.get("abstract") or "")[:600], "role": role}
+        nodes.setdefault(work["openalex_id"], item)
+        return nodes[work["openalex_id"]]
+
+    add_node(center, "center")
+    edges: list[dict[str, str]] = []
+
+    async def fetch(ids: list[str]) -> list[dict[str, Any]]:
+        ids = [item for item in dict.fromkeys(ids) if item and item != work_id]
+        if not ids:
+            return []
+        data = await _get("/works", {"filter": "openalex_id:" + "|".join(ids), "per_page": len(ids)})
+        return [normalize_work(item) for item in data.get("results", [])]
+
+    # 上游：本论文引用的工作（旧 → 新）
+    for work in await fetch(reference_ids):
+        add_node(work, "reference")
+        edges.append({"source": work_id, "target": work["openalex_id"], "relation": "cites"})
+
+    # 下游：引用了本论文的工作（需 OpenAlex 的 cites: 过滤器）
+    try:
+        data = await _get("/works", {"filter": f"cites:{work_id}", "per_page": max_cited_by,
+                                     "sort": "cited_by_count:desc"})
+        for item in data.get("results", [])[:max_cited_by]:
+            work = normalize_work(item)
+            if work["openalex_id"] == work_id:
+                continue
+            add_node(work, "cited_by")
+            edges.append({"source": work["openalex_id"], "target": work_id, "relation": "cites"})
+    except DiscoveryError:
+        # 下游关系缺失不应让整个谱系失败；前端按已有节点渲染。
+        pass
+
+    # 旁系：Topic 相近但无引用关系
+    for work in await fetch(related_ids):
+        existing = nodes.get(work["openalex_id"])
+        if existing is not None and existing["role"] != "center":
+            # 已经有引用关系时保留更具体的方向，不再叠加 related 边。
+            continue
+        add_node(work, "related")
+        edges.append({"source": work_id, "target": work["openalex_id"], "relation": "related"})
+
+    return {"center": nodes[work_id], "nodes": list(nodes.values()), "edges": edges}

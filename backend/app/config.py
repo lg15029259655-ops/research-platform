@@ -26,3 +26,39 @@ def upload_dir() -> Path:
 
 def max_pdf_bytes() -> int:
     return int(os.getenv("MAX_PDF_SIZE_MB", "100")) * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# AI 任务与延迟治理相关配置
+# ---------------------------------------------------------------------------
+
+def thinking_budget() -> int | None:
+    """思考 token 预算；未配置则沿用模型默认（= 不限制）。
+
+    只在回归集验证"人工盲评不下降"后才允许通过 env 打开，见 docs/architecture-jobs.md。
+    """
+    raw = os.getenv("BAILIAN_THINKING_BUDGET", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def precompute_enabled() -> bool:
+    """论文解析完成后是否自动预生成 X-Ray / 思维导图（默认关闭，避免测试与额度意外消耗）。"""
+    return os.getenv("PRECOMPUTE_ON_PARSE", "").strip() in {"1", "true", "True"}
+
+
+def ai_job_deadline() -> float:
+    return float(os.getenv("AI_JOB_DEADLINE_SECONDS", "600"))
+
+
+def max_ai_concurrency() -> int:
+    return max(1, int(os.getenv("AI_MAX_CONCURRENCY", "2")))
+
+
+def max_ai_per_owner() -> int:
+    return max(1, int(os.getenv("AI_MAX_PER_OWNER", "1")))

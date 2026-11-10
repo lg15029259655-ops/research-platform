@@ -32,6 +32,7 @@ Windows 本地运行的前后端分离项目：Next.js + TypeScript、FastAPI、
 - `BAILIAN_BASE_URL`：该工作空间、地域对应的 OpenAI 兼容 Base URL，以 `/compatible-mode/v1` 结尾。
 - `BAILIAN_TEXT_MODEL`：用于文字讲解的模型名称。
 - `BAILIAN_VISION_MODEL`：用于 Figure 图像理解的视觉模型名称。
+- 可选：`BAILIAN_THINKING_BUDGET`（思考预算，默认留空 = 模型默认，未经质量回归验证不要填）、`PRECOMPUTE_ON_PARSE=1`（解析后自动预生成 X-Ray 与思维导图）、`AI_JOB_DEADLINE_SECONDS` / `AI_MAX_CONCURRENCY` / `AI_MAX_PER_OWNER`（任务层兜底与并发）。
 - `OPENALEX_API_KEY`：可选。OpenAlex 匿名共享额度用尽时，可填写自己的免费 OpenAlex Key；只由后端读取。
 
 不要把 Key 放在前端、日志或 Git 中；`backend/.env` 已被 `.gitignore` 排除。改动配置后重启后端。`POST /api/ai/probe` 用 SSE 流式测试真实模型；`GET /api/ai/status` 只返回配置完整性，不返回配置值。若收到 HTTP 401 / `invalid_api_key`，请核对 Key 是否有效、是否与 Base URL 对应同一业务空间。
@@ -45,13 +46,17 @@ Windows 本地运行的前后端分离项目：Next.js + TypeScript、FastAPI、
 - `/synthesis`：选择 2–5 篇已解析全文，生成结构化对比矩阵、证据争议和研究空白。摘要记录不能进入全文综合。
 - `/design`：根据 OpenAlex 检索元数据和可用摘要做高/中/低定性新颖性扫描；用 React Flow 展示可拖动的设计方案，可点击“降低成本”等按钮重新生成方案。
 
+精读页新增「思维导图」视图：章节骨架由解析结果确定性生成，AI 只补关键点并校验 `unit_id`，节点可点击回到 PDF 页码，支持导出 SVG/PNG。发现页的关系图改为三向 3D 谱系（上游引用 / 下游被引 / 旁系相关，带方向与年份轴）。
+
 结构化结果保存在 SQLite。Research Workspace 还会保存当前研究主题、领域、选中论文、核心论文、综合结果、研究空白、设计想法和版本引用。四个页面顶部的状态栏共用该上下文；发现页加入对比篮后，综合页自动带入已有全文的论文；研究空白可直接送入科研设计。
 
 发现页的 OpenAlex 搜索页和关系图谱使用 SQLite 缓存。相同查询优先读真实历史结果，显示抓取时间；主动点击“刷新结果”才重新请求。上游暂时失败时，如有缓存会标注过期并回退。缓存仅含公开检索元数据，不把摘要当作全文。
 
 视觉层包括 Paper X-Ray 研究主线、Figure Storyboard、可展开对比矩阵、三列 Evidence Map、Research Gap Path、定性 Novelty Space 和 React Flow 沙盘。节点详情尽可能附原文阅读单元、页码和证据片段；未能定位的来源会明确提示。沙盘支持五种整体修改、节点级修改、版本历史、结构差异和回退。
 
-主要 API：`GET/PATCH /api/workspace`、`GET /api/research/discover`、`GET /api/research/graph/{work_id}`、`POST /api/research/import`、`POST /api/research/import-pdf`、`POST /api/papers/{paper_id}/attach`、`POST /api/research/xray/{paper_id}`、`POST /api/research/compare`、`POST /api/research/novelty`、`POST /api/research/design`、`GET /api/research/design/versions`、`POST /api/research/design/versions/{version_id}/restore`、`GET /api/research/artifacts`。
+主要 API：`GET/PATCH /api/workspace`、`GET /api/research/discover`、`GET /api/research/graph/{work_id}`、`GET /api/research/lineage/{work_id}`、`POST /api/research/import`、`POST /api/research/import-pdf`、`POST /api/papers/{paper_id}/attach`、`POST /api/research/xray/{paper_id}`、`POST /api/research/compare`、`POST /api/research/novelty`、`POST /api/research/design`、`GET /api/research/design/versions`、`POST /api/research/design/versions/{version_id}/restore`、`GET /api/research/artifacts`。
+
+慢 AI 调用（精读例外，它本身就是流式）统一走异步任务：`POST /api/jobs`、`GET /api/jobs/{job_id}`、`GET /api/jobs/{job_id}/events`（SSE 阶段/进度/心跳）、`DELETE /api/jobs/{job_id}`（取消）。任务在进程内执行并落库，进程重启后可恢复；相同参数的进行中任务会复用，不重复计费。细节见 [docs/architecture-jobs.md](docs/architecture-jobs.md)。。
 
 ## 阅读流程
 

@@ -344,11 +344,11 @@ def test_figure_rendering_runs_outside_event_loop(monkeypatch, tmp_path):
             rendering_in_event_loop.append(False)
         return b"synthetic image"
 
-    async def fake_stream(_messages, *, vision=False):
-        yield "Test visual explanation"
+    async def fake_stream(_messages, *, vision=False, **_kwargs):
+        yield {"type": "content", "content": "Test visual explanation"}
 
     monkeypatch.setattr("app.papers.render_page_png", fake_render)
-    monkeypatch.setattr("app.papers.stream_completion", fake_stream)
+    monkeypatch.setattr("app.services.bailian_service.stream_events", fake_stream)
     with TestClient(app) as client:
         owner = None
         try:
@@ -373,11 +373,11 @@ def test_persistent_cookie_ownership_and_history(monkeypatch, tmp_path):
     monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))
     calls = []
 
-    async def fake_stream(messages, *, vision=False):
+    async def fake_stream(messages, *, vision=False, **_kwargs):
         calls.append((messages, vision))
-        yield "已根据当前论文证据回答。"
+        yield {"type": "content", "content": "已根据当前论文证据回答。"}
 
-    monkeypatch.setattr("app.papers.stream_completion", fake_stream)
+    monkeypatch.setattr("app.services.bailian_service.stream_events", fake_stream)
     owners = []
     with TestClient(app) as a, TestClient(app) as b:
         try:
@@ -563,11 +563,11 @@ def test_deferred_parse_and_safe_ai_error(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))
 
-    async def failing_stream(_messages, *, vision=False):
+    async def failing_stream(_messages, *, vision=False, **_kwargs):
         raise RuntimeError("internal-secret-from-provider")
-        yield "unused"
+        yield {"type": "content", "content": "unused"}
 
-    monkeypatch.setattr("app.papers.stream_completion", failing_stream)
+    monkeypatch.setattr("app.services.bailian_service.stream_events", failing_stream)
     with TestClient(app) as client:
         owner = None
         try:
@@ -594,12 +594,12 @@ def test_visual_failure_has_safe_text_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))
 
-    async def fake_stream(_messages, *, vision=False):
+    async def fake_stream(_messages, *, vision=False, **_kwargs):
         if vision:
             raise RuntimeError("internal-secret-from-provider")
-        yield "根据正文和图注，这项比较有待验证。"
+        yield {"type": "content", "content": "根据正文和图注，这项比较有待验证。"}
 
-    monkeypatch.setattr("app.papers.stream_completion", fake_stream)
+    monkeypatch.setattr("app.services.bailian_service.stream_events", fake_stream)
     owner = None
     with TestClient(app) as client:
         try:

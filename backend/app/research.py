@@ -18,7 +18,11 @@ from .db import SessionLocal
 from .models import Paper, PaperImage, ReadingUnit, ResearchArtifact, DesignVersion, DiscoveryCache
 from .workspace import get_or_create
 from .papers import owned_paper, paper_data, pdf_is_readable, process_paper
-from .services.openalex_service import DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, search_works
+from .services.openalex_service import (
+    DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, lineage_for_work, search_works,
+)
+from . import config
+from .services import research_ai
 from .services.remote_pdf import RemotePDFError, fetch_pdf
 from .services.research_ai import StructuredAIError, Design, run_task
 
@@ -32,6 +36,33 @@ FULLTEXT_AI_TIMEOUT = 35
 # Keep the total deadline below the deployed proxy's 300-second limit.
 COMPARE_AI_TIMEOUT = 240
 EVIDENCE_EXTRACTION_TIMEOUT = 20
+
+async def _run_task(name: str, context: dict, emit=None, *, timeout: float | None = None) -> dict:
+    """统一的结构化任务入口。
+
+    优先走流式版本（可上报进度、可用思考预算）；服务层尚未提供时回退到 run_task，
+    这样改造可以分步落地，互不阻塞。
+    """
+    runner = getattr(research_ai, "run_task_events", None)
+    budget = config.thinking_budget()
+
+    async def invoke():
+        # 没有进度回调 = 旧同步调用路径：保持原行为（也方便测试与插件替换 run_task）。
+        if emit is None or runner is None:
+            return await run_task(name, context)
+
+        async def forward(event: dict) -> None:
+            if emit is None:
+                return
+            await emit(event.get("type", "progress"),
+                       {key: value for key, value in event.items() if key != "type"})
+
+        return await runner(name, context, emit=forward if emit is not None else None,
+                            thinking_budget=budget)
+
+    if timeout is not None:
+        return await asyncio.wait_for(invoke(), timeout=timeout)
+    return await invoke()
 
 
 def cache_key(kind: str, query: str, mode: str = "", page: int = 1) -> str:
@@ -162,6 +193,21 @@ def discover_cached(q: str, page: int = 1, mode: str = "semantic", owner: str = 
     for item in result["items"]:
         item.update(route_research(item["title"], item["abstract"], item.get("field", "")))
     return result
+
+
+@router.get("/lineage/{work_id}")
+async def work_lineage(work_id: str, refresh: bool = False, owner: str = Owner):
+    """3D 谱系图数据：上游引用 / 下游被引 / 旁系相关，带方向与角色。"""
+    try:
+        result = await cached_discovery(cache_key("lineage", work_id), "lineage", work_id, "", 1,
+            lambda: lineage_for_work(work_id), refresh)
+        for item in result["nodes"]:
+            item.update(route_research(item["title"], item.get("abstract", ""), item.get("field", "")))
+        result["backlinks"] = sum(1 for edge in result["edges"] if edge["relation"] == "cites")
+        return result
+    except DiscoveryError as exc:
+        logger.warning("OpenAlex lineage failed: %s", type(exc).__name__)
+        raise HTTPException(503, "文献谱系暂时无法读取，请重试") from exc
 
 
 @router.get("/graph/{work_id}")
@@ -313,8 +359,9 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
     return papers
 
 
-@router.post("/xray/{paper_id}")
-async def paper_xray(paper_id: str, owner: str = Owner):
+async def execute_xray(owner: str, paper_id: str, *, emit=None, timeout: float | None = None) -> dict:
+    if emit is not None:
+        await emit("stage", {"stage": "reading", "label": "读取论文单元"})
     context = fulltext_papers(owner, [paper_id])[0]
     with SessionLocal() as db:
         existing = db.scalar(select(ResearchArtifact).where(
@@ -326,13 +373,11 @@ async def paper_xray(paper_id: str, owner: str = Owner):
             return {"id": existing.id, "kind": existing.kind,
                     "paper_ids": [paper_id], "payload": json.loads(existing.payload_json),
                     "created_at": existing.created_at.isoformat()}
-    try:
-        payload = await asyncio.wait_for(run_task("paper_summary", context), timeout=FULLTEXT_AI_TIMEOUT)
-    except TimeoutError as exc:
-        raise HTTPException(504, "论文精读超过等待上限，请缩小范围后重试") from exc
-    except StructuredAIError as exc:
-        logger.warning("Paper X-Ray failed: %s", type(exc).__name__)
-        raise HTTPException(503, str(exc)) from exc
+    if emit is not None:
+        await emit("stage", {"stage": "thinking", "label": "正在组织 Paper X-Ray"})
+    payload = await _run_task("paper_summary", context, emit, timeout=timeout)
+    if emit is not None:
+        await emit("stage", {"stage": "validating", "label": "校验证据引用"})
     with SessionLocal() as db:
         ids = set(db.scalars(select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id)).all())
     for stage in payload["stages"]:
@@ -340,21 +385,31 @@ async def paper_xray(paper_id: str, owner: str = Owner):
     return save_artifact(owner, "paper_summary", [paper_id], payload)
 
 
-@router.post("/compare")
-async def compare(request: CompareRequest, owner: str = Owner):
-    papers = fulltext_papers(owner, request.paper_ids, compact=True)
+@router.post("/xray/{paper_id}")
+async def paper_xray(paper_id: str, owner: str = Owner):
     try:
-        payload = await asyncio.wait_for(run_task("paper_compare", {"papers": papers}), timeout=COMPARE_AI_TIMEOUT)
+        return await execute_xray(owner, paper_id, timeout=FULLTEXT_AI_TIMEOUT)
     except TimeoutError as exc:
-        raise HTTPException(504, "文献综合超过等待上限，请稍后重试；也可减少论文数量") from exc
+        raise HTTPException(504, "论文精读超过等待上限，请缩小范围后重试") from exc
     except StructuredAIError as exc:
-        logger.warning("Comparison AI failed: %s", type(exc).__name__)
+        logger.warning("Paper X-Ray failed: %s", type(exc).__name__)
         raise HTTPException(503, str(exc)) from exc
+
+
+async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeout: float | None = None) -> dict:
+    if emit is not None:
+        await emit("stage", {"stage": "preparing", "label": "读取论文片段"})
+    papers = fulltext_papers(owner, paper_ids, compact=True)
+    if emit is not None:
+        await emit("stage", {"stage": "comparing", "label": "比较研究问题与结果"})
+    payload = await _run_task("paper_compare", {"papers": papers}, emit, timeout=timeout)
+    if emit is not None:
+        await emit("stage", {"stage": "validating", "label": "校验证据引用"})
     payload["extraction_warnings"] = [
         f"《{paper['title']}》部分正文未识别章节；综合使用未分类片段，页码和上下文需核对。"
         for paper in papers if any(section["kind"] in {"UNCLASSIFIED", "BODY"} for section in paper["sections"])
     ]
-    allowed = set(request.paper_ids)
+    allowed = set(paper_ids)
     referenced = ({item["paper_id"] for item in payload["papers"]} |
                   {cell["paper_id"] for row in payload["dimensions"] for cell in row["values"]} |
                   {pid for claim in payload["controversies"] for pid in claim["paper_ids"]})
@@ -368,7 +423,7 @@ async def compare(request: CompareRequest, owner: str = Owner):
         cells = {cell["paper_id"]: cell for cell in row["values"]}
         row["values"] = [cells.get(paper_id) or {"paper_id": paper_id,
             "value": "当前提取片段未找到可核对的该项信息，请查看原文。", "source": ""}
-            for paper_id in request.paper_ids]
+            for paper_id in paper_ids]
         for cell in row["values"]:
             if not cell["value"].strip():
                 cell["value"] = "当前提取片段未找到可核对的该项信息，请查看原文。"
@@ -418,7 +473,7 @@ async def compare(request: CompareRequest, owner: str = Owner):
                 logger.warning("Optional single-paper evidence extraction timed out or failed")
     if not payload["controversies"]:
         payload["controversies"] = [{"claim": "当前片段尚未形成可直接比较的共同命题",
-            "paper_ids": request.paper_ids, "stance": "INSUFFICIENT",
+            "paper_ids": paper_ids, "stance": "INSUFFICIENT",
             "reason": "本次结构化分析没有给出可核验的共同命题。请对照矩阵和论文原文后再判断。",
             "evidence_refs": []}]
     sources = {(paper["paper_id"], section["unit_id"]): section
@@ -450,7 +505,18 @@ async def compare(request: CompareRequest, owner: str = Owner):
             claim["stance"] = "INSUFFICIENT"
             claim["reason"] += " 当前没有来自至少两篇论文的可核对结果原文，不能列为结果不一致。"
         claim["evidence_refs"] = (direct_refs if claim["stance"] != "INSUFFICIENT" else verified_refs)[:6]
-    return save_artifact(owner, "paper_compare", request.paper_ids, payload)
+    return save_artifact(owner, "paper_compare", paper_ids, payload)
+
+
+@router.post("/compare")
+async def compare(request: CompareRequest, owner: str = Owner):
+    try:
+        return await execute_compare(owner, request.paper_ids, timeout=COMPARE_AI_TIMEOUT)
+    except TimeoutError as exc:
+        raise HTTPException(504, "文献综合超过等待上限，请稍后重试；也可减少论文数量") from exc
+    except StructuredAIError as exc:
+        logger.warning("Comparison AI failed: %s", type(exc).__name__)
+        raise HTTPException(503, str(exc)) from exc
 
 
 class IdeaRequest(BaseModel):
@@ -466,23 +532,30 @@ def search_only_novelty(query: str, works: list[dict]) -> dict:
             if works else "本次检索没有返回文献；不能据此断定该研究方向不存在。")}
 
 
-@router.post("/novelty")
-async def novelty(request: IdeaRequest, owner: str = Owner):
+async def execute_novelty(owner: str, query: str, *, emit=None, timeout: float | None = None,
+                          fallback: bool = True) -> dict:
     try:
-        found = await cached_discovery(cache_key("search", request.query, "semantic", 1),
-            "search", request.query, "semantic", 1,
-            lambda: search_works(request.query, per_page=10))
+        if emit is not None:
+            await emit("stage", {"stage": "searching", "label": "检索相似研究"})
+        found = await cached_discovery(cache_key("search", query, "semantic", 1),
+            "search", query, "semantic", 1,
+            lambda: search_works(query, per_page=10))
         works = found["items"]
+        if emit is not None:
+            await emit("stage", {"stage": "analyzing", "label": "解读相似度与新角度"})
         try:
-            payload = await asyncio.wait_for(run_task("novelty_analysis", {
-                "query": request.query,
+            payload = await _run_task("novelty_analysis", {
+                "query": query,
                 "evidence_scope": "OpenAlex 检索元数据与可用摘要，未读取全文",
                 "papers": [{"openalex_id": item["openalex_id"], "title": item["title"],
                             "abstract": item["abstract"][:1200]} for item in works[:8]],
-            }), timeout=NOVELTY_AI_TIMEOUT)
+            }, emit, timeout=timeout)
         except (TimeoutError, StructuredAIError):
+            # 异步任务路径不静默降级：宁可报错重试，也不给"看起来能用其实没解读"的结果。
+            if not fallback:
+                raise
             logger.warning("Novelty interpretation timed out or failed; returning search-only result")
-            payload = search_only_novelty(request.query, works)
+            payload = search_only_novelty(query, works)
     except DiscoveryRateLimited as exc:
         logger.warning("Novelty search rate limited")
         raise HTTPException(429, str(exc)) from exc
@@ -500,11 +573,16 @@ async def novelty(request: IdeaRequest, owner: str = Owner):
         item["abstract"] = source["abstract"][:1000]
         item["year"] = source["year"]
         item["full_text_available"] = item["openalex_id"] in owned_pdf
-    payload["query"] = request.query
+    payload["query"] = query
     payload["evidence_scope"] = "仅依据 OpenAlex 检索元数据及可用摘要，尚未核验全文。"
     payload["search_cached"] = found["cached"]
     payload["search_fetched_at"] = found["fetched_at"]
     return save_artifact(owner, "novelty_analysis", [], payload)
+
+
+@router.post("/novelty")
+async def novelty(request: IdeaRequest, owner: str = Owner):
+    return await execute_novelty(owner, request.query, timeout=NOVELTY_AI_TIMEOUT, fallback=True)
 
 
 class DesignRequest(BaseModel):
@@ -577,8 +655,8 @@ def version_data(version: DesignVersion, artifact: ResearchArtifact) -> dict:
             "payload": json.loads(artifact.payload_json), "created_at": version.created_at.isoformat()}
 
 
-@router.post("/design")
-async def design(request: DesignRequest, owner: str = Owner):
+async def execute_design(owner: str, request: DesignRequest, *, emit=None,
+                         timeout: float | None = None, fallback: bool = True) -> dict:
     actions = {"generate": "生成研究设计", "node": "局部优化节点", "causality": "加强因果识别", "cost": "降低成本",
                "simplify": "简化方案", "mechanism": "增加机制验证", "application": "增强临床或应用意义"}
     if request.action not in actions:
@@ -612,14 +690,16 @@ async def design(request: DesignRequest, owner: str = Owner):
                     "full_text_available": item.status == "parsed"} for item in papers],
                 "evidence_note": "此处是前序综合输出和论文状态，不等于已独立核验的直接实验事实。",
             }
+    if emit is not None:
+        await emit("stage", {"stage": "designing", "label": "组织研究设计节点"})
     try:
-        payload = await asyncio.wait_for(run_task("experiment_design", {"goal": request.goal,
+        payload = await _run_task("experiment_design", {"goal": request.goal,
             "constraints": request.constraints, "request": actions[request.action],
             "current_design": request.current_design, "node_id": request.node_id,
             "node_instruction": request.instruction.strip(),
-            "research_context": research_context}), timeout=DESIGN_AI_TIMEOUT)
+            "research_context": research_context}, emit, timeout=timeout)
     except (TimeoutError, StructuredAIError) as exc:
-        if request.action == "generate":
+        if fallback and request.action == "generate":
             logger.warning("Design generation timed out or failed; returning quick draft: %s", type(exc).__name__)
             payload = quick_design(request.goal, request.constraints)
         else:
@@ -658,6 +738,14 @@ async def design(request: DesignRequest, owner: str = Owner):
         db.commit()
         artifact["version"] = version_data(version, db.get(ResearchArtifact, artifact["id"]))
     return artifact
+
+
+@router.post("/design")
+async def design(request: DesignRequest, owner: str = Owner):
+    try:
+        return await execute_design(owner, request, timeout=DESIGN_AI_TIMEOUT, fallback=True)
+    except TimeoutError as exc:
+        raise HTTPException(504, "研究设计超过等待上限，请稍后重试") from exc
 
 
 @router.get("/design/versions")

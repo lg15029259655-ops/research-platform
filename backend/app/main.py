@@ -15,6 +15,9 @@ from .papers import router as papers_router
 from .research import route_research, router as research_router
 from .workspace import router as workspace_router
 from .auth import anonymous_session
+from .jobs.router import router as jobs_router
+from .jobs.worker import start_worker, stop_worker
+from .jobs.handlers import register_all
 
 
 @asynccontextmanager
@@ -42,7 +45,10 @@ async def lifespan(_app: FastAPI):
             paper.study_type = routed["study_type"]
             paper.template = routed["template"]
         db.commit()
+    register_all()
+    start_worker()
     yield
+    await stop_worker()
 
 
 app = FastAPI(title="科研工作台 API", lifespan=lifespan)
@@ -57,6 +63,7 @@ app.middleware("http")(anonymous_session)
 app.include_router(papers_router)
 app.include_router(research_router)
 app.include_router(workspace_router)
+app.include_router(jobs_router)
 
 
 @app.get("/api/health")

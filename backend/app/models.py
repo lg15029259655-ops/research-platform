@@ -135,6 +135,34 @@ class DesignVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AiJob(Base):
+    """一次异步 AI 任务。
+
+    存在的理由：大模型调用动辄几十秒，同步请求既会被任意超时杀掉，也会让用户
+    盯着白屏。任务先落库、由进程内 worker 执行，HTTP 只负责提交与订阅进度。
+    """
+
+    __tablename__ = "ai_jobs"
+    __table_args__ = (Index("ix_ai_jobs_status_created", "status", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(30), index=True)
+    # 同一资源 + 同一参数的进行中任务只保留一个，避免连点重复烧 token。
+    dedupe_key: Mapped[str] = mapped_column(String(64), index=True)
+    params_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    stage: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    stage_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class DiscoveryCache(Base):
     __tablename__ = "discovery_cache"
     cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)

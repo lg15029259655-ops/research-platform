@@ -18,7 +18,10 @@ from sqlalchemy.orm import selectinload
 from .db import SessionLocal
 from .models import Message, Paper, PaperImage, ReadingUnit, ResearchArtifact, ResearchWorkspace
 from .auth import current_owner
-from .services.bailian_service import AIConfigurationError, model_config, stream_completion
+from .services.bailian_service import AIConfigurationError, model_config
+from .services import bailian_service
+from . import config
+from .jobs.sse import with_heartbeat
 from .services.file_service import save_pdf
 from .services import file_service
 from .services.pdf_service import extract_embedded_images, parse_pdf, render_page_png
@@ -28,6 +31,21 @@ RULES = Path(__file__).parent / "prompts" / "reading_rules.md"
 logger = logging.getLogger(__name__)
 ACTIONS = {"START", "NEXT", "NAVIGATE", "FIGURE", "WHY_DESIGN", "EVIDENCE", "QUESTION"}
 Owner = Depends(current_owner)
+
+
+async def _stream_model_events(messages, *, vision: bool = False):
+    """统一的模型流。
+
+    优先使用新的 typed 事件（reasoning/content 分开），这样精读可以把"思考过程"
+    实时推给前端；服务层尚未提供时退回纯文本流，行为与旧版一致。
+    """
+    runner = getattr(bailian_service, "stream_events", None)
+    if runner is not None:
+        async for event in runner(messages, vision=vision, thinking_budget=config.thinking_budget()):
+            yield event
+        return
+    async for chunk in bailian_service.stream_completion(messages, vision=vision):
+        yield {"type": "content", "content": chunk}
 
 
 def owned_paper(db, paper_id: str, owner: str) -> Paper:
@@ -136,6 +154,8 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
                                   local_file_path=item["path"], width=item["width"], height=item["height"]))
             paper.status = "parsed"
             db.commit()
+        from .jobs.precompute import schedule_for_paper
+        schedule_for_paper(paper_id, owner)
     except Exception as exc:
         logger.warning("PDF parse failed: %s", type(exc).__name__)
         if replace_existing:
@@ -463,17 +483,35 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
             messages[0]["content"] += "\n当前未提供图像。仅可根据正文和图注解释；不得说『从图中可以看到』或暗示已核对视觉内容。"
     messages.append({"role": "user", "content": content})
 
+    def frame(payload: dict) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    async def forward(source):
+        """把 typed 事件转成前端的 delta / thinking 帧。"""
+        nonlocal answer
+        async for event in source:
+            if event.get("type") == "reasoning":
+                content = event.get("content", "")
+                if content:
+                    yield frame({"type": "thinking", "content": content})
+                continue
+            delta = event.get("content", "")
+            if not delta:
+                continue
+            answer += delta
+            yield frame({"type": "delta", "content": delta})
+
+    answer = ""
     async def events():
-        answer = ""
+        nonlocal answer
         verified = False
         try:
             if request.action in {"START", "NEXT", "NAVIGATE"}:
-                yield f"data: {json.dumps({'type': 'selected', 'unit_id': selected_id, 'page': page, 'heading': '题目与摘要' if first_abstract else heading}, ensure_ascii=False)}\n\n"
+                yield frame({'type': 'selected', 'unit_id': selected_id, 'page': page, 'heading': '题目与摘要' if first_abstract else heading})
             if visual_input_ready:
                 try:
-                    async for delta in stream_completion(messages, vision=True):
-                        answer += delta
-                        yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
+                    async for chunk in forward(_stream_model_events(messages, vision=True)):
+                        yield chunk
                     if not answer.strip():
                         raise RuntimeError("视觉模型未返回内容")
                     verified = True
@@ -482,11 +520,10 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
                     answer = ""
                     messages[0]["content"] += "\n视觉调用失败。仅可根据正文和图注解释；不得声称看到了图像。"
                     messages[-1] = {"role": "user", "content": prompt}
-                    yield 'data: {"type":"reset"}\n\n'
+                    yield frame({"type": "reset"})
             if not verified:
-                async for delta in stream_completion(messages, vision=False):
-                    answer += delta
-                    yield f"data: {json.dumps({'type': 'delta', 'content': delta}, ensure_ascii=False)}\n\n"
+                async for chunk in forward(_stream_model_events(messages, vision=False)):
+                    yield chunk
             if not answer.strip():
                 raise RuntimeError("模型没有返回可用文字")
             with SessionLocal() as db:
@@ -500,9 +537,9 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
                     paper.current_unit_id = selected_id
                 paper.last_read_at = datetime.now(timezone.utc)
                 db.commit()
-            yield f"data: {json.dumps({'type': 'done', 'current_unit_id': selected_id if request.action in {'START', 'NEXT', 'NAVIGATE'} else None, 'visual_verified': verified}, ensure_ascii=False)}\n\n"
+            yield frame({'type': 'done', 'current_unit_id': selected_id if request.action in {'START', 'NEXT', 'NAVIGATE'} else None, 'visual_verified': verified})
         except Exception as exc:
             logger.warning("Paper AI request failed: %s", type(exc).__name__)
-            yield f"data: {json.dumps({'type': 'error', 'message': 'AI 服务暂时不可用，请重试'}, ensure_ascii=False)}\n\n"
+            yield frame({'type': 'error', 'message': 'AI 服务暂时不可用，请重试'})
 
-    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+    return StreamingResponse(with_heartbeat(events()), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
