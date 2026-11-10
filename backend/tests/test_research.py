@@ -70,6 +70,29 @@ def test_multipage_review_fallback_preserves_evidence_anchor(monkeypatch, tmp_pa
             clean(client)
 
 
+def test_comparison_samples_unclassified_review_pages_with_real_page_numbers(monkeypatch, tmp_path):
+    from app.models import ReadingUnit
+    from app.research import fulltext_papers
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        try:
+            paper = client.post("/api/papers", files={"file": ("review.pdf", pdf_bytes("Review paper"), "application/pdf")}).json()
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+                db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper["id"]).delete()
+                for index in range(5):
+                    db.add(ReadingUnit(id=f"{paper['id']}:body:{index}", paper_id=paper["id"], position=index,
+                        kind="BODY", heading=f"未分类正文 {index + 1}", page_start=index + 1,
+                        page_end=index + 1, source_text="Review evidence " * 15))
+                db.commit()
+            sections = fulltext_papers(owner, [paper["id"]], compact=True)[0]["sections"]
+            assert [section["page"] for section in sections] == [1, 3, 5]
+            assert all(section["kind"] == "BODY" and section["unit_id"].endswith(f":{section['page'] - 1}") for section in sections)
+        finally:
+            clean(client)
+
+
 def clean(client: TestClient):
     for paper in client.get("/api/papers").json():
         client.delete(f"/api/papers/{paper['id']}")

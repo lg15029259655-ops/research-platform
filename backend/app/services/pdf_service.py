@@ -131,6 +131,7 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
         title = extract_title(document[0]) or "标题未识别（请核对原文）"
         units = [ParsedUnit("TITLE", "题目", title if title != "标题未识别（请核对原文）" else "", 1, 1)]
         sections: list[ParsedUnit] = []
+        section_pages: dict[int, dict[int, list[str]]] = {}
         current: ParsedUnit | None = None
         figures: dict[str, ParsedUnit] = {}
         tables: dict[str, ParsedUnit] = {}
@@ -171,14 +172,31 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
                 if current:
                     current.text += line + "\n"
                     current.page_end = page_number
+                    section_pages.setdefault(id(current), {}).setdefault(page_number, []).append(line)
         if current:
             sections.append(current)
+        # Reviews may have no standard section headings. Do not call dozens of
+        # pages an abstract: retain page-scoped, explicitly unclassified text.
+        recovered_body = False
+        normalized_sections: list[ParsedUnit] = []
+        for section in sections:
+            if (section.kind == "ABSTRACT" and len(section.text) >= 10000
+                    and section.page_start and section.page_end
+                    and section.page_end - section.page_start >= 2):
+                recovered_body = True
+                for page_number, lines in section_pages.get(id(section), {}).items():
+                    text = "\n".join(lines).strip()
+                    if text:
+                        normalized_sections.append(ParsedUnit("BODY", f"未分类正文 · 第 {page_number} 页", text, page_number, page_number))
+            else:
+                normalized_sections.append(section)
+        sections = normalized_sections
         if not any(item.kind == "ABSTRACT" for item in sections):
             recovered = extract_unlabeled_abstract(document[0])
             if recovered:
                 sections.append(ParsedUnit("ABSTRACT", "摘要（首页正文块）", recovered, 1, 1))
         stage("figures")
-        order = {"ABSTRACT": 0, "INTRODUCTION": 1, "METHODS": 2, "RESULTS": 3, "DISCUSSION": 4, "CONCLUSION": 5}
+        order = {"ABSTRACT": 0, "INTRODUCTION": 1, "METHODS": 2, "RESULTS": 3, "DISCUSSION": 4, "CONCLUSION": 5, "BODY": 6}
         sections.sort(key=lambda item: (order[item.kind], item.page_start or 0))
         stage("manifest")
         results_added = False
@@ -215,6 +233,8 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
         warning = None
         if sum(len(lines) for _, lines in page_lines) < 20:
             warning = "可提取文字很少，可能是扫描版 PDF；当前版本未做 OCR，请核对原文。"
+        elif recovered_body:
+            warning = "部分正文未识别章节，已按页保留未分类原文；请核对阅读顺序和原文。"
         elif len(sections) < 2:
             warning = "未可靠识别论文章节；请核对阅读顺序与原文。"
         return ParsedPDF(title, document.page_count, units, warning)

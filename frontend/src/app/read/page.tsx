@@ -159,7 +159,7 @@ export default function ReadPage() {
   }
 
   async function reparse() {
-    if (!paper || pending || !window.confirm("重新解析会清除这篇论文的旧精读记录及相关综合结果，原 PDF 会保留。继续吗？")) return;
+    if (!paper || pending || !window.confirm("重新识别会保留原 PDF、旧精读记录和综合结果，但会重置当前阅读位置。旧记录与新章节的关联将解除，旧综合结果需要重新核对。继续吗？")) return;
     const id = paper.id;
     setPending(true); setError(""); setParseStage("正在用新版规则重新解析 PDF…");
     try {

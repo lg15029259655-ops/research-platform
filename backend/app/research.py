@@ -259,7 +259,7 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
                 raise HTTPException(422, "这项分析需要全文，请先上传对应 PDF")
             units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id).order_by(ReadingUnit.position)).all()
             substantive = [unit for unit in units if unit.kind in {
-                "ABSTRACT", "INTRODUCTION", "METHODS", "RESULTS", "DISCUSSION", "CONCLUSION"
+                "ABSTRACT", "INTRODUCTION", "METHODS", "RESULTS", "DISCUSSION", "CONCLUSION", "BODY"
             } and unit.source_text.strip()]
             # Some reviews have no standard section headings. The parser can
             # mistakenly place many pages of body text in a single unit.
@@ -269,7 +269,8 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
                 if unit.kind == "ABSTRACT" and len(unit.source_text) >= 10000
                 and unit.page_start and unit.page_end
                 and unit.page_end - unit.page_start >= 2), None)
-            if ((len({unit.kind for unit in substantive}) < 2 and not unclassified) or
+            page_body = [unit for unit in substantive if unit.kind == "BODY"]
+            if ((len({unit.kind for unit in substantive}) < 2 and not unclassified and len(page_body) < 2) or
                     sum(len(unit.source_text) for unit in substantive) < 60 or
                     paper.title.strip().casefold() in {"hhs public access", "author manuscript"}):
                 # 从 OpenAlex 导入的论文没有上传文件，original_filename 是空串，
@@ -286,6 +287,8 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
                     if counts.get(unit.kind, 0) < quotas.get(unit.kind, 0) and unit.source_text.strip():
                         selected_units.append(unit)
                         counts[unit.kind] = counts.get(unit.kind, 0) + 1
+                if page_body:
+                    selected_units.extend(page_body[index] for index in sorted({0, len(page_body) // 2, len(page_body) - 1}))
             else:
                 selected_units = [unit for unit in units if unit.kind != "RECAP"][:35]
             excerpts = [{"unit_id": unit.id, "kind": unit.kind, "heading": unit.heading,
@@ -313,7 +316,7 @@ async def paper_xray(paper_id: str, owner: str = Owner):
             ResearchArtifact.kind == "paper_summary",
             ResearchArtifact.paper_ids_json == json.dumps([paper_id]),
         ).order_by(ResearchArtifact.created_at.desc()))
-        if existing:
+        if existing and not json.loads(existing.payload_json).get("stale_after_reparse"):
             return {"id": existing.id, "kind": existing.kind,
                     "paper_ids": [paper_id], "payload": json.loads(existing.payload_json),
                     "created_at": existing.created_at.isoformat()}
@@ -343,7 +346,7 @@ async def compare(request: CompareRequest, owner: str = Owner):
         raise HTTPException(503, str(exc)) from exc
     payload["extraction_warnings"] = [
         f"《{paper['title']}》部分正文未识别章节；综合使用未分类片段，页码和上下文需核对。"
-        for paper in papers if any(section["kind"] == "UNCLASSIFIED" for section in paper["sections"])
+        for paper in papers if any(section["kind"] in {"UNCLASSIFIED", "BODY"} for section in paper["sections"])
     ]
     allowed = set(request.paper_ids)
     referenced = ({item["paper_id"] for item in payload["papers"]} |

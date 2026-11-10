@@ -18,7 +18,7 @@ type Paper = { id: string; title: string; status: string; domain: string | null;
 type Cell = { paper_id: string; value: string; source: string };
 type Comparison = { papers: { paper_id: string; title: string }[]; dimensions: { name: string; values: Cell[] }[];
   consensus: string[]; differences: string[]; controversies: Claim[];
-  gaps: string[]; questions: string[]; next_steps: string[]; extraction_warnings?: string[] };
+  gaps: string[]; questions: string[]; next_steps: string[]; extraction_warnings?: string[]; stale_after_reparse?: boolean };
 type Artifact = { id: string; payload: Comparison; paper_ids: string[]; created_at: string };
 
 export default function SynthesisPage() {
@@ -71,7 +71,7 @@ export default function SynthesisPage() {
     selectionWrites.current.catch((e) => setError(e.message));
   }
   async function compare() {
-    if (artifact && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
+    if (artifact && !artifact.payload.stale_after_reparse && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
     setBusy(true); setError("");
@@ -117,6 +117,7 @@ export default function SynthesisPage() {
     {busy && <div className="floatingBusy" role="status"><span className="loadingPulse"/>已等待 {elapsed} 秒；超过等待上限会提示缩小范围</div>}
     {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
       {data.extraction_warnings?.map((warning) => <p className="miniNotice" role="note" key={warning}>{warning}</p>)}
+      {data.stale_after_reparse && <p className="miniNotice" role="note">部分论文已重新识别，当前为旧版综合结果，引用位置可能已变化，请重新综合并核对原文。</p>}
       {!data.extraction_warnings && artifact?.paper_ids.map((id) => papers.find((paper) => paper.id === id)).filter((paper) => paper?.warning).map((paper) => <p className="miniNotice" role="note" key={paper!.id}>《{paper!.title}》：{paper!.warning} 请核对综合结果与原文。</p>)}
       {tab === "matrix" && <>
         <div className="compareFocus">

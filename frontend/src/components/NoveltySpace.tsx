@@ -50,7 +50,7 @@ function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly }: {
 function Planetarium({ planets, onSelect, onHover, playing, searchOnly }: {
   planets: Planet[]; onSelect: (paper: SimilarPaper) => void; onHover: (paper: SimilarPaper | null) => void; playing: boolean; searchOnly: boolean;
 }) {
-  return <Canvas camera={{ position: [0, 4.2, 7.4], fov: 38 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: "high-performance" }} frameloop="always">
+  return <Canvas camera={{ position: [0, 4.2, 7.4], fov: 38 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: "high-performance" }} frameloop={playing ? "always" : "demand"}>
     <PlanetaryScene planets={planets} onSelect={onSelect} onHover={onHover} playing={playing} searchOnly={searchOnly} />
   </Canvas>;
 }

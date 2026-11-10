@@ -1,5 +1,19 @@
 # Project lessons
 
+## 2026-11-09 — Reprocessing must preserve prior work
+
+- Status: validated in local automated tests and by read-only parsing of seven existing PDFs; accuracy across publishers remains unverified.
+- Evidence: the old reparse path deleted reading messages and related research artifacts. Two real review PDFs placed a large multi-page body inside the abstract because their headings did not match fixed rules.
+- Action: keep old messages and artifacts, detach old message-to-section references, and flag affected artifacts as stale. Split exceptionally long multi-page abstract units into page-scoped unclassified body units with a warning.
+- Boundary: reading position is reset on explicit reparse; page-scoped recovery is not reliable section classification or OCR. Existing records are not automatically reprocessed.
+
+## 2026-11-09 — Shared workspace requests
+
+- Status: type-checked and basic navigation checked locally; production performance not yet measured.
+- Evidence: the page and navigation bar each mounted a workspace hook, causing concurrent duplicate workspace requests and another request for every subscriber after changes.
+- Action: share in-flight reads and publish completed updates to subscribers, preventing an older read from overwriting a newer update. Pause WebGL rendering when the user pauses motion.
+- Boundary: request coalescing is not a complete diagnosis of perceived navigation latency or network performance.
+
 ## 2026-11-09 — Review text misclassified as abstract
 
 - Status: locally tested; real model result and broader PDF coverage still require verification.

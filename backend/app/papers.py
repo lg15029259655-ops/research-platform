@@ -89,21 +89,20 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
             paper = owned_paper(db, paper_id, owner)
             metadata_title = paper.title if paper.openalex_id else None
             if replace_existing:
-                db.query(Message).filter(Message.paper_id == paper_id).delete()
+                # Keep the conversation but detach old unit references, which
+                # may refer to different content after re-segmentation.
+                db.query(Message).filter(Message.paper_id == paper_id).update({Message.reading_unit_id: None})
                 db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
                 db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
                 paper.current_unit_id = None
                 artifacts = db.scalars(select(ResearchArtifact).where(
                     ResearchArtifact.owner_id == owner,
                     ResearchArtifact.kind.in_(["paper_summary", "paper_compare"]))).all()
-                removed_ids = []
                 for artifact in artifacts:
                     if paper_id in json.loads(artifact.paper_ids_json):
-                        removed_ids.append(artifact.id)
-                        db.delete(artifact)
-                workspace = db.scalar(select(ResearchWorkspace).where(ResearchWorkspace.owner_id == owner))
-                if workspace and workspace.synthesis_id in removed_ids:
-                    workspace.synthesis_id = None
+                        payload = json.loads(artifact.payload_json)
+                        payload["stale_after_reparse"] = True
+                        artifact.payload_json = json.dumps(payload, ensure_ascii=False)
             paper.title = parsed.title
             if not paper.domain:
                 from .research import route_research

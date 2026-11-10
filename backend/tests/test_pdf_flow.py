@@ -41,6 +41,25 @@ def test_unlabeled_abstract_requires_first_page_citation_marker():
     doc.close()
 
 
+def test_long_review_recovers_unclassified_body_per_page(tmp_path):
+    doc = pymupdf.open()
+    for index in range(4):
+        page = doc.new_page()
+        if index == 0:
+            page.insert_text((40, 25), "Abstract", fontsize=10)
+        for line in range(48):
+            page.insert_text((40, 45 + line * 12), f"Page {index + 1} contains review evidence and discussion about the study findings {line}.", fontsize=8)
+    path = tmp_path / "review.pdf"
+    path.write_bytes(doc.tobytes())
+    doc.close()
+    parsed = parse_pdf(path)
+    body = [unit for unit in parsed.units if unit.kind == "BODY"]
+    assert [unit.page_start for unit in body] == [1, 2, 3, 4]
+    assert all(unit.page_start == unit.page_end and f"Page {unit.page_start}" in unit.text for unit in body)
+    assert not any(unit.kind == "ABSTRACT" and len(unit.text) > 10000 for unit in parsed.units)
+    assert "未分类" in parsed.warning
+
+
 def upload(client: TestClient, title: str, **kwargs) -> dict:
     response = client.post("/api/papers", files={"file": ("unrelated-name.pdf", make_pdf(title, **kwargs), "application/pdf")})
     assert response.status_code == 200, response.text
@@ -194,7 +213,8 @@ def test_author_manuscript_header_does_not_replace_title_or_hide_sections(tmp_pa
     assert {item.kind for item in parsed.units} >= {"ABSTRACT", "INTRODUCTION", "METHODS", "RESULTS"}
 
 
-def test_reparse_existing_pdf_replaces_units_and_reading_history(monkeypatch, tmp_path):
+def test_reparse_preserves_history_and_marks_results_stale(monkeypatch, tmp_path):
+    from app.research import save_artifact
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     with TestClient(app) as client:
         owner = None
@@ -202,6 +222,7 @@ def test_reparse_existing_pdf_replaces_units_and_reading_history(monkeypatch, tm
             uploaded = upload(client, "Reparse Example")
             owner = owner_of(client)
             before = client.get(f"/api/papers/{uploaded['id']}").json()
+            saved = save_artifact(owner, "paper_compare", [uploaded["id"]], {"dimensions": []})
             with SessionLocal() as db:
                 db.add(Message(
                     id="11111111-1111-4111-8111-111111111111", paper_id=uploaded["id"],
@@ -212,7 +233,10 @@ def test_reparse_existing_pdf_replaces_units_and_reading_history(monkeypatch, tm
             after = client.get(f"/api/papers/{uploaded['id']}").json()
             assert after["status"] == "parsed"
             assert len(after["units"]) == len(before["units"])
-            assert after["messages"] == []
+            assert after["messages"][0]["content"] == "Old reading"
+            assert after["messages"][0]["reading_unit_id"] is None
+            artifacts = client.get("/api/research/artifacts", params={"kind": "paper_compare", "artifact_id": saved["id"]}).json()
+            assert artifacts[0]["payload"]["stale_after_reparse"] is True
         finally:
             if owner:
                 with SessionLocal() as db:

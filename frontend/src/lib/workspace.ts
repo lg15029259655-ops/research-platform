@@ -14,26 +14,45 @@ export type WorkspaceChange = Partial<Pick<Workspace, "query" | "domain" | "stud
   "selected_paper_ids" | "core_paper_id" | "synthesis_id" | "research_gap" |
   "gap_context" | "design_idea" | "novelty_id" | "design_version_id">>;
 
+let cached: Workspace | null = null;
+let pending: Promise<Workspace> | null = null;
+let revision = 0;
+const subscribers = new Set<(workspace: Workspace) => void>();
+
+function publish(workspace: Workspace) {
+  cached = workspace;
+  subscribers.forEach((subscriber) => subscriber(workspace));
+}
+
+function loadWorkspace(): Promise<Workspace> {
+  if (pending) return pending;
+  const started = revision;
+  const request = apiJson<Workspace>("/api/workspace").then((result) => {
+    if (started === revision) publish(result);
+    return started === revision ? result : (cached || result);
+  }).finally(() => { if (pending === request) pending = null; });
+  pending = request;
+  return request;
+}
+
 export async function updateWorkspace(change: WorkspaceChange): Promise<Workspace> {
   const result = await apiJson<Workspace>("/api/workspace", {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change),
   });
-  window.dispatchEvent(new Event("medread-workspace-updated"));
+  revision += 1;
+  publish(result);
   return result;
 }
 
 export function useWorkspace() {
-  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspace, setWorkspace] = useState<Workspace | null>(cached);
   const refresh = useCallback(async () => {
-    const result = await apiJson<Workspace>("/api/workspace");
-    setWorkspace(result);
-    return result;
+    return loadWorkspace();
   }, []);
   useEffect(() => {
+    subscribers.add(setWorkspace);
     refresh().catch(() => {});
-    const onChange = () => { refresh().catch(() => {}); };
-    window.addEventListener("medread-workspace-updated", onChange);
-    return () => window.removeEventListener("medread-workspace-updated", onChange);
+    return () => { subscribers.delete(setWorkspace); };
   }, [refresh]);
   return { workspace, refresh };
 }
