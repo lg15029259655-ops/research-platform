@@ -5,7 +5,7 @@
  *  「失败」（生产环境就出现过 35 秒 504）。改成任务后，提交立即返回，长任务在服务端
  *  继续跑，前端用 SSE 订阅阶段与进度，断线了还能重连/轮询，不会丢结果。
  */
-import { API, apiJson } from "@/lib/api";
+import { API, ApiError, apiJson } from "@/lib/api";
 
 export type JobKind = "xray" | "compare" | "novelty" | "design" | "mindmap";
 
@@ -81,7 +81,6 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
     let safetyTimer: ReturnType<typeof setTimeout> | null = null;
     let polling = false;
     let latest: JobSnapshot | null = null;
-    let sawSseEvent = false;
 
     const stop = () => {
       if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
@@ -110,6 +109,7 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
     };
 
     const pushSnapshot = (snapshot: JobSnapshot) => {
+      if (settled) return;
       latest = snapshot;
       handlers.onSnapshot?.(snapshot);
       if (snapshot.stage || snapshot.stage_label) handlers.onStage?.(snapshot.stage ?? "", snapshot.stage_label ?? "");
@@ -123,7 +123,7 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
       settle(snapshot);
     };
 
-    const startPolling = () => {
+    const startPolling = (interval = 1000) => {
       if (polling || settled) return;
       polling = true;
       const tick = async () => {
@@ -132,10 +132,11 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
           const snapshot = await getJob(id);
           pushSnapshot(snapshot);
           if (settled) return;
-        } catch {
+        } catch (error) {
+          if (error instanceof ApiError && [401, 403, 404].includes(error.status)) { fail(error); return; }
           // 网络抖动不应该中断等待：下一轮继续。
         }
-        if (!settled) pollTimer = setTimeout(tick, 1000);
+        if (!settled) pollTimer = setTimeout(tick, interval);
       };
       void tick();
     };
@@ -149,22 +150,20 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
         return;
       }
       source.addEventListener("snapshot", (event) => {
-        sawSseEvent = true;
         const snapshot = readEventData(event) as JobSnapshot | null;
         if (snapshot) pushSnapshot(snapshot);
       });
       source.addEventListener("stage", (event) => {
-        sawSseEvent = true;
+        if (settled) return;
         const data = readEventData(event) as { stage?: string; label?: string } | null;
         if (data) handlers.onStage?.(data.stage ?? "", data.label ?? "");
       });
       source.addEventListener("progress", (event) => {
-        sawSseEvent = true;
+        if (settled) return;
         const data = readEventData(event) as { done?: number; total?: number } | null;
         if (data) handlers.onProgress?.({ done: data.done ?? 0, total: data.total ?? 0 });
       });
       source.addEventListener("result", (event) => {
-        sawSseEvent = true;
         const artifact = readEventData(event);
         if (settled) return;
         if (latest) { settle({ ...latest, status: "done", result: artifact }); return; }
@@ -180,11 +179,11 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
           getJob(id).then((full) => settle({ ...full, status: "failed", error })).catch(fail);
           return;
         }
-        sawSseEvent = true;
         startPolling();
       });
-      // 代理没透传 SSE、或 EventSource 一直连不上时，不能干等：5 秒内没有任何事件就并行轮询。
-      safetyTimer = setTimeout(() => { if (!settled && !sawSseEvent) startPolling(); }, 5000);
+      // SSE can stall silently after its initial snapshot. Periodic status
+      // checks also recover terminal events dropped by a slow connection.
+      safetyTimer = setTimeout(() => { if (!settled) startPolling(5000); }, 5000);
     };
 
     if (signal) {

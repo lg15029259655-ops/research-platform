@@ -9,6 +9,23 @@ from app.main import app
 from app.jobs import store, worker
 
 
+def test_terminal_event_survives_full_subscriber_queue():
+    from app.jobs import events
+
+    async def exercise():
+        queue = events.subscribe("full-queue-test")
+        try:
+            for index in range(256):
+                events.publish("full-queue-test", "progress", {"done": index})
+            events.publish("full-queue-test", "result", {"value": "finished"})
+            items = [queue.get_nowait() for _ in range(queue.qsize())]
+            assert items[-1] == {"event": "result", "data": {"value": "finished"}}
+        finally:
+            events.unsubscribe("full-queue-test", queue)
+
+    asyncio.run(exercise())
+
+
 async def _echo_handler(ctx: worker.JobContext) -> dict:
     await ctx.emit("stage", {"stage": "thinking", "label": "正在回显"})
     await ctx.emit("progress", {"done": 1, "total": 2})

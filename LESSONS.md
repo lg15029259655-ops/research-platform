@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Recover stalled progress streams and preserve terminal events
+
+- Status: verified with simulated event streams and an isolated full queue; real proxy and browser behavior remain unmeasured.
+- Evidence: the frontend only started backup polling when no SSE event arrived within five seconds; a stream that delivered an initial snapshot and then silently stalled could leave the user waiting forever. A full backend event queue could also drop the final result or error. Polling ignored permanent 404 responses indefinitely.
+- Action: continue a five-second status check even after SSE starts, stop with an actionable error when a task is no longer accessible, ignore late snapshots after settlement, and make terminal events displace old progress when a subscriber queue is full.
+- Verification: frontend tests simulate a stalled SSE snapshot and a missing task; a backend test fills the event queue and verifies the result remains deliverable. TypeScript passes and the full backend suite passes (95 tests).
+- Boundary: the fallback adds one status request every five seconds during long tasks. Network requests that never resolve and actual reverse proxy behavior require further testing; task cancellation semantics for multiple watchers are unchanged.
+
 ## 2026-11-10 — Save design versions atomically and protect the active workspace
 
 - Status: verified with isolated asynchronous concurrency and injected database flush failure; multi-process deployment and real model timing are not tested.
