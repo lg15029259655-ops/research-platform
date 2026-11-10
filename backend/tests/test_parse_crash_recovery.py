@@ -101,11 +101,12 @@ Base.metadata.create_all(bind=engine)
 with engine.begin() as connection:
     connection.exec_driver_sql("ALTER TABLE papers DROP COLUMN parse_token")
     connection.exec_driver_sql("ALTER TABLE papers DROP COLUMN parse_heartbeat")
+    connection.exec_driver_sql("ALTER TABLE papers DROP COLUMN source_sha256")
 with TestClient(app) as client:
     assert client.get("/api/health").status_code == 200
     with engine.connect() as connection:
         columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(papers)")}
-    assert {"parse_token", "parse_heartbeat"} <= columns
+    assert {"parse_token", "parse_heartbeat", "source_sha256"} <= columns
 '''
     subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
                    env=env, check=True, timeout=30, capture_output=True)

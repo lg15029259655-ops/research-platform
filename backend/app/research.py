@@ -17,7 +17,7 @@ from .auth import current_owner
 from .db import SessionLocal
 from .models import Paper, ReadingUnit, ResearchArtifact, DesignVersion, DiscoveryCache
 from .workspace import get_or_create
-from .papers import owned_paper, paper_data, pdf_is_readable, process_paper
+from .papers import owned_paper, paper_data, paper_source_matches, pdf_is_readable, process_paper
 from .services.openalex_service import (
     DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, lineage_for_work, search_works,
 )
@@ -269,6 +269,8 @@ async def import_open_pdf(request: ImportRequest, background_tasks: BackgroundTa
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         previous_status, previous_path = paper.status, paper.local_file_path
+        previous_source = paper.source_sha256 or (
+            None if (paper.parse_warning or "").startswith("重新解析失败") else paper.sha256 or None)
         if previous_status not in {"metadata_only", "failed"}:
             raise HTTPException(409, "PDF 已在处理中，请稍后打开论文库")
     try:
@@ -284,7 +286,7 @@ async def import_open_pdf(request: ImportRequest, background_tasks: BackgroundTa
         ).values(original_filename=f"{request.openalex_id}.pdf", stored_filename=Path(path).name,
                  local_file_path=path, mime_type="application/pdf",
                  file_size_bytes=size, sha256=digest, status="uploaded", parse_token=token,
-                 parse_heartbeat=datetime.now(timezone.utc)))
+                 parse_heartbeat=datetime.now(timezone.utc), source_sha256=previous_source))
         if claimed.rowcount != 1:
             db.rollback()
             Path(path).unlink(missing_ok=True)
@@ -311,6 +313,8 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
             paper_id = paper.id
             if paper.status != "parsed":
                 raise HTTPException(422, "这项分析需要全文，请先上传对应 PDF")
+            if not paper_source_matches(paper):
+                raise HTTPException(422, "PDF 与保存的阅读内容不一致，请先重新识别或上传原文件")
             if not pdf_is_readable(paper.local_file_path):
                 label = paper.original_filename.strip() or paper.title.strip() or "这篇论文"
                 raise HTTPException(422, f"《{label}》的 PDF 文件不可用，请先重新上传并核对原文")
@@ -573,7 +577,8 @@ async def execute_novelty(owner: str, query: str, *, emit=None, timeout: float |
     by_id = {item["openalex_id"]: item for item in works}
     with SessionLocal() as db:
         owned_pdf = {paper.openalex_id for paper in db.scalars(select(Paper).where(
-            Paper.owner_id == owner, Paper.status == "parsed", Paper.openalex_id.is_not(None))).all()}
+            Paper.owner_id == owner, Paper.status == "parsed", Paper.openalex_id.is_not(None))).all()
+            if paper_source_matches(paper)}
     for item in payload["similar_papers"]:
         source = by_id[item["openalex_id"]]
         item["abstract"] = source["abstract"][:1000]
@@ -693,7 +698,7 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
                 "research_gap": workspace.research_gap[:1500],
                 "synthesis_context": json.loads(workspace.gap_context_json),
                 "selected_papers": [{"paper_id": item.id, "title": item.title,
-                    "full_text_available": item.status == "parsed"} for item in papers],
+                    "full_text_available": item.status == "parsed" and paper_source_matches(item)} for item in papers],
                 "evidence_note": "此处是前序综合输出和论文状态，不等于已独立核验的直接实验事实。",
             }
     if emit is not None:

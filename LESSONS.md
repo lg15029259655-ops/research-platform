@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Keep reading units tied to their source PDF
+
+- Status: verified with isolated synthetic PDFs and simulated parsing failures; external file modifications are not detected by this fingerprint comparison.
+- Evidence: a replacement PDF was saved before parsing; if parsing failed, old units remained but the current PDF path could point to a different, readable file. File access, chat and synthesis could then silently combine unrelated sources.
+- Action: persist the source digest of successfully parsed units, preserve it when attempting a replacement, and reject file-based reading and analysis while the saved digest differs from the current upload. Allow a successful reparse to establish the new association. Old failed records without a source digest are treated as uncertain. Surface a recovery action in the reader.
+- Verification: tests exercise a readable replacement whose parser fails, check that old units remain and file/search/chat/synthesis are blocked, then reparse successfully. A same-file failure remains readable. Migration and full backend suite pass (87 tests); frontend TypeScript check passes.
+- Boundary: the digest is based on the uploaded file recorded at ingestion; this change does not rehash a file modified outside the application, and it does not prove that a replacement is the intended paper. Legacy records without a digest and without a failure warning retain their prior behavior.
+
 ## 2026-11-10 — Recover interrupted PDF parsing with fenced attempts
 
 - Status: verified with isolated simulated stale, live, legacy and superseded attempts and an actual terminated subprocess; production workloads have not been tested.

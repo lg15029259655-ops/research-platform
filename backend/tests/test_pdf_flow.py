@@ -193,7 +193,7 @@ def test_missing_pdf_can_be_reattached_without_erasing_history(monkeypatch, tmp_
             assert failed["status"] == "parsed" and failed["file_available"] is False
             assert failed["messages"][0]["content"] == "Previous explanation"
             assert "重新解析失败" in failed["warning"]
-            assert client.get(f"/api/papers/{paper['id']}/search", params={"q": "study"}).status_code == 422
+            assert client.get(f"/api/papers/{paper['id']}/search", params={"q": "study"}).status_code == 409
             assert client.post("/api/research/compare", json={"paper_ids": [paper["id"], other_paper["id"]]}).status_code == 422
             replacement = client.post(f"/api/papers/{paper['id']}/attach", files={"file":
                 ("replacement.pdf", make_pdf("Unrelated oncology investigation"), "application/pdf")})
@@ -574,6 +574,67 @@ def test_failed_record_keeps_previous_units_when_replacement_fails(monkeypatch, 
         assert after["status"] == "parsed"
         assert after["units"] == paper["units"]
         assert "重新解析失败" in after["warning"]
+
+
+def test_failed_replacement_never_pairs_old_units_with_new_pdf(monkeypatch, tmp_path):
+    import asyncio
+    from fastapi import HTTPException
+    from app import papers as papers_module
+    from app.research import fulltext_papers
+    from app.services.mindmap_service import execute_mindmap
+    import pytest
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Original Study")
+        owner = owner_of(client)
+        with SessionLocal() as db:
+            # Simulate a missing original without deleting any file.
+            record = db.get(Paper, paper["id"])
+            record.local_file_path = str(tmp_path / "missing.pdf")
+            db.commit()
+        original_parse = papers_module.parse_pdf
+
+        def fail_parse(*_args, **_kwargs):
+            raise ValueError("simulated parsing failure")
+
+        monkeypatch.setattr(papers_module, "parse_pdf", fail_parse)
+        response = client.post(f"/api/papers/{paper['id']}/attach", files={"file":
+            ("replacement.pdf", make_pdf("Different Study"), "application/pdf")})
+        assert response.status_code == 200
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["units"] == paper["units"]
+        assert after["source_matches"] is False and after["file_available"] is False
+        assert after["full_text_available"] is False
+        assert client.get(f"/api/papers/{paper['id']}/file").status_code == 409
+        assert client.get(f"/api/papers/{paper['id']}/search", params={"q": "study"}).status_code == 409
+        assert client.post(f"/api/papers/{paper['id']}/chat", json={"action": "START"}).status_code == 409
+        with pytest.raises(HTTPException) as error:
+            fulltext_papers(owner, [paper["id"]])
+        assert error.value.status_code == 422
+        with pytest.raises(ValueError, match="不一致"):
+            asyncio.run(execute_mindmap(owner, paper["id"]))
+        monkeypatch.setattr(papers_module, "parse_pdf", original_parse)
+        assert client.post(f"/api/papers/{paper['id']}/reparse").status_code == 200
+        restored = client.get(f"/api/papers/{paper['id']}").json()
+        assert restored["source_matches"] is True and restored["file_available"] is True
+        assert client.get(f"/api/papers/{paper['id']}/file").status_code == 200
+
+
+def test_failed_reparse_of_same_file_retains_source_match(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Same Source Study")
+
+        def fail_parse(*_args, **_kwargs):
+            raise ValueError("simulated parsing failure")
+
+        monkeypatch.setattr("app.papers.parse_pdf", fail_parse)
+        assert client.post(f"/api/papers/{paper['id']}/reparse").status_code == 200
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["source_matches"] is True and after["file_available"] is True
+        assert after["units"] == paper["units"]
+        assert client.get(f"/api/papers/{paper['id']}/file").status_code == 200
 
 
 def test_simultaneous_attachments_only_start_one_parse(monkeypatch, tmp_path):

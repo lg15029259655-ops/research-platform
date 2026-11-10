@@ -166,11 +166,14 @@ def _existing_artifact(owner: str, paper_id: str, revision: str) -> dict | None:
 
 async def execute_mindmap(owner: str, paper_id: str, *, emit=None, timeout: float | None = None) -> dict:
     from ..research import save_artifact  # 延迟导入，避免 research <-> mindmap 循环依赖
+    from ..papers import paper_source_matches
 
     with SessionLocal() as db:
         paper = db.scalar(select(Paper).where(Paper.id == paper_id, Paper.owner_id == owner))
         if paper is None:
             raise LookupError("论文不存在")
+        if paper.status != "parsed" or not paper_source_matches(paper):
+            raise ValueError("论文正在解析或 PDF 与阅读内容不一致，请先完成识别")
         units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id)
                            .order_by(ReadingUnit.position)).all()
         if not units:

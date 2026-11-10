@@ -72,6 +72,15 @@ def pdf_is_readable(path: str) -> bool:
         return False
 
 
+def paper_source_matches(paper: Paper) -> bool:
+    """Whether saved reading units can be associated with the current PDF."""
+    if paper.source_sha256:
+        return paper.source_sha256 == paper.sha256
+    # Older records may predate the source fingerprint. A failed replacement
+    # cannot establish which file produced those units, so require a reparse.
+    return not (paper.parse_warning or "").startswith("重新解析失败")
+
+
 def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
     data = {"id": paper.id, "title": paper.title, "original_filename": paper.original_filename,
             "current_unit_id": paper.current_unit_id, "status": paper.status,
@@ -84,14 +93,16 @@ def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
             "abstract": paper.abstract, "citation_count": paper.citation_count,
             "oa_pdf_url": paper.oa_pdf_url, "domain": paper.domain,
             "study_type": paper.study_type, "template": paper.template,
-            "full_text_available": paper.status == "parsed"}
+            "full_text_available": paper.status == "parsed" and paper_source_matches(paper),
+            "source_matches": paper_source_matches(paper)}
     if units is not None:
         try:
             with pymupdf.open(paper.local_file_path) as document:
                 data["page_count"] = document.page_count if not document.needs_pass else None
         except Exception:
             data["page_count"] = None
-        data["file_available"] = data["page_count"] is not None and data["page_count"] > 0
+        data["file_available"] = (data["page_count"] is not None and data["page_count"] > 0
+                                  and paper_source_matches(paper))
         data["units"] = [{"id": unit.id, "position": unit.position, "kind": unit.kind,
                           "heading": unit.heading, "page_start": unit.page_start,
                           "page_end": unit.page_end,
@@ -189,6 +200,7 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
                                   page_number=item["page_number"], xref=item["xref"],
                                   local_file_path=item["path"], width=item["width"], height=item["height"]))
             paper.status = "parsed"
+            paper.source_sha256 = paper.sha256
             paper.parse_token = None
             paper.parse_heartbeat = None
             db.commit()
@@ -256,6 +268,8 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
         if paper.status not in {"metadata_only", "failed"} and not replace_existing:
             raise HTTPException(409, "这篇论文已有 PDF")
         previous_status, previous_path = paper.status, paper.local_file_path
+        previous_source = paper.source_sha256 or (
+            None if (paper.parse_warning or "").startswith("重新解析失败") else paper.sha256 or None)
     original, path, size, digest = await save_pdf(file, owner, paper_id)
     token = str(uuid4())
     with SessionLocal() as db:
@@ -265,7 +279,7 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
         ).values(original_filename=original, stored_filename=Path(path).name,
                  local_file_path=path, mime_type="application/pdf",
                  file_size_bytes=size, sha256=digest, status="uploaded", parse_token=token,
-                 parse_heartbeat=datetime.now(timezone.utc)))
+                 parse_heartbeat=datetime.now(timezone.utc), source_sha256=previous_source))
         if claimed.rowcount != 1:
             db.rollback()
             Path(path).unlink(missing_ok=True)  # Only this request's newly saved file.
@@ -358,6 +372,8 @@ def get_file(paper_id: str, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
+        if not paper_source_matches(paper):
+            raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         path = paper.local_file_path
         if not path or not Path(path).is_file():
             raise HTTPException(404, "PDF 文件不存在，请重新上传")
@@ -370,6 +386,8 @@ def page_thumbnail(paper_id: str, page_number: int, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
+        if not paper_source_matches(paper):
+            raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         path = paper.local_file_path
     try:
         image = render_page_png(path, page_number, max_dimension=760)
@@ -385,6 +403,8 @@ def search_paper(paper_id: str, q: str, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
+        if not paper_source_matches(paper):
+            raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         path = paper.local_file_path
     query = q.strip().lower()
     if len(query) < 2:
@@ -510,6 +530,8 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(409, "论文正在解析或尚未解析完成，请稍后再试")
+        if not paper_source_matches(paper):
+            raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         try:
             model_config(False)
         except AIConfigurationError as exc:
