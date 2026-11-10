@@ -135,7 +135,7 @@ def test_comparison_timeout_returns_promptly(monkeypatch, tmp_path):
 
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     monkeypatch.setattr("app.research.run_task", slow_run)
-    monkeypatch.setattr("app.research.FULLTEXT_AI_TIMEOUT", 0.001)
+    monkeypatch.setattr("app.research.COMPARE_AI_TIMEOUT", 0.001)
     with TestClient(app) as client:
         try:
             ids = [client.post("/api/papers", files={"file":
@@ -378,8 +378,12 @@ def test_design_versions_and_local_node_scope(monkeypatch):
 
 def test_empty_comparison_claims_are_explicitly_insufficient(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    # A short X-Ray deadline must not cancel the separate multi-paper task.
+    monkeypatch.setattr("app.research.FULLTEXT_AI_TIMEOUT", 0.001)
 
     async def fake_run(_name, context):
+        import asyncio
+        await asyncio.sleep(0.02)
         ids = [item["paper_id"] for item in context["papers"]]
         return {"papers": [{"paper_id": pid, "title": "paper", "domain": "biomed"} for pid in ids],
             "dimensions": [{"name": "研究问题", "values": [{"paper_id": pid, "value": "已提取", "source": "Title"} for pid in ids]}],

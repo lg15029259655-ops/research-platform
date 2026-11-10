@@ -111,8 +111,6 @@ export default function Home() {
 
       {/* 分区 2 · Hero */}
       <section className="home-hero" aria-labelledby="home-title">
-        <button className="home-project-badge" type="button" onClick={() => setShowIntro(true)} aria-label="查看比赛项目说明"><span aria-hidden="true" />电信T.A杯 · 比赛作品展示 <span aria-hidden="true">↗</span></button>
-        <span className="home-kicker"><span className="home-kicker-line" aria-hidden="true" />给每一步研究一个依据</span>
         <h1 id="home-title">读懂证据，<br /><em>再提出下一步问题。</em></h1>
         <p>从发现论文到设计研究，在同一个工作台整理线索、精读全文、比较结果。始终分清哪些结论来自摘要，哪些有全文支持。</p>
         <div className="home-hero-actions">

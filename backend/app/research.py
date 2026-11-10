@@ -27,6 +27,9 @@ Owner = Depends(current_owner)
 NOVELTY_AI_TIMEOUT = 15
 DESIGN_AI_TIMEOUT = 18
 FULLTEXT_AI_TIMEOUT = 35
+# Multi-paper structured output and JSON repair take longer than one-paper X-Ray.
+# Keep the total deadline below the deployed proxy's 300-second limit.
+COMPARE_AI_TIMEOUT = 240
 
 
 def cache_key(kind: str, query: str, mode: str = "", page: int = 1) -> str:
@@ -317,9 +320,9 @@ async def paper_xray(paper_id: str, owner: str = Owner):
 async def compare(request: CompareRequest, owner: str = Owner):
     papers = fulltext_papers(owner, request.paper_ids, compact=True)
     try:
-        payload = await asyncio.wait_for(run_task("paper_compare", {"papers": papers}), timeout=FULLTEXT_AI_TIMEOUT)
+        payload = await asyncio.wait_for(run_task("paper_compare", {"papers": papers}), timeout=COMPARE_AI_TIMEOUT)
     except TimeoutError as exc:
-        raise HTTPException(504, "文献综合超过等待上限，请减少论文数量后重试") from exc
+        raise HTTPException(504, "文献综合超过等待上限，请稍后重试；也可减少论文数量") from exc
     except StructuredAIError as exc:
         logger.warning("Comparison AI failed: %s", type(exc).__name__)
         raise HTTPException(503, str(exc)) from exc

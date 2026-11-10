@@ -1,5 +1,9 @@
 # lunyu-lab.site 测试部署准备
 
+> **杭州 ECS 临时 IP 预览（2026-10-18）**：用户明确要求把当天最新版本部署到阿里云杭州免费试用 ECS。已部署 Git 提交 `0edfe1b` 到实例 `i-bp1iot27mz2araj1pct6`（公网 IP `114.55.113.45`）的 `/opt/research-platform/releases/0edfe1b`，`current` 指向该版本。后端、前端、Nginx 的 systemd 服务分别为 `research-platform-backend`、`research-platform-frontend`、`nginx`；SQLite 和上传目录位于 `/var/lib/research-platform`。临时访问地址为 `http://114.55.113.45/`；本机和公网的页面、`/api/health`、`/api/session`、`/api/ai/status` 已验证，服务器端 28 项测试通过，百炼 probe 返回成功。阿里云接入备案与正式域名 HTTPS 尚未办理，本次未改 `lunyu-lab.site` DNS。IP 预览使用 [nginx-ecs-ip-preview.conf](./nginx-ecs-ip-preview.conf)；需要停止预览时运行 `systemctl stop nginx research-platform-frontend research-platform-backend`。
+
+> **备案状态更新（2026-10-15）**：用户提供的控制台截图显示 `lunyu-lab.site` 的 ICP 备案号为 `陕ICP备2026026714号-2`，状态“正常”。另一个域名 `campusradar.site` 的编号为 `陕ICP备2026026714号-1`。详见 [域名备案记录](../docs/domain-filings.md)。用户本次要求暂不部署。
+
 > **历史准备方案（2026-10-09）**：论文平台后来实际部署到了阿里云香港 ECS，`https://lunyu-lab.site` 已上线。下文关于与校园雷达共用中国内地服务器、备案前不得启用站点及“尚未上线”的描述只记录当时的设想，不能作为当前服务器操作指南。改动线上环境前请在阿里云 Workbench 核对实际配置。
 
 此目录只包含部署模板，不包含服务器凭据或正式密钥。2026-10-09 用户截图显示域名命名状态已为“正常”；该状态不等于实名认证或 ICP 备案完成。新网站 ICP 备案完成前，不要把新域名公开解析到中国内地服务器，也不要启用 Nginx 站点。
