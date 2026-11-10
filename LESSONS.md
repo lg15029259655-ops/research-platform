@@ -1,5 +1,12 @@
 # Project lessons
 
+## 2026-11-10 — Resume polling when reopening a parsing paper
+
+- Status: type-checked locally; browser timing and production network behavior remain unverified.
+- Evidence: upload polling stopped after a fixed wait, and opening an in-progress paper did not start another status check. A paper that later finished could remain visibly stuck; a successfully uploaded paper might also be absent from the displayed list after a polling error.
+- Action: poll the lightweight owner-scoped status endpoint while an in-progress paper is selected, retry transient network errors, stop on selection change or unmount, and refresh the list after an upload succeeded but the initial wait failed.
+- Verification: frontend TypeScript check passes. This does not restart parsing after a server crash; an unfinished server task can still remain in its intermediate state.
+
 ## 2026-11-10 — Optional precomputation must not undo parsing success
 
 - Status: verified with isolated API tests; external AI queue outages were simulated.

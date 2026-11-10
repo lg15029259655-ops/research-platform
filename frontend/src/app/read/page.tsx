@@ -128,6 +128,35 @@ export default function ReadPage() {
   // 组件卸载（跳到别的页面）时取消后台任务，避免服务端为一个没人看的任务继续花钱。
   useEffect(() => () => { abortReaderJobs(); }, []);
 
+  // A paper can finish parsing after the initial upload wait, or while the
+  // reader is closed. Resume lightweight polling when it is opened again.
+  useEffect(() => {
+    if (!paper || pending || !["uploaded", "reading", "structure", "figures", "manifest", "images"].includes(paper.status)) return;
+    const id = paper.id;
+    const request = paperRequest.current;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch(`${API}/api/papers/${id}/status`, { credentials: "include", signal: controller.signal });
+        if (response.ok) {
+          const progress: Pick<Paper, "status" | "warning"> = await response.json();
+          if (controller.signal.aborted || request !== paperRequest.current) return;
+          if (progress.status === "parsed" || progress.status === "failed") {
+            await loadPaper(id);
+            await loadList();
+            return;
+          }
+        }
+      } catch {
+        // A temporary network error should not stop future status checks.
+      }
+      if (!controller.signal.aborted && request === paperRequest.current) timer = setTimeout(poll, 3000);
+    };
+    void poll();
+    return () => { controller.abort(); if (timer) clearTimeout(timer); };
+  }, [paper?.id, paper?.status, pending, loadList, loadPaper]);
+
   useEffect(() => {
     const container = messagesRef.current;
     const assistants = container?.querySelectorAll<HTMLElement>(".bubble.assistant");
@@ -147,11 +176,13 @@ export default function ReadPage() {
     const file = event.target.files?.[0];
     if (!file || !ready) return;
     setPending(true); setError(""); setParseStage("正在上传 PDF…");
+    let uploadedId: string | null = null;
     try {
       const body = new FormData(); body.append("file", file);
       const res = await fetch(`${API}/api/papers?deferred=true`, { method: "POST", credentials: "include", body });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "上传失败");
+      uploadedId = data.id;
       const stages: Record<string, string> = { uploaded: "正在读取 PDF…", reading: "正在提取每页文字…", structure: "正在识别论文章节…", figures: "正在定位主文 Figure 和 Table…", manifest: "正在建立阅读目录…", images: "正在提取页面图像…" };
       let parsed: Pick<Paper, "status" | "warning"> | null = null;
       for (let attempt = 0; attempt < 240; attempt++) {
@@ -166,7 +197,12 @@ export default function ReadPage() {
       if (!parsed) throw new Error("解析仍在进行，请稍后从论文库打开");
       await loadList(); await loadPaper(data.id); setPage(1);
       if (parsed.warning) setError(parsed.warning);
-    } catch (e) { setError(e instanceof Error ? e.message : "上传失败"); }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "上传失败");
+      // Keep a successfully uploaded paper discoverable if the wait or a
+      // subsequent status request fails while parsing continues on the server.
+      if (uploadedId) await loadList().catch(() => {});
+    }
     finally { setPending(false); setParseStage(""); event.target.value = ""; }
   }
 
