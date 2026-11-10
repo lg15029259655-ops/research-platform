@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Evidence citations need literal verification
+
+- Status: local automated tests validate exact-match and rejection behavior; real-model evidence extraction remains unproven.
+- Evidence: the previous comparison accepted a valid unit ID and displayed that unit's first 260 characters as if they supported the model's claim. A valid section reference alone does not prove relevance. Multi-page excerpts also exposed a starting page as an exact quote location.
+- Action: request a continuous source quote, check it against the supplied excerpt after whitespace normalization, downgrade unsupported stances when no verified quote exists, label unverified legacy snippets, and show a range when the exact page is unknown. Generate paper titles from authoritative inputs.
+- Verification: tests cover fabricated versus matching quotes, missing paper metadata, and multi-page ranges. Two real-model runs (four papers in 32.8 seconds and two in 18.4 seconds) returned no evidence claims, so they do not validate real-model quote generation.
+- Boundary: a literal text match proves only that the words occur in the supplied excerpt; it does not establish that they support a scientific claim. Users must check original context and study conditions.
+
 ## 2026-11-09 — Reader switching and polling
 
 - Status: validated in an isolated browser using delayed synthetic responses; full production workloads remain unmeasured.

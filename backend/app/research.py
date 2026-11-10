@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -292,14 +293,15 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
             else:
                 selected_units = [unit for unit in units if unit.kind != "RECAP"][:35]
             excerpts = [{"unit_id": unit.id, "kind": unit.kind, "heading": unit.heading,
-                         "page": unit.page_start, "text": unit.source_text[:1100]}
+                         "page": unit.page_start, "page_end": unit.page_end,
+                         "text": unit.source_text[:1100]}
                         for unit in selected_units]
             if unclassified:
                 excerpts = [item for item in excerpts if item["unit_id"] != unclassified.id]
                 text = unclassified.source_text
                 for offset in (0, len(text) // 3, len(text) * 2 // 3):
                     excerpts.append({"unit_id": unclassified.id, "kind": "UNCLASSIFIED",
-                        "heading": "未分类正文片段（章节和页码需核对）", "page": None,
+                        "heading": "未分类正文片段（章节和页码需核对）", "page": None, "page_end": None,
                         "text": text[offset:offset + 1100]})
             papers.append({"paper_id": paper.id, "title": paper.title,
                            "domain": paper.domain or route_research(paper.title)["domain"],
@@ -354,6 +356,10 @@ async def compare(request: CompareRequest, owner: str = Owner):
                   {pid for claim in payload["controversies"] for pid in claim["paper_ids"]})
     if not referenced.issubset(allowed):
         raise HTTPException(503, "AI 返回的论文引用不匹配，请重试")
+    # Titles and paper membership are authoritative input data, not model output.
+    # Models may omit a paper or paraphrase a title even when IDs are valid.
+    payload["papers"] = [{"paper_id": paper["paper_id"], "title": paper["title"],
+                          "domain": paper["domain"]} for paper in papers]
     for row in payload["dimensions"]:
         cells = {cell["paper_id"]: cell for cell in row["values"]}
         row["values"] = [cells.get(paper_id) or {"paper_id": paper_id,
@@ -376,18 +382,25 @@ async def compare(request: CompareRequest, owner: str = Owner):
         for ref in claim.get("evidence_refs", []):
             source = sources.get((ref.get("paper_id"), ref.get("unit_id")))
             if source and ref["paper_id"] in claim["paper_ids"]:
+                source_text = re.sub(r"\s+", " ", source["text"]).strip()
+                quote = re.sub(r"\s+", " ", ref.get("quote", "")).strip()
+                quote_verified = len(quote) >= 12 and quote in source_text
+                page_start, page_end = source["page"], source.get("page_end")
+                precise_page = page_start if page_start and page_end == page_start else None
                 verified = {"paper_id": ref["paper_id"], "unit_id": ref["unit_id"],
-                    "section": source["heading"], "page": source["page"],
-                    "snippet": source["text"][:260]}
+                    "section": source["heading"], "page": precise_page,
+                    "page_start": page_start, "page_end": page_end,
+                    "snippet": quote[:500] if quote_verified else source_text[:260],
+                    "quote_verified": quote_verified}
                 verified_refs.append(verified)
-                if source["kind"] in {"RESULTS", "DISCUSSION", "CONCLUSION"}:
+                if quote_verified and source["kind"] in {"RESULTS", "DISCUSSION", "CONCLUSION"}:
                     direct_refs.append(verified)
         if claim["stance"] == "SUPPORTS" and not direct_refs:
             claim["stance"] = "INSUFFICIENT"
-            claim["reason"] += " 当前未定位到结果或讨论中的直接证据，不能列为支持。"
+            claim["reason"] += " 当前未核对到结果或讨论中的连续原文，不能列为支持。"
         elif claim["stance"] == "REFUTES" and len({ref["paper_id"] for ref in direct_refs}) < 2:
             claim["stance"] = "INSUFFICIENT"
-            claim["reason"] += " 当前没有来自至少两篇论文的直接可比结果，不能列为结果不一致。"
+            claim["reason"] += " 当前没有来自至少两篇论文的可核对结果原文，不能列为结果不一致。"
         claim["evidence_refs"] = (direct_refs if claim["stance"] != "INSUFFICIENT" else verified_refs)[:6]
     return save_artifact(owner, "paper_compare", request.paper_ids, payload)
 

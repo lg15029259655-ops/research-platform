@@ -590,29 +590,43 @@ def test_comparison_requires_direct_result_refs_for_stance(monkeypatch, tmp_path
     async def fake_run(_name, context):
         first, second = context["papers"]
         result_unit = next(unit for unit in first["sections"] if unit["kind"] == "RESULTS")
-        direct = {"paper_id": first["paper_id"], "unit_id": result_unit["unit_id"]}
+        result_unit["page_end"] = result_unit["page"] + 1
+        direct = {"paper_id": first["paper_id"], "unit_id": result_unit["unit_id"], "quote": "Treatment changed response."}
+        invented = {**direct, "quote": "This invented sentence does not occur in the source."}
         ids = [first["paper_id"], second["paper_id"]]
-        return {"papers": [{"paper_id": pid, "title": "paper", "domain": "biomed"} for pid in ids],
+        return {"papers": [{"paper_id": ids[0], "title": "Invented title", "domain": "biomed"}],
             "dimensions": [], "consensus": [], "differences": [], "gaps": [], "questions": [], "next_steps": [],
             "controversies": [
                 {"claim": "第一篇报告了某项结果", "paper_ids": ids, "stance": "SUPPORTS",
                  "reason": "结果片段来自第一篇", "evidence_refs": [direct]},
                 {"claim": "两篇结果相反", "paper_ids": ids, "stance": "REFUTES",
                  "reason": "尚无第二篇的结果片段", "evidence_refs": [direct]},
+                {"claim": "虚构的结果", "paper_ids": ids, "stance": "SUPPORTS",
+                 "reason": "无原文", "evidence_refs": [invented]},
             ]}
 
     monkeypatch.setattr("app.research.run_task", fake_run)
     with TestClient(app) as client:
         try:
             ids = [client.post("/api/papers", files={"file":
-                (f"paper-{index}.pdf", pdf_bytes(f"Paper {index}"), "application/pdf")}).json()["id"]
+                (f"paper-{index}.pdf", pdf_bytes(f"Comparison Paper {index}"), "application/pdf")}).json()["id"]
                 for index in (1, 2)]
             response = client.post("/api/research/compare", json={"paper_ids": ids})
             assert response.status_code == 200
-            support, inconsistent = response.json()["payload"]["controversies"]
+            support, inconsistent, fabricated = response.json()["payload"]["controversies"]
+            actual_papers = response.json()["payload"]["papers"]
+            assert [paper["paper_id"] for paper in actual_papers] == ids
+            assert [paper["title"] for paper in actual_papers] == ["Comparison Paper 1", "Comparison Paper 2"]
             assert support["stance"] == "SUPPORTS"
             assert len(support["evidence_refs"]) == 1
+            assert support["evidence_refs"][0]["quote_verified"] is True
+            assert support["evidence_refs"][0]["snippet"] == "Treatment changed response."
+            assert support["evidence_refs"][0]["page"] is None
+            assert support["evidence_refs"][0]["page_start"] == 1
+            assert support["evidence_refs"][0]["page_end"] == 2
             assert inconsistent["stance"] == "INSUFFICIENT"
             assert "不能列为结果不一致" in inconsistent["reason"]
+            assert fabricated["stance"] == "INSUFFICIENT"
+            assert fabricated["evidence_refs"][0]["quote_verified"] is False
         finally:
             clean(client)

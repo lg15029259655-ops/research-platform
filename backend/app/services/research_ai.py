@@ -128,7 +128,7 @@ SHAPES: dict[str, dict[str, Any]] = {
         "dimensions": [{"name": "比较维度", "values": [{"paper_id": "论文ID", "value": "中文比较内容", "source": "章节/页码"}]}],
         "consensus": ["共识"], "differences": ["差异"],
         "controversies": [{"claim": "命题", "paper_ids": ["论文ID"], "stance": "INSUFFICIENT", "reason": "中文理由",
-            "evidence_refs": [{"paper_id": "输入中的论文ID", "unit_id": "输入中的单元ID"}]}],
+            "evidence_refs": [{"paper_id": "输入中的论文ID", "unit_id": "输入中的单元ID", "quote": "复制输入片段中的连续原文"}]}],
         "gaps": ["空白"], "questions": ["研究问题"], "next_steps": ["下一步"]},
     "novelty_analysis": {"query": "输入想法", "similar_papers": [{"openalex_id": "输入中的ID", "title": "输入中的标题",
         "similarity_level": "高/中/低之一", "differences": ["差异"]}],
@@ -168,8 +168,10 @@ async def run_task(name: str, context: dict[str, Any]) -> dict[str, Any]:
               "输入可能只是论文抽取片段；片段缺少某信息不能推断整篇论文没有做或没有报告。"
               "必须只返回一个合法 JSON 对象，不要 Markdown。以下是字段形状示例，不是要照抄示例值："
               + json.dumps(SHAPES[name], ensure_ascii=False))
+    evidence_instruction = ("每条 evidence_refs 的 quote 必须逐字复制对应输入片段中的一段连续原文，"
+        "至少 12 个字符，不能翻译、拼接或改写；没有可引用原文时不要编造。" if name == "paper_compare" else "")
     messages = [{"role": "system", "content": system},
-                {"role": "user", "content": TASKS[name] + "\n资料：" + json.dumps(context, ensure_ascii=False)}]
+                {"role": "user", "content": TASKS[name] + evidence_instruction + "\n资料：" + json.dumps(context, ensure_ascii=False)}]
     for attempt in range(2):
         for service_attempt in range(3):
             output = ""
