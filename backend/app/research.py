@@ -16,7 +16,7 @@ from sqlalchemy import select, update
 
 from .auth import current_owner
 from .db import SessionLocal
-from .models import Paper, ReadingUnit, ResearchArtifact, DesignVersion, DiscoveryCache
+from .models import Paper, ReadingUnit, ResearchArtifact, ResearchWorkspace, DesignVersion, DiscoveryCache
 from .workspace import get_or_create
 from .papers import owned_paper, paper_data, paper_source_matches, pdf_is_readable, process_paper
 from .services.openalex_service import (
@@ -705,6 +705,9 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
     research_context = {}
     with SessionLocal() as db:
         workspace = get_or_create(db, owner)
+        workspace_id = workspace.id
+        initial_idea = workspace.design_idea
+        initial_design_id = workspace.design_version_id
         if workspace.design_idea.strip() == request.goal.strip():
             selected = json.loads(workspace.selected_paper_ids_json)
             papers = db.scalars(select(Paper).where(Paper.owner_id == owner, Paper.id.in_(selected))).all() if selected else []
@@ -741,28 +744,39 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
                         if edge["source"] in node_ids and edge["target"] in node_ids]
     if request.action == "node":
         payload = limit_node_revision(request.current_design or {}, payload, request.node_id or "")
+    artifact_id = str(uuid4())
     with SessionLocal() as db:
-        workspace = get_or_create(db, owner)
+        # Commit the workspace pointer, artifact and version as one change.
+        # The conditional update also serializes simultaneous completions and
+        # refuses to overwrite a workspace the user changed during generation.
+        claim = db.execute(update(ResearchWorkspace).where(
+            ResearchWorkspace.id == workspace_id, ResearchWorkspace.owner_id == owner,
+            ResearchWorkspace.design_idea == initial_idea,
+            ResearchWorkspace.design_version_id == initial_design_id,
+        ).values(design_idea=request.goal, design_version_id=artifact_id))
+        if claim.rowcount != 1:
+            raise HTTPException(409, "研究想法或当前方案已变化，请基于最新内容重新生成")
         active_parent = db.scalar(select(DesignVersion).where(
             DesignVersion.owner_id == owner,
-            DesignVersion.workspace_id == workspace.id,
-            DesignVersion.artifact_id == workspace.design_version_id)) if workspace.design_version_id else None
+            DesignVersion.workspace_id == workspace_id,
+            DesignVersion.artifact_id == initial_design_id)) if initial_design_id else None
         previous = db.scalar(select(DesignVersion).where(
-            DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace.id
+            DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace_id
         ).order_by(DesignVersion.version_number.desc()))
         parent_id = active_parent.id if active_parent else None
         next_number = previous.version_number + 1 if previous else 1
-        workspace_id = workspace.id
-    artifact = save_artifact(owner, "experiment_design", [], payload)
-    with SessionLocal() as db:
+        artifact = ResearchArtifact(id=artifact_id, owner_id=owner, kind="experiment_design",
+            paper_ids_json=json.dumps([]), payload_json=json.dumps(payload, ensure_ascii=False))
         version = DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace_id,
-            artifact_id=artifact["id"], version_number=next_number,
+            artifact_id=artifact_id, version_number=next_number,
             parent_version_id=parent_id, action=request.action,
             changed_nodes_json=json.dumps(design_changes(request.current_design, payload), ensure_ascii=False))
+        db.add(artifact)
+        db.flush()  # The version's artifact foreign key must exist first.
         db.add(version)
         db.commit()
-        artifact["version"] = version_data(version, db.get(ResearchArtifact, artifact["id"]))
-    return artifact
+        return {"id": artifact.id, "kind": artifact.kind, "paper_ids": [], "payload": payload,
+                "created_at": artifact.created_at.isoformat(), "version": version_data(version, artifact)}
 
 
 @router.post("/design")
@@ -806,6 +820,10 @@ def restore_design_version(version_id: str, owner: str = Owner):
         if version.workspace_id != workspace.id:
             raise HTTPException(404, "设计版本不存在")
         artifact = db.get(ResearchArtifact, version.artifact_id)
+        restored_goal = json.loads(artifact.payload_json).get("goal", "").strip()
+        if restored_goal != workspace.design_idea.strip():
+            workspace.design_idea = restored_goal
+            workspace.novelty_id = None
         workspace.design_version_id = artifact.id
         db.commit()
         return version_data(version, artifact)

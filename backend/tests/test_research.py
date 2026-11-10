@@ -246,6 +246,95 @@ def test_design_repeated_click_reuses_version_and_history_is_scoped(monkeypatch)
             clean(client)
 
 
+def test_simultaneous_designs_do_not_overwrite_each_other(monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from app import research
+
+    async def exercise(owner):
+        entered = 0
+        both_started = asyncio.Event()
+
+        async def delayed_run(_name, context):
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), 3)
+            return research.quick_design(context["goal"], "")
+
+        monkeypatch.setattr(research, "run_task", delayed_run)
+        request = research.DesignRequest(goal="Concurrent design", regenerate=True)
+        return await asyncio.gather(research.execute_design(owner, request),
+                                    research.execute_design(owner, request), return_exceptions=True)
+
+    with TestClient(app) as client:
+        try:
+            client.get("/api/workspace")
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(
+                    User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+            results = asyncio.run(exercise(owner))
+            assert sum(isinstance(item, dict) for item in results) == 1
+            assert sum(isinstance(item, HTTPException) and item.status_code == 409 for item in results) == 1
+            versions = client.get("/api/research/design/versions").json()
+            assert len(versions) == 1 and versions[0]["number"] == 1
+            assert client.get("/api/workspace").json()["design_version_id"] == versions[0]["artifact_id"]
+        finally:
+            clean(client)
+
+
+def test_design_failure_rolls_back_workspace_and_artifact(monkeypatch):
+    from app import research
+    from app.models import DesignVersion
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+
+    async def fake_run(_name, context):
+        return research.quick_design(context["goal"], "")
+
+    def fail_version_flush(session, _flush_context, _instances):
+        if any(isinstance(item, DesignVersion) for item in session.new):
+            raise RuntimeError("simulated version failure after artifact flush")
+
+    monkeypatch.setattr(research, "run_task", fake_run)
+    event.listen(Session, "before_flush", fail_version_flush)
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            try:
+                before = client.get("/api/workspace").json()
+                assert client.post("/api/research/design", json={"goal": "Atomic save test"}).status_code == 500
+                after = client.get("/api/workspace").json()
+                assert after["design_version_id"] == before["design_version_id"]
+                assert after["design_idea"] == before["design_idea"]
+                assert client.get("/api/research/artifacts", params={"kind": "experiment_design"}).json() == []
+                assert client.get("/api/research/design/versions").json() == []
+            finally:
+                clean(client)
+    finally:
+        event.remove(Session, "before_flush", fail_version_flush)
+
+
+def test_restore_design_from_different_idea_updates_workspace(monkeypatch):
+    from app import research
+
+    async def fake_run(_name, context):
+        return research.quick_design(context["goal"], "")
+
+    monkeypatch.setattr(research, "run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            first = client.post("/api/research/design", json={"goal": "Original idea"}).json()
+            client.post("/api/research/design", json={"goal": "Different idea"})
+            response = client.post(f"/api/research/design/versions/{first['version']['version_id']}/restore")
+            assert response.status_code == 200
+            workspace = client.get("/api/workspace").json()
+            assert workspace["design_idea"] == "Original idea"
+            assert workspace["design_version_id"] == first["id"]
+        finally:
+            clean(client)
+
+
 def test_comparison_timeout_returns_promptly(monkeypatch, tmp_path):
     import asyncio
 

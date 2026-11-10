@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Save design versions atomically and protect the active workspace
+
+- Status: verified with isolated asynchronous concurrency and injected database flush failure; multi-process deployment and real model timing are not tested.
+- Evidence: design artifact and workspace pointer committed before the version row, so a later failure could leave an unversioned active design. Simultaneous completions could also compute the same version number or overwrite a newer workspace. Restoring an older version of another idea left the workspace idea unchanged, causing the next workspace read to discard the restored pointer.
+- Action: compare the workspace idea and active design captured before generation; conditionally claim the workspace and write the artifact and version in the same SQLite transaction. Restore the version's idea with its pointer and clear a novelty result belonging to another idea.
+- Verification: two overlapping simulated generations yield one version and one conflict; an injected failure after the artifact flush rolls back artifact and workspace changes; restoring a version from another idea survives a workspace reload. Backend suite passed (94 tests); the strengthened failure-injection test also passed separately.
+- Boundary: a rejected concurrent generation must be retried from the current workspace. The test does not validate scientific quality or model availability, and historical inconsistent records are not automatically repaired.
+
 ## 2026-11-10 — Fence streaming chat against reparse
 
 - Status: verified using a simulated stream and real isolated reparse; browser presentation and production concurrency have not been independently measured.
