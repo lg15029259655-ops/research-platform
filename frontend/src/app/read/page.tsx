@@ -7,8 +7,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { API } from "@/lib/api";
 import ResearchNav from "@/components/ResearchNav";
-import XRayPanel from "@/components/XRayPanel";
-import FigureStoryboard from "@/components/FigureStoryboard";
 import JobProgress from "@/components/jobs/JobProgress";
 import ThinkingTrail from "@/components/reader/ThinkingTrail";
 import MindMapPanel, { type MindMapPayload } from "@/components/mindmap/MindMapPanel";
@@ -23,7 +21,6 @@ const PdfPane = dynamic(() => import("@/components/PdfPane"), { ssr: false });
 type Unit = { id: string; position: number; kind: string; heading: string; page_start: number | null; actual_pdf_page?: number | null; caption?: string | null; evidence_snippet?: string | null };
 type Message = { id: string; role: string; content: string; reading_unit_id: string | null; visual_verified?: boolean };
 type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean };
-type XRay = { question: string; domain: string; study_type: string; limitations: string[]; stages: { key: string; label: string; summary: string; unit_ids: string[] }[] };
 type Action = "START" | "NEXT" | "NAVIGATE" | "FIGURE" | "WHY_DESIGN" | "EVIDENCE" | "QUESTION";
 type Mode = "split" | "pdf" | "ai";
 
@@ -48,14 +45,8 @@ export default function ReadPage() {
   const [pdfWidth, setPdfWidth] = useState(38);
   const [activeHeading, setActiveHeading] = useState("");
   const [page, setPage] = useState(1);
-  const [readerTab, setReaderTab] = useState<"read" | "xray" | "storyboard" | "mindmap">("read");
-  const [xray, setXray] = useState<XRay | null>(null);
+  const [readerTab, setReaderTab] = useState<"read" | "mindmap">("read");
   const [thinking, setThinking] = useState("");
-  // X-Ray / 思维导图已改成后台任务：各自维护提交时间、阶段和进度，互不阻塞对话。
-  const [xrayBusy, setXrayBusy] = useState(false);
-  const [xrayStage, setXrayStage] = useState("");
-  const [xrayStartedAt, setXrayStartedAt] = useState<number | null>(null);
-  const [xrayProgress, setXrayProgress] = useState<JobProgressData | null>(null);
   const [mindmap, setMindmap] = useState<MindMapPayload | null>(null);
   const [mindmapBusy, setMindmapBusy] = useState(false);
   const [mindmapStage, setMindmapStage] = useState("");
@@ -64,10 +55,9 @@ export default function ReadPage() {
   const messagesRef = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
   const modeTabs = tabGroup(["split", "pdf", "ai"] as const, mode, setMode);
-  const readerTabs = tabGroup(["read", "xray", "storyboard", "mindmap"] as const, readerTab, setReaderTab);
+  const readerTabs = tabGroup(["read", "mindmap"] as const, readerTab, setReaderTab);
   // 任务请求的 in-flight 令牌。pending 与同页其它请求共用，不能拿来判重；
   // abort 会顺带取消服务端任务，切论文时旧结果不会串到新论文上。
-  const xrayAbort = useRef<AbortController | null>(null);
   const mindmapAbort = useRef<AbortController | null>(null);
   const paperRequest = useRef(0);
   const chatRequest = useRef<AbortController | null>(null);
@@ -85,11 +75,8 @@ export default function ReadPage() {
    *  注意要在这里复位 busy：watchJob 被 abort 后，调用方的 finally 会看到 ref 已是 null 而跳过清理，
    *  不在这里复位就会留下一个永远转圈的进度卡。 */
   function abortReaderJobs() {
-    xrayAbort.current?.abort();
-    xrayAbort.current = null;
     mindmapAbort.current?.abort();
     mindmapAbort.current = null;
-    setXrayBusy(false); setXrayStartedAt(null); setXrayProgress(null); setXrayStage("");
     setMindmapBusy(false); setMindmapStartedAt(null); setMindmapProgress(null); setMindmapStage("");
   }
 
@@ -115,7 +102,7 @@ export default function ReadPage() {
     updateWorkspace({core_paper_id: id}).catch(() => {});
     // 注意不要在这里清 thinking：act() 结束后也会调用 loadPaper 刷新消息，
     // 清掉的话「已完成、可展开」的思考轨迹会在回答刚结束时立刻消失。
-    setReaderTab("read"); setXray(null); setMindmap(null);
+    setReaderTab("read"); setMindmap(null);
     abortReaderJobs();
     const current = data.units?.find((unit) => unit.id === data.current_unit_id);
     const requestedPage = Number(new URLSearchParams(window.location.search).get("page"));
@@ -228,37 +215,7 @@ export default function ReadPage() {
     finally { setPending(false); setParseStage(""); }
   }
 
-  /** X-Ray 改走任务接口：以前一次 POST 要等 35 秒以上，会被代理/后端的硬超时判死（线上 504）。
-   *  现在提交立即返回 202，阶段与进度走 SSE，结果就绪后再取；切论文会 abort 并取消服务端任务。 */
-  async function openXRay() {
-    if (!paper || paper.status !== "parsed") return;
-    setReaderTab("xray");
-    // 键盘连续回车会在首个任务建好之前重复触发；xrayAbort 同时承担「正在跑」的判重。
-    if (xray || xrayAbort.current) return;
-    const controller = new AbortController();
-    xrayAbort.current = controller;
-    setXrayBusy(true); setError(""); setXrayStage("正在提交结构分析任务"); setXrayStartedAt(Date.now()); setXrayProgress(null);
-    try {
-      const job = await submitJob("xray", { paper_id: paper.id });
-      const snapshot = await watchJob(job.id, {
-        onStage: (_stage, label) => setXrayStage(label),
-        onProgress: (progress) => setXrayProgress(progress),
-      }, controller.signal);
-      if (controller.signal.aborted) return;
-      if (snapshot.status !== "done") throw new Error(snapshot.error?.message || "结构分析未完成，请重试");
-      const artifact = snapshot.result as { payload?: XRay } | null;
-      if (artifact?.payload) setXray(artifact.payload);
-      else throw new Error("结构分析没有返回可用结果");
-    } catch (e) {
-      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "结构分析失败");
-    } finally {
-      if (xrayAbort.current === controller) {
-        xrayAbort.current = null; setXrayBusy(false); setXrayStartedAt(null); setXrayProgress(null); setXrayStage("");
-      }
-    }
-  }
-
-  /** 思维导图与 X-Ray 同一套任务流程：章节骨架由后端确定性生成，AI 只补关键点。 */
+  /** 章节骨架由后端确定性生成，AI 只补关键点。 */
   async function loadMindmap() {
     if (!paper || paper.status !== "parsed") return;
     if (mindmap || mindmapAbort.current) return;
@@ -385,7 +342,7 @@ export default function ReadPage() {
     </aside>}
     <section className="workspace">
       <header className="readerTop"><div className="readerTitle"><button className="libraryToggle" onClick={() => setLibraryOpen((open) => !open)} aria-label={libraryOpen ? "收起论文库" : "展开论文库"} title={libraryOpen ? "收起论文库" : "展开论文库"}>{libraryOpen ? "☰" : "▤"}</button><div><span className="sectionLabel">AI DEEP READING</span><h1>{paper?.title || "选择或上传一篇论文"}</h1></div></div>{paper?.status === "parsed" && readerTab === "read" && <div className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">{(["split", "pdf", "ai"] as const).map((item) => <button key={item} {...modeTabs.item(item)}>{item === "split" ? "左右分屏" : item === "pdf" ? "仅 PDF" : "仅 AI"}</button>)}</div>}</header>
-      {paper?.status === "parsed" && <div className="readerSubnav" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("xray", openXRay)}>Paper X-Ray</button><button {...readerTabs.item("storyboard")}>Figure Storyboard</button><button {...readerTabs.item("mindmap", openMindmap)}>思维导图</button></div>}
+      {paper?.status === "parsed" && <div className="readerSubnav" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>思维导图</button></div>}
       {error && <div className="alert" role="alert">{error}</div>}
       {parseStage && paper && <div className="parseNotice" role="status">{parseStage}</div>}
       {paper?.warning && <div className="alert" role="status">{paper.warning}</div>}
@@ -393,15 +350,10 @@ export default function ReadPage() {
       {needsReparse && <div className="alert" role="status">这篇 PDF 的标题或章节可能识别错误，会影响 AI 讲解与文献对比。<button type="button" onClick={reparse} disabled={pending} aria-busy={pending} className="quietButton">重新识别当前 PDF</button></div>}
       {!paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || (openingPaper ? "正在打开论文…" : "让阅读从原文开始")}</h2><p>上传本地 PDF 后，左侧查看原文，右侧按科学问题和证据链逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> :
-      readerTab === "xray" ? <>
-        {/* 任务化之后进度不再是"不知道在干嘛"：后端每推一次 stage 就更新一次文案。 */}
-        {xrayBusy && <JobProgress title="正在生成 Paper X-Ray" stageLabel={xrayStage} progress={xrayProgress} startedAt={xrayStartedAt} onCancel={() => xrayAbort.current?.abort()} />}
-        <XRayPanel xray={xray} units={units} pending={xrayBusy} onJump={jumpTo} />
-      </> : readerTab === "mindmap" ? <>
+      readerTab === "mindmap" ? <>
         {mindmapBusy && <JobProgress title="正在生成思维导图" stageLabel={mindmapStage} progress={mindmapProgress} startedAt={mindmapStartedAt} onCancel={() => mindmapAbort.current?.abort()} />}
         <MindMapPanel mindmap={mindmap} pending={mindmapBusy} onJump={jumpTo} />
-      </> : readerTab === "storyboard" ?
-      <FigureStoryboard paperId={paper.id} units={units} messages={paper.messages || []} onJump={jumpTo} /> :
+      </> :
       <div className="split">
         {mode !== "ai" && <div className="pdfColumn" data-pdf-mode={mode} style={{ "--pdf-w": `${pdfWidth}%` } as CSSProperties}><PdfPane paperId={paper.id} page={page} totalPages={paper.page_count} onPageChange={setPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" role="separator" aria-orientation="vertical" tabIndex={0} aria-valuenow={Math.round(pdfWidth)} aria-valuemin={30} aria-valuemax={70} aria-label="调整 PDF 与 AI 面板宽度" onKeyDown={(e) => { let next = pdfWidth; if (e.key === "ArrowLeft") next = Math.max(30, pdfWidth - 2); else if (e.key === "ArrowRight") next = Math.min(70, pdfWidth + 2); else if (e.key === "Home") next = 30; else if (e.key === "End") next = 70; else return; e.preventDefault(); setPdfWidth(next); window.localStorage.setItem("reader-pdf-width", String(next)); }} onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</div>}
         {mode !== "pdf" && <div className="chatColumn"><div className="readingStatus"><span>当前阅读位置</span><strong>{activeHeading || current?.heading || "尚未开始"}</strong><small>阅读进度已保存；提问不会推进。</small>{figureIndex > 0 && <div className="figureProgress">Figure {figureIndex} / {figures.length}<div>{figures.map((unit, i) => <span key={unit.id} className={i < figureIndex ? "filled" : ""}>●</span>)}</div></div>}</div>
