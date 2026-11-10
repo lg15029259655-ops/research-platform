@@ -268,14 +268,19 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
         if not results_added:
             units.extend(list(figures.values()) + list(tables.values()))
         units.append(ParsedUnit("RECAP", "全文复盘", "", None, None))
-        warning = None
-        if sum(len(lines) for _, lines in page_lines) < 20:
-            warning = "可提取文字很少，可能是扫描版 PDF；当前版本未做 OCR，请核对原文。"
-        elif recovered_body:
-            warning = "部分正文未识别章节，已按页保留未分类原文；请核对阅读顺序和原文。"
-        elif len(sections) < 2:
-            warning = "未可靠识别论文章节；请核对阅读顺序与原文。"
-        return ParsedPDF(title, document.page_count, units, warning)
+        # Count characters rather than lines: a short but readable paper can
+        # legitimately contain fewer than twenty extracted lines. Also expose
+        # mixed PDFs where only some pages lack a usable text layer.
+        scarce_pages = [number for number, lines in page_lines
+                        if sum(len(re.sub(r"\s+", "", line)) for line in lines) < 60]
+        warnings = []
+        if scarce_pages:
+            warnings.append(f"有 {len(scarce_pages)} 页可提取文字很少，可能是图片页或扫描页；当前版本未做 OCR，请核对原文。")
+        if recovered_body:
+            warnings.append("部分正文未识别章节，已按页保留未分类原文；请核对阅读顺序和原文。")
+        elif len(sections) < 2 and len(scarce_pages) < document.page_count:
+            warnings.append("未可靠识别论文章节；请核对阅读顺序与原文。")
+        return ParsedPDF(title, document.page_count, units, " ".join(warnings) or None)
 
 
 def render_page_png(path: str | Path, page_number: int, max_dimension: int = 1500) -> bytes:

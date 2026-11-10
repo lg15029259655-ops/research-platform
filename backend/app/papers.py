@@ -10,6 +10,7 @@ import pymupdf
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -149,7 +150,7 @@ async def upload_paper(background_tasks: BackgroundTasks, file: UploadFile = Fil
     if deferred:
         background_tasks.add_task(process_paper, paper_id, owner, path)
         return {"id": paper_id, "status": "uploaded"}
-    process_paper(paper_id, owner, path)
+    await run_in_threadpool(process_paper, paper_id, owner, path)
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         if paper.status == "failed":
@@ -420,7 +421,7 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
     visual_input_ready = False
     if is_figure and page:
         try:
-            png = render_page_png(path, page)
+            png = await run_in_threadpool(render_page_png, path, page)
             visual_input_ready = bool(png)
         except Exception as exc:
             logger.warning("Figure page render failed: %s", type(exc).__name__)

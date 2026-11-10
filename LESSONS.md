@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — PDF parsing must not block unrelated requests
+
+- Status: validated with local concurrency tests and seven existing PDFs read without changing their records; production workload and scan recognition remain unverified.
+- Evidence: the non-deferred upload route ran synchronous PDF parsing directly on the async event loop, and Figure page rendering also occurred on the event loop. The scan warning used line count, so a readable short document could be mislabeled while mixed text/image PDFs could hide image-only pages.
+- Action: run synchronous upload parsing and Figure rendering in a worker thread; assess each page's extracted character count and describe low-text pages as possibly images or scans without claiming OCR succeeded.
+- Verification: a test keeps a synthetic parse blocked while an unrelated health request succeeds; another checks Figure rendering runs off the event loop. Tests cover short readable and mixed PDFs. Seven existing local PDFs were read with no new low-text warnings; three still have structural warnings.
+- Boundary: character thresholds are heuristics, and an image-only figure page is not necessarily a scan. Tesseract was not installed on this host; OCR and production concurrency are not established by these checks.
+
 ## 2026-11-10 — Empty evidence maps and sentence selection
 
 - Status: verified with synthetic tests and a small number of real-model calls; scientific relevance remains unverified.

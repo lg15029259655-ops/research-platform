@@ -163,6 +163,105 @@ def test_progress_poll_is_lightweight_and_owner_scoped(monkeypatch, tmp_path):
                 db.commit()
 
 
+def test_readable_short_pdf_is_not_misreported_as_scanned(tmp_path):
+    path = tmp_path / "readable-short.pdf"
+    path.write_bytes(make_pdf("Readable short paper"))
+    parsed = parse_pdf(path)
+    assert not parsed.warning or "扫描页" not in parsed.warning
+
+
+def test_mixed_pdf_reports_pages_without_a_text_layer(tmp_path):
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for i, text in enumerate(("Abstract", "A readable abstract contains important details about the research question.",
+                              "Methods", "This study compares a treatment group and a control group.",
+                              "Results", "The measured response changed in the treatment group.")):
+        page.insert_text((40, 50 + i * 25), text, fontsize=10)
+    doc.new_page()  # A page with no text layer, as in an image-only scan.
+    path = tmp_path / "mixed.pdf"
+    path.write_bytes(doc.tobytes())
+    doc.close()
+    parsed = parse_pdf(path)
+    assert "有 1 页可提取文字很少" in parsed.warning
+    assert "未做 OCR" in parsed.warning
+
+
+def test_synchronous_upload_does_not_block_other_requests(monkeypatch, tmp_path):
+    import asyncio
+    import threading
+    import httpx
+
+    started, release, completed = threading.Event(), threading.Event(), threading.Event()
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+
+    def slow_parse(*_args, **_kwargs):
+        started.set()
+        release.wait(3)
+        completed.set()
+
+    monkeypatch.setattr("app.papers.process_paper", slow_parse)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+            task = asyncio.create_task(client.post("/api/papers", files={"file": ("test.pdf", make_pdf("Concurrent paper"), "application/pdf")}))
+            try:
+                assert await asyncio.to_thread(started.wait, 2)
+                assert not completed.is_set(), "PDF parse blocked the event loop until it finished"
+                response = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+                assert response.status_code == 200
+            finally:
+                release.set()
+                await task
+                token = client.cookies.get(COOKIE_NAME)
+                if token:
+                    with SessionLocal() as db:
+                        user = db.scalar(select(User).where(User.session_hash == session_hash(token)))
+                        if user:
+                            db.delete(user)
+                            db.commit()
+
+    with TestClient(app):
+        asyncio.run(exercise())
+
+
+def test_figure_rendering_runs_outside_event_loop(monkeypatch, tmp_path):
+    import asyncio
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))
+    rendering_in_event_loop = []
+
+    def fake_render(*_args, **_kwargs):
+        try:
+            asyncio.get_running_loop()
+            rendering_in_event_loop.append(True)
+        except RuntimeError:
+            rendering_in_event_loop.append(False)
+        return b"synthetic image"
+
+    async def fake_stream(_messages, *, vision=False):
+        yield "Test visual explanation"
+
+    monkeypatch.setattr("app.papers.render_page_png", fake_render)
+    monkeypatch.setattr("app.papers.stream_completion", fake_stream)
+    with TestClient(app) as client:
+        owner = None
+        try:
+            paper = upload(client, "Figure rendering paper")
+            owner = owner_of(client)
+            figure = next(unit for unit in paper["units"] if unit["kind"] == "FIGURE")
+            response = client.post(f"/api/papers/{paper['id']}/chat", json={"action": "NAVIGATE", "unit_id": figure["id"]})
+            assert response.status_code == 200
+            assert '"visual_verified": true' in response.text
+            assert rendering_in_event_loop == [False]
+        finally:
+            if owner:
+                with SessionLocal() as db:
+                    user = db.get(User, owner)
+                    if user:
+                        db.delete(user)
+                        db.commit()
+
+
 def test_persistent_cookie_ownership_and_history(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))
