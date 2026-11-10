@@ -154,8 +154,6 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
                                   local_file_path=item["path"], width=item["width"], height=item["height"]))
             paper.status = "parsed"
             db.commit()
-        from .jobs.precompute import schedule_for_paper
-        schedule_for_paper(paper_id, owner)
     except Exception as exc:
         logger.warning("PDF parse failed: %s", type(exc).__name__)
         if replace_existing:
@@ -166,6 +164,15 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
                 db.commit()
         else:
             set_stage("failed")
+        return
+
+    # Precomputation is optional and happens after the parsed data commits.
+    # Its failure must never turn a successfully parsed paper into a failure.
+    try:
+        from .jobs.precompute import schedule_for_paper
+        schedule_for_paper(paper_id, owner)
+    except Exception:
+        logger.exception("Post-parse precomputation scheduling failed for paper %s", paper_id)
 
 
 @router.post("")

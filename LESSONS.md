@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Optional precomputation must not undo parsing success
+
+- Status: verified with isolated API tests; external AI queue outages were simulated.
+- Evidence: precomputation was scheduled inside the PDF parsing error handler after the parsed paper had already committed. A scheduling exception could mark a valid upload failed or falsely report that reprocessing failed.
+- Action: handle post-commit precomputation errors separately and log them without changing the saved parsing result.
+- Verification: a regression test forces scheduling to fail for both initial upload and reparse; both remain parsed with their reading units. The full backend suite passes (78 tests).
+- Boundary: a failed optional precomputation is not retried by this change. Recovery of PDF parsing interrupted by process termination remains a separate unresolved issue.
+
 ## 2026-11-10 — Task concurrency and test isolation
 
 - Status: verified locally with synthetic jobs and an isolated SQLite database; multi-process deployment is not supported.

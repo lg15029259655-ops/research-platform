@@ -543,6 +543,23 @@ def test_reparse_preserves_history_and_marks_results_stale(monkeypatch, tmp_path
                         db.commit()
 
 
+def test_precompute_failure_does_not_invalidate_successful_parse(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+
+    def fail_precompute(*_args):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr("app.jobs.precompute.schedule_for_paper", fail_precompute)
+    with TestClient(app) as client:
+        paper = upload(client, "Precompute Failure Study")
+        assert paper["status"] == "parsed" and paper["units"]
+        response = client.post(f"/api/papers/{paper['id']}/reparse")
+        assert response.status_code == 200
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["status"] == "parsed" and after["units"]
+        assert not (after["warning"] or "").startswith("重新解析失败")
+
+
 def test_figures_after_references_are_not_main_results(tmp_path):
     document = pymupdf.open()
     first = document.new_page()
