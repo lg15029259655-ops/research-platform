@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Fence streaming chat against reparse
+
+- Status: verified using a simulated stream and real isolated reparse; browser presentation and production concurrency have not been independently measured.
+- Evidence: chat captured a unit before streaming but saved its answer and reading position afterward without checking whether the paper had been reparsed. Reused unit IDs could associate an old answer with new content.
+- Action: claim the original content revision and source hash in the same database transaction as chat messages and progress; on mismatch discard the partial stream, report that the paper changed and do not save or advance reading position. The reader also clears the temporary reasoning display on reset.
+- Verification: a regression test reparses after the first streamed fragment and verifies reset/error events, no completed answer, no new messages and no progress change. The backend suite passes (91 tests); frontend TypeScript check passes.
+- Boundary: a partial answer can be visible until the server detects the conflict and sends its reset; real browser/network timing was not tested. Existing historical messages are not rewritten.
+
 ## 2026-11-10 — Fence generated results against concurrent reparse
 
 - Status: verified using isolated PDFs with reparse during simulated model generation; production contention remains unmeasured.

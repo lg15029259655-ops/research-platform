@@ -316,7 +316,7 @@ export default function ReadPage() {
           // thinking：模型出正文前的推理增量。只放内存用于「思考轨迹」，不进消息历史。
           if (data.type === "thinking") { setThinking((previous) => previous + (data.content ?? "")); continue; }
           if (data.type === "delta") { answer += data.content; setStream(answer); }
-          if (data.type === "reset") { answer = ""; setStream(""); }
+          if (data.type === "reset") { answer = ""; setStream(""); setThinking(""); }
           if (data.type === "selected") { if (data.page) setPage(data.page); setActiveHeading(data.heading || ""); }
           if (data.type === "error") throw new Error(data.message);
           if (data.type === "done") completed = true;

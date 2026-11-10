@@ -544,6 +544,7 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
         if request.action == "FIGURE" and unit.kind != "FIGURE":
             raise HTTPException(422, "未识别到 Figure 图注，无法可靠讲解图像")
         path = paper.local_file_path
+        content_revision, source_hash = paper.content_revision, paper.sha256
         history = []
         if unit.kind != "TITLE" and request.action in {"QUESTION", "FIGURE", "WHY_DESIGN", "EVIDENCE"}:
             history = db.scalars(select(Message).where(
@@ -636,15 +637,23 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
             if not answer.strip():
                 raise RuntimeError("模型没有返回可用文字")
             with SessionLocal() as db:
-                paper = owned_paper(db, paper_id, owner)
+                values = {"last_read_at": datetime.now(timezone.utc)}
+                if request.action in {"START", "NEXT", "NAVIGATE"}:
+                    values["current_unit_id"] = selected_id
+                claim = db.execute(update(Paper).where(
+                    Paper.id == paper_id, Paper.owner_id == owner, Paper.status == "parsed",
+                    Paper.content_revision == content_revision, Paper.sha256 == source_hash,
+                ).values(**values))
+                if claim.rowcount != 1:
+                    db.rollback()
+                    yield frame({"type": "reset"})
+                    yield frame({"type": "error", "message": "论文内容在讲解过程中发生变化，请重新打开论文后再试"})
+                    return
                 db.add(Message(id=str(uuid4()), paper_id=paper_id, role="user", content=user_visible_request,
                                action=request.action, reading_unit_id=selected_id))
                 db.add(Message(id=str(uuid4()), paper_id=paper_id, role="assistant", content=answer,
                                action=request.action, reading_unit_id=selected_id,
                                visual_verified=verified))
-                if request.action in {"START", "NEXT", "NAVIGATE"}:
-                    paper.current_unit_id = selected_id
-                paper.last_read_at = datetime.now(timezone.utc)
                 db.commit()
             yield frame({'type': 'done', 'current_unit_id': selected_id if request.action in {'START', 'NEXT', 'NAVIGATE'} else None, 'visual_verified': verified})
         except Exception as exc:

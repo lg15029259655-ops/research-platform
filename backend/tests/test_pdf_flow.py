@@ -236,6 +236,36 @@ def test_chat_waits_for_reparse_to_finish(monkeypatch, tmp_path):
                         db.commit()
 
 
+def test_streamed_chat_is_not_saved_if_paper_changes_mid_answer(monkeypatch, tmp_path):
+    from uuid import uuid4
+    from app.papers import process_paper
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))
+    with TestClient(app) as client:
+        paper = upload(client, "Changing Chat Study")
+        owner = owner_of(client)
+        with SessionLocal() as db:
+            path = db.get(Paper, paper["id"]).local_file_path
+
+        async def changing_stream(_messages, *, vision=False, **_kwargs):
+            yield {"type": "content", "content": "Old partial answer"}
+            token = str(uuid4())
+            with SessionLocal() as db:
+                record = db.get(Paper, paper["id"])
+                record.status, record.parse_token = "uploaded", token
+                db.commit()
+            process_paper(paper["id"], owner, path, True, token)
+            yield {"type": "content", "content": " from old content"}
+
+        monkeypatch.setattr("app.services.bailian_service.stream_events", changing_stream)
+        response = client.post(f"/api/papers/{paper['id']}/chat", json={"action": "START"})
+        assert response.status_code == 200
+        assert '"type": "reset"' in response.text
+        assert '"type": "error"' in response.text and "发生变化" in response.text
+        assert '"type": "done"' not in response.text
+        detail = client.get(f"/api/papers/{paper['id']}").json()
+        assert detail["messages"] == [] and detail["current_unit_id"] is None
 def test_pdf_search_stops_after_thirty_matches(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     with TestClient(app) as client:
