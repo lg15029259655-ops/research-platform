@@ -31,6 +31,7 @@ FULLTEXT_AI_TIMEOUT = 35
 # Multi-paper structured output and JSON repair take longer than one-paper X-Ray.
 # Keep the total deadline below the deployed proxy's 300-second limit.
 COMPARE_AI_TIMEOUT = 240
+EVIDENCE_EXTRACTION_TIMEOUT = 20
 
 
 def cache_key(kind: str, query: str, mode: str = "", page: int = 1) -> str:
@@ -368,6 +369,50 @@ async def compare(request: CompareRequest, owner: str = Owner):
         for cell in row["values"]:
             if not cell["value"].strip():
                 cell["value"] = "当前提取片段未找到可核对的该项信息，请查看原文。"
+    if not payload["controversies"]:
+        # A full comparison may return an empty evidence map even when a
+        # single paper contains usable results. A short, bounded extraction
+        # identifies single-study findings without inventing cross-paper ties.
+        extraction_papers = []
+        for paper in papers:
+            sections = [section for section in paper["sections"]
+                        if section["kind"] in {"RESULTS", "DISCUSSION", "CONCLUSION"}][:2]
+            if sections:
+                extraction_papers.append({"paper_id": paper["paper_id"], "sections": sections})
+        candidates: dict[str, dict] = {}
+        for paper in extraction_papers:
+            for section in paper["sections"]:
+                normalized = re.sub(r"\s+", " ", section["text"]).strip()
+                sentences = [part for part in re.split(r"(?<=[.!?])\s+", normalized)
+                             if 55 <= len(part) <= 450 and not part[0].islower()
+                             and not re.match(r"^(?:[A-Z],\s*)+[A-Z]\s", part)
+                             and not re.match(r"^(?:In\s+)?(?:these|those|this|that|their|its|we|they|our)\b", part, re.I)
+                             and not re.search(r"\b(?:Fig|Figure|et al|vs|Dr)\.$", part, re.I)][:2]
+                for sentence in sentences:
+                    candidate_id = f"E{len(candidates) + 1}"
+                    candidates[candidate_id] = {"paper_id": paper["paper_id"],
+                        "unit_id": section["unit_id"], "text": sentence}
+        if candidates:
+            try:
+                candidate_input = [{"id": key, "paper_id": value["paper_id"], "text": value["text"]}
+                                   for key, value in candidates.items()]
+                extracted = await asyncio.wait_for(run_task("evidence_extract", {"candidates": candidate_input}),
+                                                   timeout=EVIDENCE_EXTRACTION_TIMEOUT)
+                accepted_ids: set[str] = set()
+                for selection in extracted.get("claims", []):
+                    candidate_id = selection.get("candidate_id")
+                    candidate = candidates.get(candidate_id)
+                    if not candidate or candidate_id in accepted_ids:
+                        continue
+                    accepted_ids.add(candidate_id)
+                    payload["controversies"].append({"claim": selection["claim"],
+                        "paper_ids": [candidate["paper_id"]], "stance": "INSUFFICIENT",
+                        "reason": "单篇研究的候选线索；原文已匹配，但命题与上下文的关系尚未独立核验，不能据此判断跨论文一致性。" + selection["reason"],
+                        "evidence_refs": [{"paper_id": candidate["paper_id"], "unit_id": candidate["unit_id"], "quote": candidate["text"]}]})
+                    if len(accepted_ids) >= 2:
+                        break
+            except (TimeoutError, StructuredAIError):
+                logger.warning("Optional single-paper evidence extraction timed out or failed")
     if not payload["controversies"]:
         payload["controversies"] = [{"claim": "当前片段尚未形成可直接比较的共同命题",
             "paper_ids": request.paper_ids, "stance": "INSUFFICIENT",

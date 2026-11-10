@@ -433,6 +433,8 @@ def test_empty_comparison_claims_are_explicitly_insufficient(monkeypatch, tmp_pa
     async def fake_run(_name, context):
         import asyncio
         await asyncio.sleep(0.02)
+        if _name == "evidence_extract":
+            return {"claims": []}
         ids = [item["paper_id"] for item in context["papers"]]
         return {"papers": [{"paper_id": pid, "title": "paper", "domain": "biomed"} for pid in ids],
             "dimensions": [{"name": "研究问题", "values": [{"paper_id": pid, "value": "已提取", "source": "Title"} for pid in ids]}],
@@ -628,5 +630,103 @@ def test_comparison_requires_direct_result_refs_for_stance(monkeypatch, tmp_path
             assert "不能列为结果不一致" in inconsistent["reason"]
             assert fabricated["stance"] == "INSUFFICIENT"
             assert fabricated["evidence_refs"][0]["quote_verified"] is False
+        finally:
+            clean(client)
+
+
+def test_empty_evidence_map_recovers_only_verifiable_single_study_results(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+
+    async def fake_run(name, context):
+        if name == "paper_compare":
+            return {"papers": [], "dimensions": [], "consensus": [], "differences": [],
+                "gaps": [], "questions": [], "next_steps": [], "controversies": []}
+        assert name == "evidence_extract"
+        assert context["candidates"][0]["id"] == "E1"
+        candidate = {"claim": "该研究报告了处理后的变化", "candidate_id": "E1", "reason": "限于本研究。"}
+        return {"claims": [candidate, {**candidate, "candidate_id": "E999"}]}
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            ids = [client.post("/api/papers", files={"file":
+                (f"paper-{index}.pdf", pdf_bytes(f"Comparison Paper {index}"), "application/pdf")}).json()["id"]
+                for index in (1, 2)]
+            from app.models import ReadingUnit
+            with SessionLocal() as db:
+                for unit in db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id.in_(ids), ReadingUnit.kind == "RESULTS")):
+                    unit.source_text = "Treatment changed the measured response in comparison with the control group."
+                db.commit()
+            response = client.post("/api/research/compare", json={"paper_ids": ids})
+            assert response.status_code == 200
+            claims = response.json()["payload"]["controversies"]
+            assert len(claims) == 1
+            assert claims[0]["stance"] == "INSUFFICIENT"
+            assert claims[0]["paper_ids"] == ids[:1]
+            assert "不能据此判断跨论文一致性" in claims[0]["reason"]
+            assert "尚未独立核验" in claims[0]["reason"]
+            assert claims[0]["evidence_refs"][0]["quote_verified"] is True
+        finally:
+            clean(client)
+
+
+def test_optional_evidence_extraction_timeout_keeps_comparison(monkeypatch, tmp_path):
+    import asyncio
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.research.EVIDENCE_EXTRACTION_TIMEOUT", 0.001)
+
+    async def fake_run(name, context):
+        if name == "evidence_extract":
+            await asyncio.sleep(0.1)
+        return {"papers": [], "dimensions": [], "consensus": [], "differences": [],
+            "gaps": [], "questions": [], "next_steps": [], "controversies": []}
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            ids = [client.post("/api/papers", files={"file":
+                (f"paper-{index}.pdf", pdf_bytes(f"Comparison Paper {index}"), "application/pdf")}).json()["id"]
+                for index in (1, 2)]
+            from app.models import ReadingUnit
+            with SessionLocal() as db:
+                for unit in db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id.in_(ids), ReadingUnit.kind == "RESULTS")):
+                    unit.source_text = "Treatment changed the measured response in comparison with the control group."
+                db.commit()
+            response = client.post("/api/research/compare", json={"paper_ids": ids})
+            assert response.status_code == 200
+            assert response.json()["payload"]["controversies"][0]["stance"] == "INSUFFICIENT"
+        finally:
+            clean(client)
+
+
+def test_evidence_extraction_skips_midword_fragments_and_panel_captions(monkeypatch, tmp_path):
+    from app.models import ReadingUnit
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    calls = []
+
+    async def fake_run(name, _context):
+        calls.append(name)
+        if name == "evidence_extract":
+            return {"claims": []}
+        return {"papers": [], "dimensions": [], "consensus": [], "differences": [],
+            "gaps": [], "questions": [], "next_steps": [], "controversies": []}
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            ids = [client.post("/api/papers", files={"file":
+                (f"paper-{i}.pdf", pdf_bytes(f"Comparison Paper {i}"), "application/pdf")}).json()["id"]
+                for i in (1, 2)]
+            with SessionLocal() as db:
+                for unit in db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id.in_(ids), ReadingUnit.kind == "RESULTS")):
+                    unit.source_text = ("ragment that starts halfway through an original sentence and should be skipped. "
+                        "B, C The protein expression was detected in treated cells for screening purposes. "
+                        "In these mice the treatment showed a measurable effect, but the population is unclear. "
+                        "The pathway was significantly affected according to the experiment in Fig.")
+                db.commit()
+            response = client.post("/api/research/compare", json={"paper_ids": ids})
+            assert response.status_code == 200
+            assert calls == ["paper_compare"]
+            assert response.json()["payload"]["controversies"][0]["stance"] == "INSUFFICIENT"
         finally:
             clean(client)

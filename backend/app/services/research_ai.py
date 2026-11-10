@@ -47,6 +47,16 @@ class Comparison(BaseModel):
     next_steps: list[str]
 
 
+class EvidenceCandidate(BaseModel):
+    claim: str
+    candidate_id: str
+    reason: str
+
+
+class EvidenceExtraction(BaseModel):
+    claims: list[EvidenceCandidate] = Field(default_factory=list, max_length=6)
+
+
 class SimilarPaper(BaseModel):
     openalex_id: str
     title: str
@@ -116,6 +126,7 @@ class XRay(BaseModel):
 SCHEMAS: dict[str, type[BaseModel]] = {
     "paper_summary": XRay,
     "paper_compare": Comparison,
+    "evidence_extract": EvidenceExtraction,
     "novelty_analysis": Novelty,
     "experiment_design": Design,
 }
@@ -130,6 +141,8 @@ SHAPES: dict[str, dict[str, Any]] = {
         "controversies": [{"claim": "命题", "paper_ids": ["论文ID"], "stance": "INSUFFICIENT", "reason": "中文理由",
             "evidence_refs": [{"paper_id": "输入中的论文ID", "unit_id": "输入中的单元ID", "quote": "复制输入片段中的连续原文"}]}],
         "gaps": ["空白"], "questions": ["研究问题"], "next_steps": ["下一步"]},
+    "evidence_extract": {"claims": [{"claim": "中文描述单篇研究的具体结果", "candidate_id": "输入中的原文编号",
+        "reason": "中文说明研究条件和证据范围"}]},
     "novelty_analysis": {"query": "输入想法", "similar_papers": [{"openalex_id": "输入中的ID", "title": "输入中的标题",
         "similarity_level": "高/中/低之一", "differences": ["差异"]}],
         "similarity_level": "高/中/低之一", "differences": ["差异"], "novel_angles": ["新角度"],
@@ -141,6 +154,7 @@ SHAPES: dict[str, dict[str, Any]] = {
 }
 
 TASKS = {
+    "evidence_extract": "从输入原文片段中选择最多两条有具体实验结果的句子，每条只概述单篇论文，不比较论文。不要把仅介绍检测方法、测量目标或图注的句子当成结果。candidate_id 必须原样使用输入编号，不得编造。明确研究对象或条件，不能把相关性写成因果关系；没有直接结果时返回空数组。",
     "paper_summary": "用中文生成 Paper X-Ray：stages 约 5 项，每项只引用输入中真实存在的 unit_ids。按研究类型选择故事线：生物医学为问题→表型→机制→验证→结论；计算机为问题→方法→基准→消融→结论；材料为设计→制备→表征→性能→机制；工程为问题→系统→仿真→原型→验证；社会科学为问题→假设→样本→模型→结果；理论数学为问题→假设→定理→证明思路→结论；综述为问题→检索筛选→证据汇总→异质性→结论。未见证据的环节不得编造或强行补齐。只看到抽取片段时，不得断言整篇论文没有做某项分析；应说当前片段未见，需核对原文。",
     "paper_compare": "用中文比较给出的论文。dimensions 至少包含研究问题、方法、关键结果、证据局限；另按领域增加适用维度：生医可比较模型/对照/外推，算法可比较基线/消融/泛化，材料可比较表征/稳定性，工程可比较设计约束/性能/可靠性，社科可比较混杂/测量。混合领域只选双方可比较的维度，不强行套用不适用字段。每格必须引用对应 paper_id 和源章节。controversies 请先从 Results、Discussion 或 Conclusion 片段提取 1–2 条范围明确、能直接引用原文的结果命题；即使只有一篇论文提供直接结果，也可以标为 SUPPORTS，并在 reason 中说明证据仅来自该论文及其研究条件。只有至少两篇论文针对同一对象、条件和结果指标给出相反或不一致的结果，才标为 REFUTES；研究主题不同、研究设计不同或某篇没提到该指标，不构成反对。用户可能关心但片段尚未证明的直接因果关系可单列 INSUFFICIENT。若没有可定位的结果证据，只给 1 条 INSUFFICIENT，不能硬凑支持或冲突。stance 仅可为 SUPPORTS、REFUTES、INSUFFICIENT；每条 SUPPORTS 或 REFUTES 必须提供输入中真实存在的 paper_id 与 unit_id 作为 evidence_refs。没有直接证据时写证据不足并让 evidence_refs 为空。只基于提供的全文片段，禁止编造；片段未提供的信息不能写成论文未报告。",
     "novelty_analysis": "比较研究想法与检索元数据和摘要。similarity_level 只能为高、中、低；每篇论文必须使用输入中的真实 openalex_id 与 title。不得宣称已经阅读全文，不得给出虚假精确相似度。",
@@ -176,7 +190,7 @@ async def run_task(name: str, context: dict[str, Any]) -> dict[str, Any]:
         for service_attempt in range(3):
             output = ""
             try:
-                stream = stream_completion(messages, fast_structured=True) if name in {"paper_compare", "experiment_design"} else stream_completion(messages)
+                stream = stream_completion(messages, fast_structured=True) if name in {"paper_compare", "experiment_design", "evidence_extract"} else stream_completion(messages)
                 async for chunk in stream:
                     output += chunk
                     if len(output) > 80000:

@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Empty evidence maps and sentence selection
+
+- Status: verified with synthetic tests and a small number of real-model calls; scientific relevance remains unverified.
+- Evidence: two previous real comparisons returned no evidence claims. A separate extraction that asked the model to copy quotes often changed the words; deterministic source sentence IDs avoided that mismatch. A real two-paper endpoint run returned two matched single-study snippets in 27.3 seconds, including 7.2 seconds for extraction.
+- Action: only when comparison has no evidence claims, offer a bounded 20-second extraction using numbered original sentences from result/discussion sections. Reject unknown or duplicate IDs, obvious clipped fragments and panel captions; preserve the existing comparison and show insufficient evidence on timeout.
+- Verification: 40 automated tests include valid IDs, unknown IDs, timeout and obvious fragment filtering. The final conservative status is covered by tests; the timed endpoint run preceded that status-only change.
+- Boundary: manual review found model descriptions may add context not present in the selected sentence or describe methods rather than findings. Therefore extracted candidates remain INSUFFICIENT and explicitly require context verification; an exact match is not evidence of semantic support. Extraction may add up to 20 seconds and may still yield no candidates.
+
 ## 2026-11-10 — Evidence citations need literal verification
 
 - Status: local automated tests validate exact-match and rejection behavior; real-model evidence extraction remains unproven.
