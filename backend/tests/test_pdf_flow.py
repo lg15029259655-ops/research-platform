@@ -138,6 +138,31 @@ def owner_of(client: TestClient) -> str:
         return db.scalar(select(User).where(User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
 
 
+def test_progress_poll_is_lightweight_and_owner_scoped(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as owner, TestClient(app) as other:
+        users = []
+        try:
+            paper = upload(owner, "Progress check")
+            users.append(owner_of(owner))
+            other.get("/api/session")
+            users.append(owner_of(other))
+            def fail_pdf_open(*_args, **_kwargs):
+                raise AssertionError("progress polling must not open the PDF")
+            monkeypatch.setattr("app.papers.pymupdf.open", fail_pdf_open)
+            response = owner.get(f"/api/papers/{paper['id']}/status")
+            assert response.status_code == 200
+            assert response.json() == {"id": paper["id"], "status": "parsed", "warning": paper["warning"]}
+            assert other.get(f"/api/papers/{paper['id']}/status").status_code == 404
+        finally:
+            with SessionLocal() as db:
+                for owner_id in users:
+                    user = db.get(User, owner_id)
+                    if user:
+                        db.delete(user)
+                db.commit()
+
+
 def test_persistent_cookie_ownership_and_history(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))

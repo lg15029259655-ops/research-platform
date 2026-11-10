@@ -33,6 +33,7 @@ export default function ReadPage() {
   const [ready, setReady] = useState(false);
   const [papers, setPapers] = useState<Paper[]>([]);
   const [paper, setPaper] = useState<Paper | null>(null);
+  const [openingPaper, setOpeningPaper] = useState(false);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [parseStage, setParseStage] = useState("");
@@ -52,6 +53,8 @@ export default function ReadPage() {
   // X-Ray 请求的 in-flight 令牌。pending 与同页其它请求共用，不能拿来判重；
   // loadPaper 里把它清空，顺带让「切论文后旧响应才回来」的串台失效。
   const xrayRequest = useRef<symbol | null>(null);
+  const paperRequest = useRef(0);
+  const chatRequest = useRef<AbortController | null>(null);
   const libraryUploadRef = useRef<HTMLInputElement>(null);
   const welcomeUploadRef = useRef<HTMLInputElement>(null);
   const attachUploadRef = useRef<HTMLInputElement>(null);
@@ -68,9 +71,17 @@ export default function ReadPage() {
     setPapers(await res.json());
   }, []);
   const loadPaper = useCallback(async (id: string) => {
-    const res = await fetch(`${API}/api/papers/${id}`, { credentials: "include" });
-    if (!res.ok) throw new Error("无法读取论文记录");
-    const data: Paper = await res.json();
+    const request = ++paperRequest.current;
+    let data: Paper;
+    try {
+      const res = await fetch(`${API}/api/papers/${id}`, { credentials: "include" });
+      if (!res.ok) throw new Error("无法读取论文记录");
+      data = await res.json();
+    } catch (error) {
+      if (request !== paperRequest.current) return;
+      throw error;
+    }
+    if (request !== paperRequest.current) return;
     followLatest.current = true;
     setPaper(data);
     updateWorkspace({core_paper_id: id}).catch(() => {});
@@ -120,11 +131,11 @@ export default function ReadPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "上传失败");
       const stages: Record<string, string> = { uploaded: "正在读取 PDF…", reading: "正在提取每页文字…", structure: "正在识别论文章节…", figures: "正在定位主文 Figure 和 Table…", manifest: "正在建立阅读目录…", images: "正在提取页面图像…" };
-      let parsed: Paper | null = null;
+      let parsed: Pick<Paper, "status" | "warning"> | null = null;
       for (let attempt = 0; attempt < 240; attempt++) {
-        const poll = await fetch(`${API}/api/papers/${data.id}`, { credentials: "include" });
+        const poll = await fetch(`${API}/api/papers/${data.id}/status`, { credentials: "include" });
         if (!poll.ok) throw new Error("论文读取失败，请稍后重试");
-        const progress: Paper & { status: string } = await poll.json();
+        const progress: Pick<Paper, "status" | "warning"> = await poll.json();
         setParseStage(stages[progress.status] || "正在解析论文…");
         if (progress.status === "failed") throw new Error("PDF 解析失败，请重试");
         if (progress.status === "parsed") { parsed = progress; break; }
@@ -146,9 +157,9 @@ export default function ReadPage() {
       const response = await fetch(`${API}/api/papers/${paper.id}/attach`, { method: "POST", credentials: "include", body });
       if (!response.ok) { const data = await response.json(); throw new Error(data.detail || "上传失败"); }
       for (let attempt = 0; attempt < 240; attempt++) {
-        const status = await fetch(`${API}/api/papers/${paper.id}`, { credentials: "include" });
+        const status = await fetch(`${API}/api/papers/${paper.id}/status`, { credentials: "include" });
         if (!status.ok) throw new Error("论文读取失败，请稍后重试");
-        const latest: Paper = await status.json();
+        const latest: Pick<Paper, "status" | "warning"> = await status.json();
         if (latest.status === "failed") throw new Error("PDF 解析失败，请重试");
         if (latest.status === "parsed") { await loadPaper(paper.id); await loadList(); return; }
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -166,9 +177,9 @@ export default function ReadPage() {
       const response = await fetch(`${API}/api/papers/${id}/reparse`, { method: "POST", credentials: "include" });
       if (!response.ok) { const data = await response.json(); throw new Error(data.detail || "重新解析失败"); }
       for (let attempt = 0; attempt < 240; attempt++) {
-        const status = await fetch(`${API}/api/papers/${id}`, { credentials: "include" });
+        const status = await fetch(`${API}/api/papers/${id}/status`, { credentials: "include" });
         if (!status.ok) throw new Error("无法读取解析进度");
-        const latest: Paper = await status.json();
+        const latest: Pick<Paper, "status" | "warning"> = await status.json();
         if (latest.status === "failed") throw new Error("重新解析失败，请检查 PDF");
         if (latest.status === "parsed") {
           await loadPaper(id); await loadList();
@@ -195,7 +206,7 @@ export default function ReadPage() {
       if (xrayRequest.current === token) setXray(data.payload);
     }
     catch (e) { if (xrayRequest.current === token) setError(e instanceof Error ? e.message : "结构分析失败"); }
-    finally { xrayRequest.current = null; setPending(false); }
+    finally { if (xrayRequest.current === token) { xrayRequest.current = null; setPending(false); } }
   }
 
   function jumpTo(unitId: string) {
@@ -206,10 +217,12 @@ export default function ReadPage() {
 
   async function act(action: Action, message?: string) {
     if (!paper || !ready || pending) return;
+    const controller = new AbortController();
+    chatRequest.current = controller;
     setPending(true); setError(""); setStream(""); setActiveHeading(""); followLatest.current = true;
     try {
       const res = await fetch(`${API}/api/papers/${paper.id}/chat`, {
-        method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+        method: "POST", credentials: "include", signal: controller.signal, headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, message, unit_id: action === "NAVIGATE" ? message : undefined }),
       });
       if (!res.ok) { const data = await res.json(); throw new Error(data.detail || "请求失败"); }
@@ -218,6 +231,7 @@ export default function ReadPage() {
       let buffer = ""; let answer = ""; let completed = false;
       while (true) {
         const { done, value } = await reader.read();
+        if (controller.signal.aborted) return;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const events = buffer.split("\n\n"); buffer = events.pop() || "";
@@ -233,10 +247,28 @@ export default function ReadPage() {
         }
       }
       if (!completed) throw new Error("流式回复未正常结束");
-      await loadPaper(paper.id); await loadList(); setStream("");
+      await loadPaper(paper.id);
+      if (controller.signal.aborted) return;
+      await loadList();
+      if (controller.signal.aborted) return;
+      setStream("");
       if (action === "QUESTION") setDraft("");
-    } catch (e) { setError(e instanceof Error ? e.message : "精读失败"); }
-    finally { setPending(false); setActiveHeading(""); }
+    } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "精读失败"); }
+    finally { if (chatRequest.current === controller) { chatRequest.current = null; setPending(false); setActiveHeading(""); } }
+  }
+
+  function selectPaper(id: string) {
+    const interruptedChat = !!chatRequest.current;
+    chatRequest.current?.abort();
+    chatRequest.current = null;
+    xrayRequest.current = null;
+    setPending(false); setStream(""); setActiveHeading(""); setError(interruptedChat ? "已停止上一篇论文尚未完成的讲解。" : ""); setPaper(null);
+    setOpeningPaper(true);
+    const request = loadPaper(id);
+    const generation = paperRequest.current;
+    request.catch((e) => setError(e.message)).finally(() => {
+      if (generation === paperRequest.current) setOpeningPaper(false);
+    });
   }
 
   async function removePaper(id: string) {
@@ -261,7 +293,7 @@ export default function ReadPage() {
   return <div className="readerShell"><ResearchNav current="/read" /><main id="main" className={`reader ${libraryOpen ? "" : "libraryClosed"}`}>
     {libraryOpen && <aside className="library">
       <div className="libraryHeading"><span>论文库</span><label className="uploadBtn" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, libraryUploadRef.current)}>+ 上传 PDF<input ref={libraryUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending} hidden /></label></div>
-      <div className="libraryList">{papers.length ? papers.map((item) => <div className="paperRow" key={item.id}><button className={`paperItem ${paper?.id === item.id ? "selected" : ""}`} onClick={() => { loadPaper(item.id).catch((e) => setError(e.message)); setStream(""); }}><strong>{item.title}</strong><small>{item.original_filename}</small></button><button className="removePaper" title="删除论文" aria-label={`删除 ${item.title}`} onClick={() => removePaper(item.id)}>×</button></div>) : <p className="emptyLibrary">上传第一篇 PDF，开始建立您的论文库。</p>}
+      <div className="libraryList">{papers.length ? papers.map((item) => <div className="paperRow" key={item.id}><button className={`paperItem ${paper?.id === item.id ? "selected" : ""}`} disabled={!!parseStage} onClick={() => selectPaper(item.id)}><strong>{item.title}</strong><small>{item.original_filename}</small></button><button className="removePaper" title="删除论文" aria-label={`删除 ${item.title}`} onClick={() => removePaper(item.id)}>×</button></div>) : <p className="emptyLibrary">上传第一篇 PDF，开始建立您的论文库。</p>}
       {paper && <div className="outline"><strong>论文目录</strong>{units.map((unit) => <button key={unit.id} className={current?.id === unit.id ? "active" : ""} disabled={pending} aria-busy={pending} onClick={() => { if (unit.page_start) setPage(unit.page_start); act("NAVIGATE", unit.id); }}>{unit.heading}</button>)}</div>}</div>
       <div className="libraryFoot">上传的 PDF 保存在当前服务端</div>
     </aside>}
@@ -272,7 +304,7 @@ export default function ReadPage() {
       {parseStage && paper && <div className="parseNotice" role="status">{parseStage}</div>}
       {paper?.warning && <div className="alert" role="status">{paper.warning}</div>}
       {needsReparse && <div className="alert" role="status">这篇 PDF 的标题或章节可能识别错误，会影响 AI 讲解与文献对比。<button type="button" onClick={reparse} disabled={pending} aria-busy={pending} className="quietButton">重新识别当前 PDF</button></div>}
-      {!paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || "让阅读从原文开始"}</h2><p>上传本地 PDF 后，左侧查看原文，右侧按科学问题和证据链逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
+      {!paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || (openingPaper ? "正在打开论文…" : "让阅读从原文开始")}</h2><p>上传本地 PDF 后，左侧查看原文，右侧按科学问题和证据链逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> : readerTab === "xray" ?
       <XRayPanel xray={xray} units={units} pending={pending} onJump={jumpTo} /> : readerTab === "storyboard" ?
       <FigureStoryboard paperId={paper.id} units={units} messages={paper.messages || []} onJump={jumpTo} /> :

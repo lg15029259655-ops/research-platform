@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-09 — Reader switching and polling
+
+- Status: validated in an isolated browser using delayed synthetic responses; full production workloads remain unmeasured.
+- Evidence: paper loads could resolve out of order and an in-flight reply could update the next paper. A malformed PDF response could also crash the reader. Parsing polls reopened the PDF and returned full history on every request.
+- Action: ignore stale paper responses, cancel the visible stream when switching, isolate PDF rendering errors, cancel stale PDF searches, and poll an owner-scoped status endpoint without loading the document or messages.
+- Verification: isolated browser tests switched papers before delayed responses and during a simulated stream; the later choice remained visible without the old reply. A malformed PDF showed a local error instead of replacing the page. In a synthetic local 100-message case, the median status response was 3.0 ms / 139 bytes versus 7.6 ms / 119,492 bytes for full details; this is not a production benchmark. Automated ownership and no-PDF-open coverage was added.
+- Boundary: switching cancels the in-flight browser stream, so an unfinished answer may not be saved; real network delays, different browsers and larger libraries need further testing.
+
 ## 2026-11-09 — Evidence loss and page attribution in Results
 
 - Status: validated with synthetic multi-section and multi-page PDFs; representative publisher PDFs still need manual comparison.

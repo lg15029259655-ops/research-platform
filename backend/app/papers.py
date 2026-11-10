@@ -220,6 +220,14 @@ def get_paper(paper_id: str, owner: str = Owner):
         return data
 
 
+@router.get("/{paper_id}/status")
+def paper_status(paper_id: str, owner: str = Owner):
+    """Lightweight parse progress; do not reopen PDFs or load history per poll."""
+    with SessionLocal() as db:
+        paper = owned_paper(db, paper_id, owner)
+        return {"id": paper.id, "status": paper.status, "warning": paper.parse_warning}
+
+
 @router.get("/{paper_id}/file")
 def get_file(paper_id: str, owner: str = Owner):
     with SessionLocal() as db:
