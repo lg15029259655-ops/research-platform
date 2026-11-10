@@ -13,3 +13,4 @@ frontend/.eslintcache
 frontend/tsconfig.tsbuildinfo
 deploy/*.zip
 deploy/*.tar.gz
+frontend/eng.traineddata
