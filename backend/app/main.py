@@ -32,6 +32,7 @@ async def lifespan(_app: FastAPI):
             "abstract": "TEXT", "citation_count": "INTEGER", "oa_pdf_url": "TEXT",
             "domain": "VARCHAR(50)", "study_type": "VARCHAR(80)",
             "template": "VARCHAR(80)",
+            "parse_token": "VARCHAR(36)", "parse_heartbeat": "DATETIME",
         }
         if columns:
             for name, kind in additions.items():

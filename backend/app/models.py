@@ -44,6 +44,8 @@ class Paper(Base):
     current_unit_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="uploaded")
     parse_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parse_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    parse_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

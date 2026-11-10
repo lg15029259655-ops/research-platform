@@ -609,6 +609,88 @@ def test_simultaneous_attachments_only_start_one_parse(monkeypatch, tmp_path):
         assert after["status"] == "parsed" and after["units"]
 
 
+def test_stale_parse_recovers_and_preserves_history(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Recovered Study")
+        with SessionLocal() as db:
+            record = db.get(Paper, paper["id"])
+            record.status = "reading"
+            record.parse_token = "old-attempt"
+            record.parse_heartbeat = datetime.now(timezone.utc) - timedelta(hours=1)
+            db.add(Message(id="21111111-1111-4111-8111-111111111111", paper_id=paper["id"],
+                           role="assistant", content="Keep this note", reading_unit_id=paper["units"][0]["id"]))
+            db.commit()
+        response = client.get(f"/api/papers/{paper['id']}/status")
+        assert response.status_code == 200 and response.json()["status"] == "uploaded"
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["status"] == "parsed" and after["units"]
+        assert after["messages"][0]["content"] == "Keep this note"
+        assert after["messages"][0]["reading_unit_id"] is None
+
+
+def test_live_or_legacy_parse_is_not_restarted(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from app import papers as papers_module
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Live Parse Study")
+        monkeypatch.setattr(papers_module, "process_paper", lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected restart")))
+        for token, age in [("live-attempt", timedelta(seconds=10)), (None, timedelta(days=1))]:
+            with SessionLocal() as db:
+                record = db.get(Paper, paper["id"])
+                record.status = "reading"
+                record.parse_token = token
+                record.parse_heartbeat = datetime.now(timezone.utc) - age
+                db.commit()
+            assert client.get(f"/api/papers/{paper['id']}/status").json()["status"] == "reading"
+
+
+def test_superseded_parse_cannot_overwrite_new_attempt(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+    from threading import Event, Thread
+    from app import papers as papers_module
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Fence Study")
+        owner = owner_of(client)
+        with SessionLocal() as db:
+            record = db.get(Paper, paper["id"])
+            path = record.local_file_path
+            record.status, record.parse_token = "reading", "old-attempt"
+            record.parse_heartbeat = datetime.now(timezone.utc)
+            db.commit()
+        started, release = Event(), Event()
+        original_extract = papers_module.extract_embedded_images
+
+        def delayed_extract(path, *, generation):
+            started.set()
+            assert release.wait(5)
+            return original_extract(path, generation=generation)
+
+        monkeypatch.setattr(papers_module, "extract_embedded_images", delayed_extract)
+        thread = Thread(target=papers_module.process_paper,
+                        args=(paper["id"], owner, path, True, "old-attempt"))
+        thread.start()
+        try:
+            assert started.wait(5)
+            with SessionLocal() as db:
+                record = db.get(Paper, paper["id"])
+                record.status, record.parse_token = "uploaded", "new-attempt"
+                record.title = "New attempt owns this record"
+                db.commit()
+        finally:
+            release.set()
+            thread.join(5)
+        assert not thread.is_alive()
+        with SessionLocal() as db:
+            record = db.get(Paper, paper["id"])
+            assert record.parse_token == "new-attempt"
+            assert record.title == "New attempt owns this record"
+            assert record.status == "uploaded"
+
+
 def test_figures_after_references_are_not_main_results(tmp_path):
     document = pymupdf.open()
     first = document.new_page()

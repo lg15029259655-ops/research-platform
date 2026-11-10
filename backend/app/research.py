@@ -276,13 +276,15 @@ async def import_open_pdf(request: ImportRequest, background_tasks: BackgroundTa
     except RemotePDFError as exc:
         logger.warning("Open PDF retrieval failed: %s", type(exc).__name__)
         raise HTTPException(422, str(exc)) from exc
+    token = str(uuid4())
     with SessionLocal() as db:
         claimed = db.execute(update(Paper).where(
             Paper.id == paper_id, Paper.owner_id == owner,
             Paper.status == previous_status, Paper.local_file_path == previous_path,
         ).values(original_filename=f"{request.openalex_id}.pdf", stored_filename=Path(path).name,
                  local_file_path=path, mime_type="application/pdf",
-                 file_size_bytes=size, sha256=digest, status="uploaded"))
+                 file_size_bytes=size, sha256=digest, status="uploaded", parse_token=token,
+                 parse_heartbeat=datetime.now(timezone.utc)))
         if claimed.rowcount != 1:
             db.rollback()
             Path(path).unlink(missing_ok=True)
@@ -291,7 +293,7 @@ async def import_open_pdf(request: ImportRequest, background_tasks: BackgroundTa
             select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id).limit(1)
         ) is not None
         db.commit()
-    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing)
+    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing, token)
     return {"id": paper_id, "status": "uploaded"}
 
 

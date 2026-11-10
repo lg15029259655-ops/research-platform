@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-10 — Recover interrupted PDF parsing with fenced attempts
+
+- Status: verified with isolated simulated stale, live, legacy and superseded attempts; real process termination and production workloads have not been tested.
+- Evidence: PDF parsing used non-durable background tasks, so a process crash could leave a paper in a processing state indefinitely. Age of the last stage alone cannot distinguish a slow live parse from an interrupted one.
+- Action: persist an attempt token and heartbeat, refresh it while parsing, and allow an owner-scoped status request to atomically reclaim an attempt after 30 minutes without heartbeat. Fence stage, result and failure writes by token; isolate extracted image paths per attempt and preserve previous units until a replacement succeeds. Legacy records with no token are not automatically reclaimed.
+- Verification: tests cover stale recovery preserving notes, live and untracked legacy attempts remaining untouched, and an old attempt unable to commit after ownership changes. The backend suite passes (83 tests).
+- Boundary: recovery starts when the paper status is requested, not automatically at server startup; a stalled attempt may take 30 minutes to be reclaimed. A very long scheduler or database pause can cause duplicate computation, although token fencing protects database results. This does not coordinate with older application processes lacking fencing; deploy one backend process and stop the old version before starting the new one. A true crash/restart integration test and image cleanup policy remain outstanding.
+
 ## 2026-11-10 — Claim a PDF replacement before starting parsing
 
 - Status: verified locally for simultaneous manual attachments and failed replacements; the equivalent remote import concurrency path is not separately exercised.

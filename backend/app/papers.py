@@ -1,10 +1,11 @@
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from uuid import uuid4
 import shutil
 import logging
+import threading
 from difflib import SequenceMatcher
 import pymupdf
 
@@ -31,6 +32,12 @@ RULES = Path(__file__).parent / "prompts" / "reading_rules.md"
 logger = logging.getLogger(__name__)
 ACTIONS = {"START", "NEXT", "NAVIGATE", "FIGURE", "WHY_DESIGN", "EVIDENCE", "QUESTION"}
 Owner = Depends(current_owner)
+PARSE_STAGES = {"uploaded", "reading", "structure", "figures", "manifest", "images"}
+PARSE_LEASE = timedelta(minutes=30)
+
+
+class ParseSuperseded(Exception):
+    """A newer attempt owns this paper; this attempt must not write results."""
 
 
 async def _stream_model_events(messages, *, vision: bool = False):
@@ -100,22 +107,51 @@ def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
     return data
 
 
-def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool = False) -> None:
+def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool = False,
+                  token: str | None = None) -> None:
     def set_stage(stage: str) -> None:
         with SessionLocal() as db:
-            paper = owned_paper(db, paper_id, owner)
-            paper.status = stage
+            claimed = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.parse_token == token,
+            ).values(status=stage, parse_heartbeat=datetime.now(timezone.utc)))
+            if claimed.rowcount != 1:
+                raise ParseSuperseded()
             db.commit()
 
+    stop_heartbeat = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop_heartbeat.wait(15):
+            try:
+                with SessionLocal() as db:
+                    result = db.execute(update(Paper).where(
+                        Paper.id == paper_id, Paper.owner_id == owner,
+                        Paper.parse_token == token, Paper.status.in_(PARSE_STAGES),
+                    ).values(parse_heartbeat=datetime.now(timezone.utc)))
+                    db.commit()
+                    if result.rowcount != 1:
+                        return
+            except Exception:
+                logger.exception("Could not refresh PDF parse heartbeat")
+
+    heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+    heartbeat_thread.start()
     try:
         parsed = parse_pdf(path, on_stage=set_stage)
         set_stage("images")
         try:
-            embedded_images = extract_embedded_images(path)
+            embedded_images = extract_embedded_images(path, generation=token)
         except Exception as exc:
             logger.warning("Embedded image extraction failed: %s", type(exc).__name__)
             embedded_images = []
         with SessionLocal() as db:
+            # Acquire the write lock and fence superseded attempts in the same
+            # transaction as replacement of the reading units and artifacts.
+            claim = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.parse_token == token,
+            ).values(parse_heartbeat=datetime.now(timezone.utc)))
+            if claim.rowcount != 1:
+                raise ParseSuperseded()
             paper = owned_paper(db, paper_id, owner)
             # Existing local papers also have a previously identified title;
             # check replacement PDFs against it before users reuse old notes.
@@ -153,18 +189,26 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
                                   page_number=item["page_number"], xref=item["xref"],
                                   local_file_path=item["path"], width=item["width"], height=item["height"]))
             paper.status = "parsed"
+            paper.parse_token = None
+            paper.parse_heartbeat = None
             db.commit()
+    except ParseSuperseded:
+        logger.info("PDF parse superseded for paper %s", paper_id)
+        return
     except Exception as exc:
         logger.warning("PDF parse failed: %s", type(exc).__name__)
-        if replace_existing:
-            with SessionLocal() as db:
-                paper = owned_paper(db, paper_id, owner)
-                paper.status = "parsed"
-                paper.parse_warning = "重新解析失败，已保留上一次阅读记录。请检查 PDF 文件。"
-                db.commit()
-        else:
-            set_stage("failed")
+        with SessionLocal() as db:
+            values = {"status": "parsed" if replace_existing else "failed",
+                      "parse_token": None, "parse_heartbeat": None}
+            if replace_existing:
+                values["parse_warning"] = "重新解析失败，已保留上一次阅读记录。请检查 PDF 文件。"
+            db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.parse_token == token,
+            ).values(**values))
+            db.commit()
         return
+    finally:
+        stop_heartbeat.set()
 
     # Precomputation is optional and happens after the parsed data commits.
     # Its failure must never turn a successfully parsed paper into a failure.
@@ -179,18 +223,20 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
 async def upload_paper(background_tasks: BackgroundTasks, file: UploadFile = File(...),
                        deferred: bool = False, owner: str = Owner):
     paper_id = str(uuid4())
+    token = str(uuid4())
     original, path, size, digest = await save_pdf(file, owner, paper_id)
     with SessionLocal() as db:
         paper = Paper(id=paper_id, owner_id=owner, title="正在解析论文",
                       original_filename=original, stored_filename=Path(path).name,
                       local_file_path=path, mime_type="application/pdf", file_size_bytes=size,
-                      sha256=digest, status="uploaded")
+                      sha256=digest, status="uploaded", parse_token=token,
+                      parse_heartbeat=datetime.now(timezone.utc))
         db.add(paper)
         db.commit()
     if deferred:
-        background_tasks.add_task(process_paper, paper_id, owner, path)
+        background_tasks.add_task(process_paper, paper_id, owner, path, False, token)
         return {"id": paper_id, "status": "uploaded"}
-    await run_in_threadpool(process_paper, paper_id, owner, path)
+    await run_in_threadpool(process_paper, paper_id, owner, path, False, token)
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         if paper.status == "failed":
@@ -211,13 +257,15 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
             raise HTTPException(409, "这篇论文已有 PDF")
         previous_status, previous_path = paper.status, paper.local_file_path
     original, path, size, digest = await save_pdf(file, owner, paper_id)
+    token = str(uuid4())
     with SessionLocal() as db:
         claimed = db.execute(update(Paper).where(
             Paper.id == paper_id, Paper.owner_id == owner,
             Paper.status == previous_status, Paper.local_file_path == previous_path,
         ).values(original_filename=original, stored_filename=Path(path).name,
                  local_file_path=path, mime_type="application/pdf",
-                 file_size_bytes=size, sha256=digest, status="uploaded"))
+                 file_size_bytes=size, sha256=digest, status="uploaded", parse_token=token,
+                 parse_heartbeat=datetime.now(timezone.utc)))
         if claimed.rowcount != 1:
             db.rollback()
             Path(path).unlink(missing_ok=True)  # Only this request's newly saved file.
@@ -228,12 +276,13 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
             select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id).limit(1)
         ) is not None
         db.commit()
-    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing)
+    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing, token)
     return {"id": paper_id, "status": "uploaded"}
 
 
 @router.post("/{paper_id}/reparse")
 def reparse_paper(paper_id: str, background_tasks: BackgroundTasks, owner: str = Owner):
+    token = str(uuid4())
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed" or not paper.local_file_path or not Path(paper.local_file_path).is_file():
@@ -242,12 +291,12 @@ def reparse_paper(paper_id: str, background_tasks: BackgroundTasks, owner: str =
         claimed = db.execute(update(Paper).where(
             Paper.id == paper_id, Paper.owner_id == owner,
             Paper.status == "parsed", Paper.local_file_path == path,
-        ).values(status="uploaded"))
+        ).values(status="uploaded", parse_token=token, parse_heartbeat=datetime.now(timezone.utc)))
         if claimed.rowcount != 1:
             db.rollback()
             raise HTTPException(409, "论文状态已变化，请刷新后重试")
         db.commit()
-    background_tasks.add_task(process_paper, paper_id, owner, path, True)
+    background_tasks.add_task(process_paper, paper_id, owner, path, True, token)
     return {"id": paper_id, "status": "uploaded"}
 
 
@@ -273,10 +322,33 @@ def get_paper(paper_id: str, owner: str = Owner):
 
 
 @router.get("/{paper_id}/status")
-def paper_status(paper_id: str, owner: str = Owner):
+def paper_status(paper_id: str, background_tasks: BackgroundTasks, owner: str = Owner):
     """Lightweight parse progress; do not reopen PDFs or load history per poll."""
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
+        cutoff = datetime.now(timezone.utc) - PARSE_LEASE
+        # Old records without a token are deliberately not taken over: an
+        # older server may still be working on them without a heartbeat.
+        heartbeat_at = paper.parse_heartbeat
+        if heartbeat_at and heartbeat_at.tzinfo is None:
+            heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+        if (paper.status in PARSE_STAGES and paper.parse_token and heartbeat_at
+                and heartbeat_at < cutoff):
+            token = str(uuid4())
+            previous_token = paper.parse_token
+            claim = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner,
+                Paper.status.in_(PARSE_STAGES), Paper.parse_token == previous_token,
+                Paper.parse_heartbeat < cutoff,
+            ).values(status="uploaded", parse_token=token, parse_heartbeat=datetime.now(timezone.utc))
+                .execution_options(synchronize_session=False))
+            if claim.rowcount == 1:
+                path = paper.local_file_path
+                replace_existing = db.scalar(select(ReadingUnit.id).where(
+                    ReadingUnit.paper_id == paper_id).limit(1)) is not None
+                db.commit()
+                background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing, token)
+                return {"id": paper_id, "status": "uploaded", "warning": paper.parse_warning}
         return {"id": paper.id, "status": paper.status, "warning": paper.parse_warning}
 
 
