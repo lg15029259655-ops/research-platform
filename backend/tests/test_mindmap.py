@@ -78,6 +78,15 @@ def test_parse_revision_changes_with_structure():
     assert mindmap_service.parse_revision(paper, base) == mindmap_service.parse_revision(paper, base)
     longer = base + [unit("p1:1", "METHODS", "Methods")]
     assert mindmap_service.parse_revision(paper, base) != mindmap_service.parse_revision(paper, longer)
+    before = mindmap_service.parse_revision(paper, base)
+    base[0].source_text = "newly recognized content"
+    assert mindmap_service.parse_revision(paper, base) != before
+    before = mindmap_service.parse_revision(paper, base)
+    base[0].heading = "Updated abstract heading"
+    assert mindmap_service.parse_revision(paper, base) != before
+    before = mindmap_service.parse_revision(paper, base)
+    paper.title = "Updated paper title"
+    assert mindmap_service.parse_revision(paper, base) != before
 
 
 def _wait(client, job_id: str, timeout: float = 6.0) -> dict:

@@ -39,8 +39,15 @@ def _slug(text: str, fallback: str) -> str:
 
 def parse_revision(paper: Paper, units: list[ReadingUnit]) -> str:
     """导图缓存版本：PDF 内容 + 单元结构变了才重算（改阅读进度不会触发）。"""
-    seed = f"{paper.sha256}|{len(units)}|{units[0].id if units else ''}"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256()
+    for value in [paper.sha256, paper.title or "", *(
+        json.dumps([unit.id, unit.position, unit.kind, unit.heading, unit.page_start,
+                    unit.page_end, unit.source_text], ensure_ascii=False)
+        for unit in units
+    )]:
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
 
 
 def _node(node_id: str, label: str, kind: str, units: list[ReadingUnit], *,

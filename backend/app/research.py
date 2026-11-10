@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select, update
 
@@ -372,7 +373,7 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
 async def execute_xray(owner: str, paper_id: str, *, emit=None, timeout: float | None = None) -> dict:
     if emit is not None:
         await emit("stage", {"stage": "reading", "label": "读取论文单元"})
-    context = fulltext_papers(owner, [paper_id])[0]
+    context = (await run_in_threadpool(fulltext_papers, owner, [paper_id]))[0]
     with SessionLocal() as db:
         existing = db.scalar(select(ResearchArtifact).where(
             ResearchArtifact.owner_id == owner,
@@ -409,7 +410,7 @@ async def paper_xray(paper_id: str, owner: str = Owner):
 async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeout: float | None = None) -> dict:
     if emit is not None:
         await emit("stage", {"stage": "preparing", "label": "读取论文片段"})
-    papers = fulltext_papers(owner, paper_ids, compact=True)
+    papers = await run_in_threadpool(fulltext_papers, owner, paper_ids, compact=True)
     if emit is not None:
         await emit("stage", {"stage": "comparing", "label": "比较研究问题与结果"})
     payload = await _run_task("paper_compare", {"papers": papers}, emit, timeout=timeout)

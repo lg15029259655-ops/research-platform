@@ -1,5 +1,21 @@
 # Project lessons
 
+## 2026-11-10 — Do not block the event loop preparing comparison evidence
+
+- Status: verified by an isolated synthetic concurrency test; production latency has not been measured.
+- Evidence: asynchronous X-Ray and multi-paper comparison called synchronous database and PDF reads directly on the event loop, delaying unrelated requests during slow file access.
+- Action: run full-text preparation in the thread pool while leaving each operation's database session scoped to its thread.
+- Verification: a test holds comparison preparation in a worker thread and confirms an event-loop timer continues to run. The full backend suite passes (88 tests).
+- Boundary: model response times, database write contention and real PDF workloads need further measurement.
+
+## 2026-11-10 — Mind map cache must reflect the actual reading units
+
+- Status: verified with synthetic unit changes; concurrent reparse during AI generation remains to be examined separately.
+- Evidence: the cache key used only the PDF digest, unit count and first unit ID. A reparse could change headings, page attribution or content while retaining those values, causing the old map to be reused.
+- Action: include paper title and the ordered units' IDs, kinds, headings, page ranges and text in the revision digest.
+- Verification: a regression test changes text, heading and title without changing count or first ID and observes a new revision; the full backend suite passes (88 tests).
+- Boundary: this verifies cache invalidation on later requests; it does not by itself fence a generation already in flight while its source changes.
+
 ## 2026-11-10 — Keep reading units tied to their source PDF
 
 - Status: verified with isolated synthetic PDFs and simulated parsing failures; external file modifications are not detected by this fingerprint comparison.

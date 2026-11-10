@@ -25,6 +25,39 @@ def pdf_bytes(title: str) -> bytes:
     return data
 
 
+def test_preparing_comparison_does_not_block_event_loop(monkeypatch):
+    import asyncio
+    import threading
+    from app import research
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_fulltext(*_args, **_kwargs):
+        started.set()
+        assert release.wait(5)
+        raise ValueError("stop after preparation")
+
+    monkeypatch.setattr(research, "fulltext_papers", slow_fulltext)
+
+    async def exercise():
+        task = asyncio.create_task(research.execute_compare("owner", ["a", "b"]))
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(started.wait, 2), timeout=3)
+            # This timer could not fire while the event loop ran the blocking
+            # PDF preparation itself.
+            await asyncio.wait_for(asyncio.sleep(0.02), timeout=0.5)
+        finally:
+            release.set()
+        try:
+            await task
+        except ValueError as exc:
+            assert str(exc) == "stop after preparation"
+        else:
+            raise AssertionError("expected the preparation sentinel")
+
+    asyncio.run(exercise())
+
+
 def test_comparison_rejects_pdf_without_readable_sections(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     document = pymupdf.open()
