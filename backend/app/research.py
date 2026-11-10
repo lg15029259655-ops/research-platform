@@ -261,7 +261,15 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
             substantive = [unit for unit in units if unit.kind in {
                 "ABSTRACT", "INTRODUCTION", "METHODS", "RESULTS", "DISCUSSION", "CONCLUSION"
             } and unit.source_text.strip()]
-            if (len({unit.kind for unit in substantive}) < 2 or
+            # Some reviews have no standard section headings. The parser can
+            # mistakenly place many pages of body text in a single unit.
+            # Preserve that existing unit as the evidence anchor, but label
+            # sampled passages as unclassified rather than as an abstract.
+            unclassified = next((unit for unit in substantive
+                if unit.kind == "ABSTRACT" and len(unit.source_text) >= 10000
+                and unit.page_start and unit.page_end
+                and unit.page_end - unit.page_start >= 2), None)
+            if ((len({unit.kind for unit in substantive}) < 2 and not unclassified) or
                     sum(len(unit.source_text) for unit in substantive) < 60 or
                     paper.title.strip().casefold() in {"hhs public access", "author manuscript"}):
                 # 从 OpenAlex 导入的论文没有上传文件，original_filename 是空串，
@@ -283,6 +291,13 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
             excerpts = [{"unit_id": unit.id, "kind": unit.kind, "heading": unit.heading,
                          "page": unit.page_start, "text": unit.source_text[:1100]}
                         for unit in selected_units]
+            if unclassified:
+                excerpts = [item for item in excerpts if item["unit_id"] != unclassified.id]
+                text = unclassified.source_text
+                for offset in (0, len(text) // 3, len(text) * 2 // 3):
+                    excerpts.append({"unit_id": unclassified.id, "kind": "UNCLASSIFIED",
+                        "heading": "未分类正文片段（章节和页码需核对）", "page": None,
+                        "text": text[offset:offset + 1100]})
             papers.append({"paper_id": paper.id, "title": paper.title,
                            "domain": paper.domain or route_research(paper.title)["domain"],
                            "evidence_scope": "PDF提取的全文片段", "sections": excerpts})
@@ -326,6 +341,10 @@ async def compare(request: CompareRequest, owner: str = Owner):
     except StructuredAIError as exc:
         logger.warning("Comparison AI failed: %s", type(exc).__name__)
         raise HTTPException(503, str(exc)) from exc
+    payload["extraction_warnings"] = [
+        f"《{paper['title']}》部分正文未识别章节；综合使用未分类片段，页码和上下文需核对。"
+        for paper in papers if any(section["kind"] == "UNCLASSIFIED" for section in paper["sections"])
+    ]
     allowed = set(request.paper_ids)
     referenced = ({item["paper_id"] for item in payload["papers"]} |
                   {cell["paper_id"] for row in payload["dimensions"] for cell in row["values"]} |
@@ -346,7 +365,8 @@ async def compare(request: CompareRequest, owner: str = Owner):
             "reason": "本次结构化分析没有给出可核验的共同命题。请对照矩阵和论文原文后再判断。",
             "evidence_refs": []}]
     sources = {(paper["paper_id"], section["unit_id"]): section
-               for paper in papers for section in paper["sections"]}
+               for paper in papers for section in paper["sections"]
+               if section["kind"] != "UNCLASSIFIED"}
     for claim in payload["controversies"]:
         verified_refs = []
         direct_refs = []

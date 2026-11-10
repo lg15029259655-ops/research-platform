@@ -44,6 +44,32 @@ def test_comparison_rejects_pdf_without_readable_sections(monkeypatch, tmp_path)
             clean(client)
 
 
+def test_multipage_review_fallback_preserves_evidence_anchor(monkeypatch, tmp_path):
+    from app.models import ReadingUnit
+    from app.research import fulltext_papers
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        try:
+            paper = client.post("/api/papers", files={"file": ("review.pdf", pdf_bytes("Review paper"), "application/pdf")}).json()
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+                units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper["id"])).all()
+                abstract = next(unit for unit in units if unit.kind == "ABSTRACT")
+                for unit in units:
+                    if unit.id != abstract.id:
+                        db.delete(unit)
+                abstract.source_text = "Review body evidence. " * 600
+                abstract.page_start, abstract.page_end = 1, 6
+                anchor = abstract.id
+                db.commit()
+            result = fulltext_papers(owner, [paper["id"]], compact=True)[0]
+            assert len(result["sections"]) == 3
+            assert all(section["unit_id"] == anchor and section["kind"] == "UNCLASSIFIED" and section["page"] is None for section in result["sections"])
+        finally:
+            clean(client)
+
+
 def clean(client: TestClient):
     for paper in client.get("/api/papers").json():
         client.delete(f"/api/papers/{paper['id']}")

@@ -14,11 +14,11 @@ import EvidenceDrawer from "@/components/EvidenceDrawer";
 import "../research.css";
 import "../studio.css";
 
-type Paper = { id: string; title: string; status: string; domain: string | null; year: number | null };
+type Paper = { id: string; title: string; status: string; domain: string | null; year: number | null; warning?: string | null };
 type Cell = { paper_id: string; value: string; source: string };
 type Comparison = { papers: { paper_id: string; title: string }[]; dimensions: { name: string; values: Cell[] }[];
   consensus: string[]; differences: string[]; controversies: Claim[];
-  gaps: string[]; questions: string[]; next_steps: string[] };
+  gaps: string[]; questions: string[]; next_steps: string[]; extraction_warnings?: string[] };
 type Artifact = { id: string; payload: Comparison; paper_ids: string[]; created_at: string };
 
 export default function SynthesisPage() {
@@ -36,6 +36,8 @@ export default function SynthesisPage() {
   const resultRef = useRef<HTMLElement>(null);
   const selectionRef = useRef<HTMLElement>(null);
   const focusNewResult = useRef(false);
+  const selectionWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const pendingSelections = useRef(0);
   const { workspace, refresh } = useWorkspace();
   const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
   useEffect(() => {
@@ -56,7 +58,7 @@ export default function SynthesisPage() {
   const fulltext = papers.filter((paper) => paper.status === "parsed");
   const metadata = papers.filter((paper) => paper.status !== "parsed");
   useEffect(() => {
-    if (workspace && papers.length) setSelected(workspace.selected_paper_ids.filter((id) => papers.some((paper) => paper.id === id && paper.status === "parsed")));
+    if (workspace && papers.length && pendingSelections.current === 0) setSelected(workspace.selected_paper_ids.filter((id) => papers.some((paper) => paper.id === id && paper.status === "parsed")));
   }, [workspace?.selected_paper_ids.join(","), papers]);
   function toggle(id: string) {
     // 原来是超限就静默 no-op（selected.length < 5 ? … : selected），点了没反应也没提示。
@@ -65,14 +67,16 @@ export default function SynthesisPage() {
     setError("");
     setSelected(updated);
     setShowSelection(true);
-    updateWorkspace({selected_paper_ids: updated}).catch((e) => setError(e.message));
+    pendingSelections.current += 1;
+    selectionWrites.current = selectionWrites.current.catch(() => {}).then(() => updateWorkspace({selected_paper_ids: updated})).finally(() => { pendingSelections.current -= 1; });
+    selectionWrites.current.catch((e) => setError(e.message));
   }
   async function compare() {
     if (artifact && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
     setBusy(true); setError("");
-    try { const result = await postJson<Artifact>("/api/research/compare", { paper_ids: selected }); focusNewResult.current = true; setArtifact(result); setActiveDimension(0); setShowSelection(false); setTab("matrix"); await refresh(); }
+    try { await selectionWrites.current; const result = await postJson<Artifact>("/api/research/compare", { paper_ids: selected }); focusNewResult.current = true; setArtifact(result); setActiveDimension(0); setShowSelection(false); setTab("matrix"); await refresh(); }
     catch (e) { setError(e instanceof Error ? e.message : "综合分析失败"); }
     finally { setBusy(false); }
   }
@@ -114,6 +118,8 @@ export default function SynthesisPage() {
     {busy && <StepLoading title="正在综合全文证据" steps={["读取已解析的论文片段", "比较研究问题与结果", "整理证据关系和研究空白"]} />}
     {busy && <div className="floatingBusy" role="status"><span className="loadingPulse"/>已等待 {elapsed} 秒；超过等待上限会提示缩小范围</div>}
     {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
+      {data.extraction_warnings?.map((warning) => <p className="miniNotice" role="note" key={warning}>{warning}</p>)}
+      {!data.extraction_warnings && artifact?.paper_ids.map((id) => papers.find((paper) => paper.id === id)).filter((paper) => paper?.warning).map((paper) => <p className="miniNotice" role="note" key={paper!.id}>《{paper!.title}》：{paper!.warning} 请核对综合结果与原文。</p>)}
       {tab === "matrix" && <>
         <div className="compareFocus">
           <nav className="compareDimensions" aria-label="选择对比维度"><span>COMPARISON INDEX</span><strong>{data.dimensions.length} 个对比维度</strong>{data.dimensions.map((row, index) => <button key={`${row.name}-${index}`} type="button" className={activeDimension === index ? "active" : ""} aria-current={activeDimension === index ? "true" : undefined} onClick={() => setActiveDimension(index)}><b>{String(index + 1).padStart(2, "0")}</b><span>{row.name}</span><i>↗</i></button>)}</nav>

@@ -174,7 +174,8 @@ async def run_task(name: str, context: dict[str, Any]) -> dict[str, Any]:
         for service_attempt in range(3):
             output = ""
             try:
-                async for chunk in stream_completion(messages):
+                stream = stream_completion(messages, fast_structured=True) if name == "paper_compare" else stream_completion(messages)
+                async for chunk in stream:
                     output += chunk
                     if len(output) > 80000:
                         raise StructuredAIError("AI 输出过长，请缩小研究范围")

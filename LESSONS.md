@@ -1,5 +1,19 @@
 # Project lessons
 
+## 2026-11-09 — Review text misclassified as abstract
+
+- Status: locally tested; real model result and broader PDF coverage still require verification.
+- Evidence: a review PDF had approximately 49,000 extracted characters spanning multiple pages in a single ABSTRACT unit, so the comparison rejected it as lacking multiple sections.
+- Action: exceptionally long multi-page abstract units are sampled as unclassified text, never as verified section/page citations; a warning accompanies new comparison results. Short or unreadable documents remain rejected.
+- Boundary: sampled excerpts do not represent the whole article, and their claims and context must be checked against the PDF. This fallback does not repair the underlying parser or establish an accurate page location.
+
+## 2026-11-09 — Compare latency and selection state
+
+- Status: validated for one local four-paper case; model quality and other configurations require further evaluation.
+- Evidence: Qwen3.7 Flash comparison with default thinking took more than two minutes; a separate request with thinking disabled returned structured output in 29.6 seconds. Output quality was not independently assessed.
+- Action: disable thinking only for this model and comparison task; retain validation, retry and explicit extraction warnings. Serialize selection writes to avoid out-of-order workspace updates.
+- Boundary: timings vary by network, model and paper content; this does not establish a solution for general page interaction latency or production deployment.
+
 Existing project history: [docs/lessons.md](docs/lessons.md). Read both before related changes.
 
 ## 2026-11-02 — Structured comparison needs its own deadline

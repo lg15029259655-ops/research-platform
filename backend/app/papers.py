@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from .db import SessionLocal
 from .models import Message, Paper, PaperImage, ReadingUnit, ResearchArtifact, ResearchWorkspace
@@ -202,7 +203,7 @@ def reparse_paper(paper_id: str, background_tasks: BackgroundTasks, owner: str =
 @router.get("")
 def list_papers(owner: str = Owner):
     with SessionLocal() as db:
-        papers = db.scalars(select(Paper).where(Paper.owner_id == owner).order_by(Paper.created_at.desc())).all()
+        papers = db.scalars(select(Paper).options(selectinload(Paper.images)).where(Paper.owner_id == owner).order_by(Paper.created_at.desc())).all()
         return [paper_data(paper) for paper in papers]
 
 

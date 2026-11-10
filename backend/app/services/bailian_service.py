@@ -32,10 +32,14 @@ def text_config() -> tuple[str, str, str]:
     return model_config(False)
 
 
-async def stream_completion(messages: list[dict[str, Any]], *, vision: bool = False) -> AsyncIterator[str]:
+async def stream_completion(messages: list[dict[str, Any]], *, vision: bool = False, fast_structured: bool = False) -> AsyncIterator[str]:
     key, base_url, model = model_config(vision)
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     body = {"model": model, "messages": messages, "stream": True}
+    # Qwen 3.7 Flash enables thinking by default. Structured comparison is
+    # latency-sensitive; keep other models and reading/design tasks unchanged.
+    if fast_structured and model.lower().startswith("qwen3.7-flash"):
+        body["enable_thinking"] = False
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=20)) as client:
         async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=body) as response:
             if response.status_code >= 400:
