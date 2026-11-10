@@ -56,7 +56,6 @@ export default function SynthesisPage() {
       .catch(() => setArtifact(null));
   }, [workspace?.synthesis_id]);
   const fulltext = papers.filter((paper) => paper.status === "parsed");
-  const metadata = papers.filter((paper) => paper.status !== "parsed");
   useEffect(() => {
     if (workspace && papers.length && pendingSelections.current === 0) setSelected(workspace.selected_paper_ids.filter((id) => papers.some((paper) => paper.id === id && paper.status === "parsed")));
   }, [workspace?.selected_paper_ids.join(","), papers]);
@@ -110,7 +109,6 @@ export default function SynthesisPage() {
       {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇 PDF 提取的片段；不代表每篇都已完整解析。下方可切换论文对比、证据关系和研究空白。</p>}
       {showSelection && (fulltext.length ? <div className="selectionList">{fulltext.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => toggle(paper.id)} disabled={!selected.includes(paper.id) && selected.length >= 5} /><span>{paper.title}<small>{paper.domain || "领域待识别"} · 已有 PDF，提取质量需核对</small></span></label>)}</div> : <p>论文库中尚无已解析的 PDF。先去 <Link href="/read" className="inlineLink">上传 PDF</Link>。</p>)}
       {selectionChanged && <p className="selectionChanged" role="status">论文选择已改变。下方保留的是上一次综合结果；重新生成后才会反映当前选择。</p>}
-      {!!metadata.length && <div className="miniNotice">另有 {metadata.length} 篇只有元数据或正在解析的论文；完成 PDF 上传后可加入全文综合。{workspace?.selected_paper_ids.some((id) => metadata.some((paper) => paper.id === id)) && " 对比篮中待上传 PDF 的论文暂不能参与全文综合。"}</div>}
       {showSelection && <button className="primaryButton" onClick={compare} disabled={busy || selected.length < 2} aria-busy={busy}>{busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}</button>}
     </section>
     {!data && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div><div className="startGuideSteps"><div><b>01</b><strong>上传全文</strong><small>保留原始 PDF 与页码</small></div><div><b>02</b><strong>选择 2–5 篇</strong><small>使用已解析的论文</small></div><div><b>03</b><strong>核对综合结果</strong><small>逐条返回原文验证</small></div></div></section>}
