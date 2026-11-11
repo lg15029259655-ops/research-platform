@@ -28,6 +28,7 @@ def test_manual_edit_creates_version_and_checks_owner_and_staleness(monkeypatch)
         b.get("/api/session")
         draft = dict(first["payload"])
         draft["nodes"] = [*draft["nodes"], {"id": "manual-1", "label": "User experiment", "type": "method", "detail": "Confirm controls"}]
+        draft["nodes"][0] = {**draft["nodes"][0], "steps": [{"name": "Specific analysis", "purpose": "Check hypothesis", "method": "Compare groups", "controls": "Control group", "readouts": "Outcome"}]}
         request = {"artifact_id": first["id"], "design": draft}
         assert b.post("/api/research/design/manual", json=request).status_code == 404
         saved = a.post("/api/research/design/manual", json=request)
@@ -37,6 +38,7 @@ def test_manual_edit_creates_version_and_checks_owner_and_staleness(monkeypatch)
         assert result["version"]["parent_version_id"] == first["version"]["version_id"]
         assert result["payload"]["research_origin"]["research_gap"] == "Gap from comparison"
         assert any(node["label"] == "User experiment" for node in result["payload"]["nodes"])
+        assert result["payload"]["nodes"][0]["steps"][0]["name"] == "Specific analysis"
         assert a.get("/api/workspace").json()["design_version_id"] == result["id"]
         assert a.post("/api/research/design/manual", json=request).status_code == 409
         assert a.post(f"/api/research/design/versions/{first['version']['version_id']}/restore").status_code == 200
@@ -88,3 +90,14 @@ def test_design_insights_return_review_and_outcomes_for_current_version(monkeypa
         assert review["issues"][0]["node_id"] == ""
         outcomes = asyncio.run(research.execute_design_insight(owner, design["id"], "design_outcomes", node_id))
         assert outcomes["node_id"] == node_id and outcomes["branches"][0]["next_step"] == "Check controls"
+
+
+def test_design_schema_accepts_old_versions_and_structured_experiments():
+    from app.services.research_ai import Design
+    old = research.quick_design("Example study", "")
+    for node in old["nodes"]:
+        node.pop("steps", None)
+    assert all(node.steps == [] for node in Design.model_validate(old).nodes)
+    old["nodes"][0]["steps"] = [{"name": "Public database analysis", "purpose": "Identify candidates",
+        "method": "Compare available groups", "controls": "To be determined", "readouts": "Expression"}]
+    assert Design.model_validate(old).nodes[0].steps[0].name == "Public database analysis"

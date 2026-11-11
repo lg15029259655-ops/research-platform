@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-11 — Design stages must expose concrete experiments in context
+
+- Status: local implementation checked with a real model and one existing browser session; scientific quality and reliability across many topics are not yet established.
+- Evidence: the previous canvas displayed only flat abstract text nodes; checks and outcome exploration were detached below it. A real synthetic-model trial before adjustment took 49.8 seconds and failed structured review, while outcome exploration took 32.5 seconds. An earlier hot-reload screenshot also revealed that styles imported only by a dynamically loaded component were missing from an existing tab.
+- Action: allow each generated stage to contain concrete experiments with purpose, method, controls and readouts; display one stage at a time with local check/outcome actions, linked-stage details, category illustrations, and versioned manual addition/removal. Keep legacy designs intact and offer an explicit AI completion action. Load route CSS from the page. Use the Qwen 3.7 Flash structured fast mode for review and outcomes and impose a 50-second analysis timeout with retry messaging.
+- Verification: the full backend suite passes (99 tests), frontend TypeScript and job tests pass. In an isolated end-to-end test with synthetic input and the configured real model, generation returned 3 stages and 6 experiments in 17.6 seconds, review returned 6 findings in 19.2 seconds, and outcome exploration returned 3 branches in 9.4 seconds. A separate fast-mode review attempt failed structured output, followed by a successful 8.3-second attempt; this remains intermittent. Browser inspection verified stage expansion, preselected outcome controls, visible icons and style loading on a fresh page; no user design was overwritten.
+- Boundary: icon category mapping uses explicit stage names and generic fallback; it is not yet shared with the second part. Earlier designs need user-triggered completion or regeneration. Existing design modification actions still save without a preview; references are not bound to individual experiment claims. Real model timings vary and generated experiments, evidence, controls and branches require human verification. Simulated chart graphics are type markers, not empirical results.
+
 ## 2026-11-11 — Keep design review and edits tied to a saved version
 
 - Status: local first implementation, tested with isolated synthetic designs and mocked model responses; real-model quality and production latency are unverified.

@@ -639,8 +639,10 @@ def quick_design(goal: str, constraints: str) -> dict:
 
 
 def design_changes(before: dict | None, after: dict) -> dict:
-    old = {item["id"]: item for item in (before or {}).get("nodes", []) if "id" in item}
-    new = {item["id"]: item for item in after["nodes"]}
+    # Legacy versions did not store step arrays; an absent list and an empty
+    # one mean the same thing and must not appear as a user's edit.
+    old = {item["id"]: {**item, "steps": item.get("steps", [])} for item in (before or {}).get("nodes", []) if "id" in item}
+    new = {item["id"]: {**item, "steps": item.get("steps", [])} for item in after["nodes"]}
     return {"added": [new[key]["label"] for key in new.keys() - old.keys()],
             "removed": [old[key]["label"] for key in old.keys() - new.keys()],
             "modified": [new[key]["label"] for key in new.keys() & old.keys() if new[key] != old[key]]}
@@ -797,7 +799,10 @@ async def execute_design_insight(owner: str, artifact_id: str, kind: str, node_i
             raise HTTPException(422, "请选择当前方案中的步骤")
     if emit:
         await emit("stage", {"stage": "reviewing", "label": "检查方案逻辑" if kind == "design_review" else "推演可能结果"})
-    result = await _run_task(kind, {"design": design, "node_id": node_id}, emit)
+    try:
+        result = await _run_task(kind, {"design": design, "node_id": node_id}, emit, timeout=50)
+    except TimeoutError as exc:
+        raise HTTPException(504, "本次分析等待超时，请稍后重试或缩小方案范围") from exc
     with SessionLocal() as db:
         workspace = get_or_create(db, owner)
         if workspace.design_version_id != artifact_id:
