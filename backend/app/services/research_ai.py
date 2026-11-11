@@ -116,6 +116,29 @@ class Design(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
 
 
+class DesignIssue(BaseModel):
+    title: str
+    reason: str
+    suggestion: str
+    node_id: str = ""
+
+
+class DesignReview(BaseModel):
+    issues: list[DesignIssue] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class OutcomeBranch(BaseModel):
+    scenario: str
+    interpretation: str
+    next_step: str
+
+
+class DesignOutcomes(BaseModel):
+    branches: list[OutcomeBranch] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
 class XRayStage(BaseModel):
     key: str
     label: str
@@ -154,6 +177,8 @@ SCHEMAS: dict[str, type[BaseModel]] = {
     "evidence_extract": EvidenceExtraction,
     "novelty_analysis": Novelty,
     "experiment_design": Design,
+    "design_review": DesignReview,
+    "design_outcomes": DesignOutcomes,
     "mindmap_annotate": MindAnnotations,
 }
 
@@ -177,11 +202,15 @@ SHAPES: dict[str, dict[str, Any]] = {
         "nodes": [{"id": "N1", "label": "节点名称", "type": "question/method/evidence/validation/conclusion", "detail": "节点说明"}],
         "edges": [{"source": "N1", "target": "N2", "label": "关系"}],
         "controls": ["对照"], "readouts": ["评估指标"], "assumptions": ["待验证假设"]},
+    "design_review": {"issues": [{"title": "待核查问题", "reason": "原因与边界", "suggestion": "可考虑的修改", "node_id": "输入中的节点ID或空"}], "limitations": ["检查范围与限制"]},
+    "design_outcomes": {"branches": [{"scenario": "可能出现的结果", "interpretation": "可能解释及不能证明什么", "next_step": "需要核查或考虑的下一步"}], "limitations": ["推演限制"]},
     "mindmap_annotate": {"annotations": [{"node_id": "输入骨架中的节点 id", "label": "不超过24字的中文标注",
         "kind": "question/method/evidence/finding/limitation/extension 之一", "unit_ids": ["输入中真实存在的单元ID"]}]},
 }
 
 TASKS = {
+    "design_review": "审查给出的研究设计草稿，仅指出输入中可观察到的缺口或需要确认的事项。检查设计逻辑、对照、测量、可行性与证据边界；不假定未写明的步骤不存在，不给可靠性评分，不编造论文、结果或具体参数。node_id 只能引用输入节点或留空。建议须说明是待研究者核对，不自行修改方案。",
+    "design_outcomes": "对用户指定研究步骤推演支持假设、不支持假设和结果不明确等可能情况。分别说明可能解释、无法证明什么和下一步；不得把推演当作真实数据，不得声称阴性结果自动证伪假设，不得编造具体细胞系、样本量、数值或文献。",
     "evidence_extract": "从输入原文片段中选择最多两条有具体实验结果的句子，每条只概述单篇论文，不比较论文。不要把仅介绍检测方法、测量目标或图注的句子当成结果。candidate_id 必须原样使用输入编号，不得编造。明确研究对象或条件，不能把相关性写成因果关系；没有直接结果时返回空数组。",
     "paper_summary": "用中文生成 Paper X-Ray：stages 约 5 项，每项只引用输入中真实存在的 unit_ids。按研究类型选择故事线：生物医学为问题→表型→机制→验证→结论；计算机为问题→方法→基准→消融→结论；材料为设计→制备→表征→性能→机制；工程为问题→系统→仿真→原型→验证；社会科学为问题→假设→样本→模型→结果；理论数学为问题→假设→定理→证明思路→结论；综述为问题→检索筛选→证据汇总→异质性→结论。未见证据的环节不得编造或强行补齐。只看到抽取片段时，不得断言整篇论文没有做某项分析；应说当前片段未见，需核对原文。",
     "paper_compare": "用中文比较给出的论文。dimensions 至少包含研究问题、方法、关键结果、证据局限；另按领域增加适用维度：生医可比较模型/对照/外推，算法可比较基线/消融/泛化，材料可比较表征/稳定性，工程可比较设计约束/性能/可靠性，社科可比较混杂/测量。混合领域只选双方可比较的维度，不强行套用不适用字段。每格必须引用对应 paper_id 和源章节。controversies 请先从 Results、Discussion 或 Conclusion 片段提取 1–2 条范围明确、能直接引用原文的结果命题；即使只有一篇论文提供直接结果，也可以标为 SUPPORTS，并在 reason 中说明证据仅来自该论文及其研究条件。只有至少两篇论文针对同一对象、条件和结果指标给出相反或不一致的结果，才标为 REFUTES；研究主题不同、研究设计不同或某篇没提到该指标，不构成反对。用户可能关心但片段尚未证明的直接因果关系可单列 INSUFFICIENT。若没有可定位的结果证据，只给 1 条 INSUFFICIENT，不能硬凑支持或冲突。stance 仅可为 SUPPORTS、REFUTES、INSUFFICIENT；每条 SUPPORTS 或 REFUTES 必须提供输入中真实存在的 paper_id 与 unit_id 作为 evidence_refs。没有直接证据时写证据不足并让 evidence_refs 为空。只基于提供的全文片段，禁止编造；片段未提供的信息不能写成论文未报告。",

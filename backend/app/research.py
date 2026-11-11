@@ -714,6 +714,7 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
             research_context = {
                 "research_gap": workspace.research_gap[:1500],
                 "synthesis_context": json.loads(workspace.gap_context_json),
+                "synthesis_id": workspace.synthesis_id,
                 "selected_papers": [{"paper_id": item.id, "title": item.title,
                     "full_text_available": item.status == "parsed" and paper_source_matches(item)} for item in papers],
                 "evidence_note": "此处是前序综合输出和论文状态，不等于已独立核验的直接实验事实。",
@@ -739,6 +740,7 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
     # 用户看到的是「生成设计后新颖性扫描结果消失」。这里强制回填用户原话，让三者始终同源。
     payload["goal"] = request.goal
     payload["input_constraints"] = request.constraints.strip()
+    payload["research_origin"] = (request.current_design or {}).get("research_origin") or research_context
     node_ids = {node["id"] for node in payload["nodes"]}
     payload["edges"] = [edge for edge in payload["edges"]
                         if edge["source"] in node_ids and edge["target"] in node_ids]
@@ -775,6 +777,86 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
         db.flush()  # The version's artifact foreign key must exist first.
         db.add(version)
         db.commit()
+        return {"id": artifact.id, "kind": artifact.kind, "paper_ids": [], "payload": payload,
+                "created_at": artifact.created_at.isoformat(), "version": version_data(version, artifact)}
+
+
+async def execute_design_insight(owner: str, artifact_id: str, kind: str, node_id: str = "", *, emit=None) -> dict:
+    """Review or explore one saved active design without changing it."""
+    if kind not in {"design_review", "design_outcomes"}:
+        raise HTTPException(422, "不支持的设计分析")
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        artifact = db.get(ResearchArtifact, artifact_id)
+        if not artifact or artifact.owner_id != owner or artifact.kind != "experiment_design":
+            raise HTTPException(404, "研究方案不存在")
+        if workspace.design_version_id != artifact_id:
+            raise HTTPException(409, "当前方案已变化，请重新分析")
+        design = json.loads(artifact.payload_json)
+        if kind == "design_outcomes" and not any(node.get("id") == node_id for node in design.get("nodes", [])):
+            raise HTTPException(422, "请选择当前方案中的步骤")
+    if emit:
+        await emit("stage", {"stage": "reviewing", "label": "检查方案逻辑" if kind == "design_review" else "推演可能结果"})
+    result = await _run_task(kind, {"design": design, "node_id": node_id}, emit)
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        if workspace.design_version_id != artifact_id:
+            raise HTTPException(409, "分析期间方案已变化，请重新分析")
+    if kind == "design_review":
+        valid_ids = {node.get("id") for node in design.get("nodes", [])}
+        for issue in result.get("issues", []):
+            if issue.get("node_id") not in valid_ids:
+                issue["node_id"] = ""
+    return {"artifact_id": artifact_id, "node_id": node_id, **result}
+
+
+class ManualDesignRequest(BaseModel):
+    artifact_id: str
+    design: dict
+
+
+@router.post("/design/manual")
+def save_manual_design(request: ManualDesignRequest, owner: str = Owner):
+    try:
+        payload = Design.model_validate(request.design).model_dump()
+    except ValidationError as exc:
+        raise HTTPException(422, "方案格式无效，请检查步骤内容") from exc
+    nodes = payload["nodes"]
+    ids = [node["id"] for node in nodes]
+    if not nodes or len(nodes) > 50 or len(set(ids)) != len(ids) or any(not node["label"].strip() for node in nodes):
+        raise HTTPException(422, "请保留 1 到 50 个名称有效且编号不同的步骤")
+    if any(edge["source"] not in ids or edge["target"] not in ids for edge in payload["edges"]):
+        raise HTTPException(422, "步骤连接引用了不存在的节点")
+    new_id = str(uuid4())
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        old = db.get(ResearchArtifact, request.artifact_id)
+        if not old or old.owner_id != owner or old.kind != "experiment_design":
+            raise HTTPException(404, "研究方案不存在")
+        original = json.loads(old.payload_json)
+        if payload["goal"].strip() != original.get("goal", "").strip():
+            raise HTTPException(422, "手动修改步骤时不能更改研究目标")
+        payload["goal"] = original["goal"]
+        payload["input_constraints"] = original.get("input_constraints", "")
+        payload["research_origin"] = original.get("research_origin", {})
+        payload["change_summary"] = "手动调整实验步骤；请重新检查方案与文献依据。"
+        claim = db.execute(update(ResearchWorkspace).where(
+            ResearchWorkspace.id == workspace.id, ResearchWorkspace.owner_id == owner,
+            ResearchWorkspace.design_version_id == request.artifact_id,
+        ).values(design_version_id=new_id).execution_options(synchronize_session=False))
+        if claim.rowcount != 1:
+            raise HTTPException(409, "当前方案已变化，请刷新后重新编辑")
+        parent = db.scalar(select(DesignVersion).where(DesignVersion.owner_id == owner,
+            DesignVersion.workspace_id == workspace.id, DesignVersion.artifact_id == request.artifact_id))
+        previous = db.scalar(select(DesignVersion).where(DesignVersion.owner_id == owner,
+            DesignVersion.workspace_id == workspace.id).order_by(DesignVersion.version_number.desc()))
+        artifact = ResearchArtifact(id=new_id, owner_id=owner, kind="experiment_design",
+            paper_ids_json="[]", payload_json=json.dumps(payload, ensure_ascii=False))
+        version = DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace.id,
+            artifact_id=new_id, version_number=(previous.version_number + 1 if previous else 1),
+            parent_version_id=parent.id if parent else None, action="manual",
+            changed_nodes_json=json.dumps(design_changes(original, payload), ensure_ascii=False))
+        db.add(artifact); db.flush(); db.add(version); db.commit()
         return {"id": artifact.id, "kind": artifact.kind, "paper_ids": [], "payload": payload,
                 "created_at": artifact.created_at.isoformat(), "version": version_data(version, artifact)}
 

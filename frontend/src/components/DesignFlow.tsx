@@ -7,16 +7,18 @@ import "@xyflow/react/dist/style.css";
 type Design = { nodes: { id: string; label: string; type: string; detail: string }[];
   edges: { source: string; target: string; label: string }[] };
 
+const labels: Record<string, string> = { question: "研究问题", goal: "研究目标", method: "研究方法", evidence: "证据", validation: "验证", readout: "检测指标", conclusion: "结论", assumption: "待验证假设", constraint: "条件限制" };
+
 export default function DesignFlow({ design, onSelectNode }: { design: Design; onSelectNode?: (id: string) => void }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const flowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const [zoom, setZoom] = useState(100);
   useEffect(() => {
-    const count = Math.min(design.nodes.length, 16);
+    const count = design.nodes.length;
     setNodes(design.nodes.slice(0, count).map((item, index) => ({
-      id: item.id, position: { x: 55 + (index % 3) * 285, y: 55 + Math.floor(index / 3) * 142 },
-      data: { label: <div className="designNode"><small>{item.type || "研究步骤"} · {String(index + 1).padStart(2, "0")}</small><strong>{item.label}</strong><span>点击查看完整设计 ↗</span></div> },
+      id: item.id, position: { x: 55 + (index % 2) * 320, y: 55 + Math.floor(index / 2) * 155 },
+      data: { label: <div className="designNode"><small><span aria-hidden="true" className="designNodeMark">{item.type === "method" ? "◈" : item.type === "validation" ? "◎" : item.type === "question" || item.type === "goal" ? "?" : "◇"}</span> {labels[item.type] || "研究步骤"} · {String(index + 1).padStart(2, "0")}</small><strong>{item.label}</strong><span>查看目的与连接 ↗</span></div> },
       // 内联 style 压得过 CSS，所以这里的颜色只能直接取 token 变量。
       // 网格点与缩略图节点走 @xyflow 的 --xy-* 降级链，在 studio.css 的 .flowWrap 上按 token 赋值。
       style: { width: 230, background: "var(--c-surface)", border: "1px solid var(--c-primary-line)",
@@ -32,7 +34,7 @@ export default function DesignFlow({ design, onSelectNode }: { design: Design; o
     onNodeClick={(_, node) => onSelectNode?.(node.id)}
     onInit={(instance) => { flowRef.current = instance; setZoom(Math.round(instance.getZoom() * 100)); }}
     onMoveEnd={(_, viewport) => setZoom(Math.round(viewport.zoom * 100))}
-    fitView fitViewOptions={{ padding: 0.16, maxZoom: 1.1 }} minZoom={0.25} maxZoom={2.5} nodesDraggable zoomOnScroll panOnDrag proOptions={{ hideAttribution: true }}>
+    fitView fitViewOptions={{ padding: 0.16, minZoom: 0.65, maxZoom: 1.1 }} minZoom={0.4} maxZoom={2.5} nodesDraggable zoomOnScroll panOnDrag proOptions={{ hideAttribution: true }}>
     <Background gap={22} /><MiniMap pannable zoomable nodeColor="var(--c-flow-mini)" />
   </ReactFlow></div>;
 }

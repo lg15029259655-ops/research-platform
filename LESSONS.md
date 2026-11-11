@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-11 — Keep design review and edits tied to a saved version
+
+- Status: local first implementation, tested with isolated synthetic designs and mocked model responses; real-model quality and production latency are unverified.
+- Evidence: the existing design page could generate and restore versions but had no independent design review, outcome exploration, or persistent manual step editing. A review of an old design must not be presented as a review of a later version.
+- Action: add version-scoped AI review and outcome jobs, reject changed or unauthorized designs before and after generation, retain the generation-time synthesis context, and let users add, rename or remove steps in a new reversible version. Improve initial canvas zoom and highlight a selected item in the rotating novelty view.
+- Verification: isolated tests cover manual version creation, restoration, owner isolation, stale edits and stale analysis, invalid step IDs, and synthetic review/outcome results. Full backend suite passes (98 tests); TypeScript and two frontend job tests pass. Existing design page showed the new controls and a 79% canvas zoom in one local browser view.
+- Boundary: node-level evidence provenance, scientific correctness, review quality, editable result branches, controlled cost adjustment proposals, shared illustrated research icon library, and comprehensive responsive and real-model validation remain incomplete. AI modification actions still create versions immediately; they do not yet provide a confirmation preview. Results from review and outcome are session-only and are cleared on version change.
+
 ## 2026-11-10 — Recover stalled progress streams and preserve terminal events
 
 - Status: verified with simulated event streams and an isolated full queue; real proxy and browser behavior remain unmeasured.
