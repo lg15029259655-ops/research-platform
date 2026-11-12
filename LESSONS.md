@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Keep illustration selection out of the research workflow
+
+- Status: verified locally on the current saved education design.
+- Evidence: the user explicitly rejected the illustration-changing control because it burdens people using the product to design experiments. The previous usability change only collapsed the control and did not remove it.
+- Action: remove the control and its frontend editing pathway; keep automatic category matching and retain existing stored category metadata for compatibility.
+- Verification: TypeScript passes; browser inspection of an expanded stage showed experiment content and actions without the change-illustration control. No saved user design was modified.
+- Boundary: matching remains name-based and can still misclassify ambiguous descriptions; improve classification internally using evidence rather than asking users to select a graphic.
+
 ## 2026-11-12 — Reduce design-stage controls and preserve manual visual choices
 
 - Status: implemented locally; browser checked on the existing education design and backend tested with mocked model responses.
