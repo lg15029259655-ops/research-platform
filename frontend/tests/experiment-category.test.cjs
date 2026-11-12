@@ -37,6 +37,14 @@ test("common experiments consistently map to their broad research category", () 
     outcome: ["短期效果验证", "非认知因素短期变化评估", "即时学业成就后测"],
     followup: ["长期影响追踪与归因分析", "纵向追踪数据收集"],
     field: ["环境监测", "野外采样", "field observation"],
+    pharmacology: ["药物筛选", "药代动力学", "drug efficacy"],
+    microbiology: ["细菌培养", "菌落计数", "microbial culture"],
+    fabrication: ["数控加工", "增材制造", "3D printing"],
+    physics: ["光学实验", "激光测量", "particle detection"],
+    ecology: ["生物多样性评估", "生态系统研究", "ecosystem"],
+    policy: ["政策评估", "司法判例", "policy analysis"],
+    economics: ["经济增长模型", "金融风险分析", "economic model"],
+    mathematics: ["定理证明", "数学推导", "mathematical proof"],
   };
   for (const [expected, names] of Object.entries(examples)) for (const name of names) {
     assert.equal(classify(name), expected, name);
@@ -63,6 +71,11 @@ test("specific technique beats a general cell or pathway keyword", () => {
   assert.equal(classify("fuel cell performance"), "materials");
   assert.equal(classify("control group"), "control");
   assert.equal(classify("feedback control algorithm"), "software");
+  assert.equal(classify("政策问卷调查"), "survey");
+  assert.equal(classify("生态系统野外采样"), "field");
+  assert.equal(classify("药物处理细胞培养"), "cell");
+  assert.equal(classify("患者药物临床试验"), "clinical");
+  assert.equal(classify("excelled at statistical analysis"), "analysis");
   assert.equal(classify("尚未指定的研究环节"), "generic");
 });
 

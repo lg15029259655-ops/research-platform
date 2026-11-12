@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Define cross-disciplinary illustration mappings with examples
+
+- Status: expanded locally; representative matching and asset tests pass, but exhaustive discipline coverage is not established.
+- Evidence: the user requested illustrations and explicit correspondence for different fields; existing categories lacked drug studies, microbiology, engineering fabrication, physics measurement, ecology, policy/law, economics and mathematical proof.
+- Action: add eight illustrated categories and specific matching rules; document activity examples and precedence in docs/research-illustration-catalog.md. Distinguish specific activities from vague analysis and guard against confusing English word substrings with cells.
+- Verification: representative Chinese/English and overlapping examples pass frontend tests; all selectable categories have wired assets; TypeScript passes. Browser inspection confirmed the eight labels and image resources in the existing route.
+- Boundary: keyword matching is not comprehensive semantic understanding. Context-dependent or unrecognized activity labels may use generic artwork or be misclassified; generated visual charts are conceptual, not empirical results.
+
 ## 2026-11-12 — Match study-stage illustrations to their actual context
 
 - Status: locally tested with representative names and the user's existing education design; broad semantic coverage remains unverified.
