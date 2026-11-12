@@ -6,23 +6,53 @@ import "./experiment-route.css";
 
 export type Step = { name: string; purpose?: string; method?: string; controls?: string; readouts?: string };
 type Node = { id: string; label: string; type: string; detail: string; steps?: Step[] };
-type Design = { nodes: Node[]; edges: { source: string; target: string; label: string }[] };
+type Edge = { source: string; target: string; label: string };
+type Design = { nodes: Node[]; edges: Edge[] };
+type Kind = "database" | "heatmap" | "volcano" | "pathway" | "immune" | "cell" | "gene" | "animal" | "sequencing" | "microscope" | "analysis" | "goal" | "sample" | "constraint" | "control" | "generic";
 
-function iconType(node: Node): "database" | "cell" | "animal" | "analysis" | "generic" {
-  // Only classify the stated step name: a conditional mention in a long
-  // description does not establish that an animal or cell experiment is used.
-  const text = node.label.toLowerCase();
-  if (/数据库|geo\b|tcga\b/.test(text)) return "database";
-  if (/小鼠|动物实验|动物模型/.test(text)) return "animal";
-  if (/细胞实验|细胞系|细胞培养|细胞干预/.test(text)) return "cell";
-  if (/分析|测序|筛选|富集/.test(text)) return "analysis";
+// Names identify the activity; conditional examples in a description do not.
+function iconType(label: string): Kind {
+  const text = label.toLowerCase();
+  if (/热图|heatmap/.test(text)) return "heatmap";
+  if (/火山图|volcano|差异表达|差异基因/.test(text)) return "volcano";
+  if (/测序|转录组|单细胞|sequenc|rna-seq/.test(text)) return "sequencing";
+  if (/免疫|浸润|immune/.test(text)) return "immune";
+  if (/通路|富集|pathway|gsea|kegg|\bgo\b/.test(text)) return "pathway";
+  if (/动物|小鼠|大鼠|体内|mouse|mice|murine|xenograft/.test(text)) return "animal";
+  if (/敲除|敲低|过表达|基因编辑|crispr|knockout|knockdown|sirna/.test(text)) return "gene";
+  if (/细胞|增殖|迁移|侵袭|凋亡|cell|viability/.test(text)) return "cell";
+  if (/数据库|公共数据|队列|geo\b|tcga\b|dataset/.test(text)) return "database";
+  if (/样本|标本|预处理|sample/.test(text)) return "sample";
+  if (/限制|约束|条件|constraint|limitation/.test(text)) return "constraint";
+  if (/对照|control/.test(text)) return "control";
+  if (/显微|染色|成像|组织学|免疫组化|microscop|imaging/.test(text)) return "microscope";
+  if (/分析|筛选|统计|预测|验证|评估|pca|analys/.test(text)) return "analysis";
+  if (/目标|假设|问题|goal|hypothesis/.test(text)) return "goal";
   return "generic";
 }
 
-function StageIcon({ kind }: { kind: ReturnType<typeof iconType> }) {
-  if (kind !== "generic") return <span aria-hidden="true" className={`er-art er-art-${kind}`} />;
-  return <svg viewBox="0 0 72 72" aria-hidden="true" className="er-icon"><rect x="15" y="14" width="42" height="44" rx="10" fill="#edf3fb" stroke="#7d9bc1" strokeWidth="2"/><path d="M25 27h22M25 36h22M25 45h14" stroke="#5b7ea8" strokeWidth="3" strokeLinecap="round"/></svg>;
+function StageIcon({ kind }: { kind: Kind }) {
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  return <span className={`er-symbol er-symbol-${kind}`} aria-hidden="true"><svg viewBox="0 0 64 64" {...common}>
+    {kind === "database" && <><ellipse cx="32" cy="16" rx="19" ry="7" fill="#d4e9f8"/><path d="M13 16v27c0 4 8 7 19 7s19-3 19-7V16M13 29c0 4 8 7 19 7s19-3 19-7M13 41c0 4 8 7 19 7s19-3 19-7"/></>}
+    {kind === "heatmap" && <><path d="M13 50V13h38" opacity=".45"/>{[0,1,2,3].flatMap(y => [0,1,2,3].map(x => <rect key={`${x}-${y}`} x={18+x*8} y={16+y*8} width="7" height="7" rx="1" fill={[["#507cb1","#a4c7d9","#e9c179","#df8468"],["#6a9cbd","#d6d9ae","#e99b76","#e4be7d"],["#d9dcae","#df987f","#638bb8","#a8ccdc"],["#edb580","#dfa190","#aacbd7","#5b80ad"]][y][x]} stroke="none"/>))}</>}
+    {kind === "volcano" && <><path d="M12 12v40h40M32 50V31M16 29h34" opacity=".55"/><g fill="#d57862" stroke="none">{[[17,18],[21,23],[24,30],[28,35],[36,38],[40,30],[44,23],[49,16],[34,41],[19,35]].map(([x,y],i)=><circle key={i} cx={x} cy={y} r="2.5"/>)}</g></>}
+    {kind === "pathway" && <><path d="M17 19l14 10 15-13M31 29l-8 17M31 29l17 15"/><g fill="#d9eedf"><circle cx="17" cy="19" r="6"/><circle cx="31" cy="29" r="6"/><circle cx="46" cy="16" r="6"/><circle cx="23" cy="46" r="6"/><circle cx="48" cy="44" r="6"/></g></>}
+    {kind === "immune" && <><path d="M32 10l17 7v13c0 11-7 18-17 23-10-5-17-12-17-23V17z" fill="#e2eafa"/><circle cx="32" cy="29" r="8"/><path d="M32 17v4m0 16v4M20 29h4m16 0h4M24 21l3 3m10 10l3 3m0-16l-3 3m-10 10l-3 3"/></>}
+    {kind === "cell" && <><circle cx="32" cy="32" r="22" fill="#e7f1e9"/><circle cx="33" cy="31" r="8" fill="#add4bf"/><path d="M18 26c2-3 4-3 6-2m18 14c3-2 5-2 7 1M22 42c2 1 4 1 5-1M40 20c2-1 4 0 5 2"/></>}
+    {kind === "gene" && <><path d="M19 11c0 19 26 21 26 42M45 11c0 19-26 21-26 42M22 18h20M25 25h14M26 38h12M22 46h20"/><path d="M45 25l7-4m-6 8l8 1" stroke="#dc856e"/></>}
+    {kind === "animal" && <><path d="M13 39c0-10 8-16 19-16 9 0 15 5 18 12l5 3-5 4-4 8H22l-3-6-6-2z" fill="#eee6d9"/><circle cx="27" cy="22" r="6" fill="#f4e9dd"/><circle cx="45" cy="35" r="1.5" fill="currentColor"/><path d="M13 40c-7-1-8-7-4-9M23 50v4m17-4v4"/></>}
+    {kind === "sequencing" && <><path d="M17 10c1 16 29 26 30 44M47 10C46 26 18 36 17 54M20 17h24M23 24h18M27 32h10M23 40h18M20 47h24"/><circle cx="51" cy="16" r="4" fill="#e8b281"/></>}
+    {kind === "microscope" && <><path d="M25 12l8-3 7 16-8 3zM29 28l-3 5m-7 2h19M22 35c1 8 6 11 13 11 8 0 13-6 13-14M16 52h35M22 46h23"/><circle cx="46" cy="29" r="4" fill="#d9e9f5"/></>}
+    {kind === "analysis" && <><path d="M13 12v40h40M20 44V34h7v10M31 44V25h7v19M42 44V17h7v27" fill="#dceaf4"/><path d="M20 27l10-7 9 2 11-10" stroke="#d78169"/></>}
+    {kind === "goal" && <><circle cx="32" cy="32" r="21"/><circle cx="32" cy="32" r="13"/><circle cx="32" cy="32" r="5" fill="#e8a886"/><path d="M35 29l15-15m-5 0h5v5"/></>}
+    {kind === "sample" && <><path d="M21 12h22M24 12v12l-8 21c-1 4 2 7 6 7h20c4 0 7-3 6-7l-8-21V12"/><path d="M20 38h24l3 8c1 3-1 4-4 4H21c-3 0-5-1-4-4z" fill="#cce7e7"/><circle cx="30" cy="43" r="2" fill="#7fb6bb"/></>}
+    {kind === "constraint" && <><rect x="14" y="15" width="36" height="36" rx="10" fill="#f4ecde"/><path d="M32 22v12m0 7v1" stroke="#b68b55" strokeWidth="3"/></>}
+    {kind === "control" && <><path d="M18 15v32M46 15v32M12 21h12M40 21h12M12 42h12M40 42h12"/><circle cx="18" cy="29" r="4" fill="#afd6d0"/><circle cx="46" cy="36" r="4" fill="#efc49f"/></>}
+    {kind === "generic" && <><rect x="14" y="16" width="36" height="32" rx="8" fill="#edf3f8"/><path d="M23 26h18M23 33h18M23 40h11"/></>}
+  </svg></span>;
 }
+
 export default function DesignFlow({ design, artifactId, onSelectNode, onExpandNode, onAddStep, onRemoveStep, busy = false }: { design: Design; artifactId: string; onSelectNode?: (id: string) => void; onExpandNode?: (id: string) => void; onAddStep?: (id: string, step: Step) => Promise<void>; onRemoveStep?: (id: string, index: number) => Promise<void>; busy?: boolean }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [insight, setInsight] = useState<"review" | "outcomes" | null>(null);
@@ -45,22 +75,42 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
     catch (error) { setSaveError(error instanceof Error ? error.message : "保存失败，请重试"); }
     finally { setSaving(false); }
   }
-  const active = design.nodes.find(n => n.id === expanded);
-  const related = active ? design.edges.filter(e => e.source === active.id || e.target === active.id) : [];
   const names = new Map(design.nodes.map(n => [n.id, n.label]));
+  function select(id: string) { setExpanded(expanded === id ? null : id); setInsight(null); setAdding(false); setSaveError(""); }
+  function jump(id: string) { setExpanded(id); setInsight(null); setAdding(false); document.getElementById(`er-node-${id}`)?.scrollIntoView({behavior:"smooth", block:"center"}); }
   return <section className="er-route" aria-label="实验设计路线">
-    <header className="er-head"><div><span>RESEARCH ROUTE</span><h2>实验设计路线</h2><p>先看阶段，再展开具体实验；连接关系以方案中已有的描述为准。</p></div><button type="button" onClick={() => { setExpanded(null); setInsight(insight === "review" && !expanded ? null : "review"); }}>整体方案检查</button></header>
-    {insight === "review" && !active && artifactId && <DesignInsights artifactId={artifactId} nodes={design.nodes} onSelectNode={id => { setExpanded(id); setInsight(null); }} initialTab="review" />}
-    <div className="er-stages">{design.nodes.map((node, index) => { const next = design.edges.filter(edge => edge.source === node.id); return <button type="button" key={node.id} className={`er-stage${expanded === node.id ? " is-active" : ""}`} aria-expanded={expanded === node.id} onClick={() => { setExpanded(expanded === node.id ? null : node.id); setInsight(null); }}><StageIcon kind={iconType(node)} /><span className="er-number">阶段 {String(index + 1).padStart(2, "0")}</span><strong>{node.label}</strong>{next.length > 0 && <span className="er-next">连接 → {names.get(next[0].target) || next[0].target}{next.length > 1 ? ` 等 ${next.length} 项` : ""}</span>}<small>{expanded === node.id ? "收起内容 −" : "展开实验内容 +"}</small></button>; })}</div>
-    {design.edges.length > 0 && <details className="er-map"><summary>查看方案中的 {design.edges.length} 条阶段连接</summary><div>{design.edges.map((edge, index) => <p key={index}><span>{names.get(edge.source) || edge.source}</span><b>→</b><span>{names.get(edge.target) || edge.target}</span>{edge.label && <small>{edge.label}</small>}</p>)}</div></details>}
-    {active && <section className="er-detail"><div className="er-detail-head"><div><span>阶段详情</span><h3>{active.label}</h3></div><button type="button" onClick={() => setExpanded(null)}>收起</button></div><p className="er-purpose">{active.detail || "此阶段尚未提供详细目的，请补充后再评估。"}</p>
-      {active.steps?.length ? <div className="er-experiments">{active.steps.map((step, i) => <article key={i}><div className="er-experiment-title"><StageIcon kind={iconType({id:"", label:step.name, detail:step.method || "", type:""})} /><div><span>实验 / 分析 {String(i + 1).padStart(2, "0")}</span><h4>{step.name}</h4></div></div><dl>{[["目的",step.purpose],["操作思路",step.method],["对照",step.controls],["检测指标",step.readouts]].map(([key,value]) => <div key={key}><dt>{key}</dt><dd>{value?.trim() || "待补充或核对"}</dd></div>)}</dl><button type="button" className="er-remove" disabled={saving} onClick={() => removeStep(i)} aria-label={`删除实验 ${step.name}`}>删除此实验并保存新版本</button></article>)}</div> : <p className="er-missing">当前版本没有记录可展开的具体实验。可以编辑此阶段补充说明，或重新生成新版方案；系统不会凭空补造已有步骤。</p>}
-      {saveError && !adding && <p role="alert" className="er-missing">{saveError}</p>}
-      {related.length > 0 && <div className="er-links"><strong>与其他阶段的关系</strong>{related.map((edge,i) => <p key={i}>{names.get(edge.source) || edge.source} → {names.get(edge.target) || edge.target}{edge.label ? `：${edge.label}` : ""}</p>)}</div>}
-      <div className="er-actions"><button type="button" onClick={() => onSelectNode?.(active.id)}>编辑此阶段 ↗</button><button type="button" onClick={() => { setAdding(!adding); setSaveError(""); }}>手动添加实验</button>{!active.steps?.length && <button type="button" disabled={busy} onClick={() => onExpandNode?.(active.id)}>用 AI 补充此阶段实验</button>}<button type="button" onClick={() => setInsight(insight === "review" ? null : "review")}>检查方案</button><button type="button" onClick={() => setInsight(insight === "outcomes" ? null : "outcomes")}>推演此阶段结果</button></div>
-      {adding && <div className="er-add"><strong>添加到「{active.label}」</strong><p>保存后生成新版本；没有确定的信息可以留空。</p>{([["name","实验名称"],["purpose","目的"],["method","操作思路"],["controls","对照"],["readouts","检测指标"]] as const).map(([key,label]) => <label key={key}>{label}<input value={step[key] || ""} maxLength={key === "name" ? 200 : 2000} onChange={e => setStep(s => ({...s,[key]:e.target.value}))} /></label>)}{saveError && <p role="alert">{saveError}</p>}<button type="button" disabled={saving || !step.name.trim()} onClick={saveStep}>{saving ? "保存中…" : "保存为新版本"}</button></div>}
-      {insight && artifactId && <DesignInsights key={`${artifactId}:${active.id}:${insight}`} artifactId={artifactId} nodes={design.nodes} onSelectNode={id => { setExpanded(id); setInsight(null); }} initialTab={insight} initialNodeId={active.id} />}
-    </section>}
-    <p className="er-foot">草稿需结合原文、具体条件和领域专家核查；图形仅表示类别，不代表实验结果。</p>
+    <header className="er-head"><div><span>RESEARCH ROUTE / 实验路线</span><h2>从研究问题到验证</h2><p>沿连接线查看方案，展开阶段即可在原处查看具体实验。</p></div><button type="button" onClick={() => { setExpanded(null); setInsight(insight === "review" && !expanded ? null : "review"); }}>整体方案检查 ↗</button></header>
+    {insight === "review" && !expanded && artifactId && <DesignInsights artifactId={artifactId} nodes={design.nodes} onSelectNode={jump} initialTab="review" />}
+    <div className="er-route-key"><span><i/> 方案阶段</span><span>→ 方案中已有的连接</span><span>图形表示实验类型</span></div>
+    <div className="er-stages">{design.nodes.map((node, index) => {
+      const open = expanded === node.id;
+      const outgoing = design.edges.filter(e => e.source === node.id);
+      const incoming = design.edges.filter(e => e.target === node.id);
+      const nextNode = design.nodes[index + 1];
+      const nextEdge = nextNode && outgoing.find(e => e.target === nextNode.id);
+      const otherEdges = outgoing.filter(e => e !== nextEdge);
+      const previews = node.steps || [];
+      return <div className="er-stage-group" key={node.id} id={`er-node-${node.id}`}>
+        <div className="er-rail"><span className={open ? "is-active" : ""}>{String(index + 1).padStart(2,"0")}</span>{nextNode && <div className={nextEdge ? "er-rail-line is-linked" : "er-rail-line"}>{nextEdge && <b>↓</b>}</div>}</div>
+        <article className={`er-stage${open ? " is-active" : ""}`}>
+          <button type="button" className="er-stage-main" aria-expanded={open} onClick={() => select(node.id)}>
+            <StageIcon kind={iconType(node.label)} /><span className="er-stage-copy"><span className="er-number">阶段 {String(index + 1).padStart(2,"0")}{incoming.length > 1 ? ` · 汇合 ${incoming.length} 条路径` : ""}</span><strong>{node.label}</strong><span className="er-stage-meta">{previews.length ? `${previews.length} 项实验 / 分析` : "尚未记录具体实验"}</span></span><span className="er-toggle">{open ? "收起 −" : "展开 +"}</span>
+          </button>
+          {previews.length > 0 && <div className="er-preview" aria-label={`${node.label}包含的实验`}>{previews.map((item,i) => <button type="button" key={i} className="er-preview-item" onClick={() => { if (!open) select(node.id); }}><StageIcon kind={iconType(item.name)} /><span>{item.name}</span></button>)}</div>}
+          {open && <section className="er-detail" aria-label={`${node.label}的实验详情`}>
+            {node.detail && <details className="er-stage-description"><summary>查看阶段目的</summary><p>{node.detail}</p></details>}
+            {previews.length ? <div className="er-experiments">{previews.map((item, i) => <article key={i}><div className="er-experiment-title"><StageIcon kind={iconType(item.name)} /><div><span>实验 / 分析 {String(i + 1).padStart(2,"0")}</span><h4>{item.name}</h4></div></div><details><summary>查看目的、方法与对照</summary><dl>{[["目的",item.purpose],["操作思路",item.method],["对照",item.controls],["检测指标",item.readouts]].map(([key,value]) => <div key={key}><dt>{key}</dt><dd>{value?.trim() || "待补充或核对"}</dd></div>)}</dl><button type="button" className="er-remove" disabled={saving} onClick={() => removeStep(i)} aria-label={`删除实验 ${item.name}`}>删除此实验并保存新版本</button></details></article>)}</div> : <p className="er-missing">此版本还没有记录具体实验。可手动添加，或让 AI 补充此阶段；不会将示例当作已有方案。</p>}
+            {saveError && !adding && <p role="alert" className="er-missing">{saveError}</p>}
+            <div className="er-actions"><button type="button" onClick={() => onSelectNode?.(node.id)}>编辑阶段</button><button type="button" onClick={() => { setAdding(!adding); setSaveError(""); }}>＋ 添加实验</button>{!previews.length && <button type="button" disabled={busy} onClick={() => onExpandNode?.(node.id)}>AI 补充实验</button>}<button type="button" onClick={() => setInsight(insight === "review" ? null : "review")}>检查方案</button><button type="button" onClick={() => setInsight(insight === "outcomes" ? null : "outcomes")}>推演此阶段结果</button></div>
+            {adding && <div className="er-add"><strong>添加到「{node.label}」</strong><p>保存后生成新版本；没有确定的信息可以留空。</p>{([["name","实验名称"],["purpose","目的"],["method","操作思路"],["controls","对照"],["readouts","检测指标"]] as const).map(([key,label]) => <label key={key}>{label}<input value={step[key] || ""} maxLength={key === "name" ? 200 : 2000} onChange={e => setStep(s => ({...s,[key]:e.target.value}))} /></label>)}{saveError && <p role="alert">{saveError}</p>}<button type="button" disabled={saving || !step.name.trim()} onClick={saveStep}>{saving ? "保存中…" : "保存为新版本"}</button></div>}
+            {insight && artifactId && <DesignInsights key={`${artifactId}:${node.id}:${insight}`} artifactId={artifactId} nodes={design.nodes} onSelectNode={jump} initialTab={insight} initialNodeId={node.id} />}
+          </section>}
+          {otherEdges.length > 0 && <div className="er-branches"><span>连接至</span>{otherEdges.map((edge,i) => <button type="button" key={i} onClick={() => names.has(edge.target) && jump(edge.target)}>↗ {names.get(edge.target) || edge.target}{edge.label && <small> · {edge.label}</small>}</button>)}</div>}
+        </article>
+        {nextNode && <div className={`er-connector${nextEdge ? "" : " is-unlinked"}`}>{nextEdge ? <><span>↓</span><b>{nextEdge.label || "进入下一阶段"}</b></> : <small>以下阶段未记录与本阶段的直接连接</small>}</div>}
+      </div>;
+    })}</div>
+    {design.edges.length > 0 && <details className="er-map"><summary>查看全部 {design.edges.length} 条连接</summary><div>{design.edges.map((edge, index) => <p key={index}><span>{names.get(edge.source) || edge.source}</span><b>→</b><span>{names.get(edge.target) || edge.target}</span>{edge.label && <small>{edge.label}</small>}</p>)}</div></details>}
+    <p className="er-foot">方案为研究草稿，需结合原文、具体条件和领域专家核查；图形仅表示类型，不代表实验结果。</p>
   </section>;
 }

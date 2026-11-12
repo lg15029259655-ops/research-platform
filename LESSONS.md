@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-11 — Keep experiment details on their route, not below the whole map
+
+- Status: implemented locally; browser checked on the existing legacy design and narrow viewport, TypeScript passes.
+- Evidence: the user reported that a grid of unrelated cards lacked a chain, icons were repetitive, and expanded experiments appeared far below their stages. The previous fix did not satisfy this interaction requirement. An inherited later CSS rule also overrode the narrow-screen design grid.
+- Action: render stages along a route with arrows only for recorded adjacent connections and explicit jump links for other recorded edges; place experiment previews and expandable details within each stage; provide distinct reusable category illustrations; restore the single-column narrow-screen grid with a more specific rule.
+- Verification: checked in the current browser that the legacy version expands at its own stage, recorded links and missing-step guidance appear, and the narrow layout is readable; TypeScript and git diff checks pass.
+- Boundary: the user's existing saved version has no structured experiment steps, so populated experiment previews and scientific quality were not validated in this browser session. Category selection uses names and a generic fallback; nonadjacent branches are links rather than spatial graph lines. AI completion creates a new version and remains subject to model reliability and scientific review.
+
 ## 2026-11-11 — Design stages must expose concrete experiments in context
 
 - Status: local implementation checked with a real model and one existing browser session; scientific quality and reliability across many topics are not yet established.
