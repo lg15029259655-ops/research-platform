@@ -21,6 +21,14 @@ test("common experiments consistently map to their broad research category", () 
     analysis: ["热图", "火山图", "PCA 降维", "跨模态关联分析"],
     database: ["GEO 数据库", "TCGA 数据集"],
     animal: ["小鼠成瘤实验", "animal model"],
+    clinical: ["随机对照临床试验", "病例对照研究", "clinical trial"],
+    imaging: ["患者 MRI 检查", "医学影像分析", "CT 扫描"],
+    materials: ["电池材料力学性能测试", "合金拉伸实验", "ceramic materials"],
+    device: ["传感器原型机测试", "电路设计", "hardware prototype"],
+    simulation: ["有限元仿真", "流体数值模拟", "computational model"],
+    survey: ["问卷调查", "questionnaire survey"],
+    interview: ["半结构化访谈", "焦点小组", "qualitative interview"],
+    archive: ["历史档案研究", "话语分析", "textual analysis"],
   };
   for (const [expected, names] of Object.entries(examples)) for (const name of names) {
     assert.equal(classify(name), expected, name);
@@ -32,5 +40,8 @@ test("specific technique beats a general cell or pathway keyword", () => {
   assert.equal(classify("细胞中关键通路蛋白检测"), "protein");
   assert.equal(classify("细胞糖酵解检测"), "metabolism");
   assert.equal(classify("细胞基因敲除"), "gene");
+  assert.equal(classify("患者来源细胞培养"), "cell");
+  assert.equal(classify("微流控芯片"), "microfluidic");
+  assert.equal(classify("患者 MRI 检查"), "imaging");
   assert.equal(classify("尚未指定的研究环节"), "generic");
 });

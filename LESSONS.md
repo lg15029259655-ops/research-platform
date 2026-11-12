@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Offer cross-disciplinary activity illustrations
+
+- Status: category mapping tested with representative names; existing design and illustration library inspected locally in a browser.
+- Evidence: the previous category set focused on biomedicine and did not recognize clinical studies, engineering tasks, or common social science and humanities methods.
+- Action: add shared categories and image assets for clinical studies, medical imaging, materials, engineering devices, simulation, surveys, interviews and archival/text research; expose a 16-category visual library in the route. Prioritize specific activities when keywords overlap.
+- Verification: classification tests cover Chinese and English examples and overlapping terms, TypeScript passes, and the browser shows the expanded library with all 16 labels and artwork.
+- Boundary: classification remains keyword-based, and the examples do not establish comprehensive coverage across disciplines. Ambiguous names fall back to a generic symbol; new images are conceptual category markers rather than actual research data.
+
 ## 2026-11-12 — Classify common experiment illustrations consistently
 
 - Status: checked on the existing design in a fresh browser reload; keyword coverage is limited and should grow with real examples.
