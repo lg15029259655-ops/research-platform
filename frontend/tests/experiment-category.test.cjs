@@ -59,3 +59,17 @@ test("specific technique beats a general cell or pathway keyword", () => {
   assert.equal(classify("feedback control algorithm"), "software");
   assert.equal(classify("尚未指定的研究环节"), "generic");
 });
+
+test("every selectable category has a positioned, available illustration", () => {
+  const css = fs.readFileSync("src/components/experiment-route.css", "utf8");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+  for (const [category] of exportsForTest.CATEGORY_OPTIONS) {
+    const selector = `.er-illustration-${category}`;
+    assert.ok(rules.some(([, selectors, body]) => selectors.split(",").some(s => s.trim() === selector) && /background-position/.test(body)), `${category}: no position`);
+    const imageRule = rules.find(([, selectors, body]) => selectors.split(",").some(s => s.trim() === selector) && /background-image/.test(body));
+    // The default sheet is used for database, cell, animal and analysis.
+    assert.ok(imageRule || ["database", "cell", "animal", "analysis"].includes(category), `${category}: no image sheet`);
+    const image = imageRule?.[2].match(/url\('([^']+)'\)/)?.[1] || "/research-elements/editorial-v2.png";
+    assert.ok(fs.existsSync(`public${image}`), `${category}: missing ${image}`);
+  }
+});

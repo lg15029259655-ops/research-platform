@@ -13,7 +13,7 @@ type Kind = ExperimentCategory | "heatmap" | "volcano" | "immune" | "sequencing"
 
 function StageIcon({ kind }: { kind: Kind }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  if (["database", "cell", "animal", "analysis", "protein", "metabolism", "gene", "microfluidic", "clinical", "imaging", "materials", "device", "survey", "interview", "archive", "simulation", "chemistry", "software", "education", "field"].includes(kind)) return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
+  if (CATEGORY_OPTIONS.some(([category]) => category === kind)) return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
   return <span className={`er-symbol er-symbol-${kind}`} aria-hidden="true"><svg viewBox="0 0 64 64" {...common}>
     {kind === "database" && <><ellipse cx="32" cy="16" rx="19" ry="7" fill="#d4e9f8"/><path d="M13 16v27c0 4 8 7 19 7s19-3 19-7V16M13 29c0 4 8 7 19 7s19-3 19-7M13 41c0 4 8 7 19 7s19-3 19-7"/></>}
     {kind === "heatmap" && <><path d="M13 50V13h38" opacity=".45"/>{[0,1,2,3].flatMap(y => [0,1,2,3].map(x => <rect key={`${x}-${y}`} x={18+x*8} y={16+y*8} width="7" height="7" rx="1" fill={[["#507cb1","#a4c7d9","#e9c179","#df8468"],["#6a9cbd","#d6d9ae","#e99b76","#e4be7d"],["#d9dcae","#df987f","#638bb8","#a8ccdc"],["#edb580","#dfa190","#aacbd7","#5b80ad"]][y][x]} stroke="none"/>))}</>}

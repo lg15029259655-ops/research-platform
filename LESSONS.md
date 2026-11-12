@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Verify artwork coverage, not just category labels
+
+- Status: all currently selectable categories have local artwork and were checked in the browser and an automated asset test.
+- Evidence: the user identified seven categories that were listed in the gallery but still used the earlier simplified vector placeholders; the sample-processing stage inherited that placeholder. The previous review checked labels and examples rather than artwork coverage for every option.
+- Action: supply consistent illustrations for pathway, sample handling, microscopy, controls, research goals, constraints and generic steps; use the category list for illustration rendering and test that each selectable category has an image sheet, position and available asset.
+- Verification: all four frontend category tests and TypeScript pass; fresh-browser inspection showed the new illustrations in the gallery and the existing sample stage. Images are conceptual, not experimental results.
+- Boundary: category matching remains name-based and can be manually corrected; this test checks asset wiring, not aesthetic quality or exhaustive scientific coverage.
+
 ## 2026-11-12 — Audit category coverage and ambiguous keywords
 
 - Status: tested representative examples locally; exhaustive disciplinary coverage is not established.
