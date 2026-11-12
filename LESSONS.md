@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Audit category coverage and ambiguous keywords
+
+- Status: tested representative examples locally; exhaustive disciplinary coverage is not established.
+- Evidence: prior categories omitted chemistry, software/algorithm development, educational interventions and environmental field observation. Broad substring matches could interpret engineering control as a comparison group or a fuel cell as a biological cell. The visible icon library also omitted categories available in the selection menu.
+- Action: add four research activity illustrations and classifications; narrow comparison-group matching and prioritize fuel/solar cells; derive both the gallery and manual selector from the same category list.
+- Verification: classification tests cover the four additions and overlapping examples; TypeScript passes. Browser inspection confirmed the expanded gallery, including the added names, renders alongside the existing route.
+- Boundary: keyword matching can still miss or misclassify context-dependent phrases. Users can override a step's category, and future changes should be checked against real examples rather than asserting complete coverage.
+
 ## 2026-11-12 — Persist a user's experiment illustration choice
 
 - Status: implemented locally and verified with isolated version tests plus browser preview; model-based regeneration behavior remains unverified.

@@ -13,7 +13,7 @@ type Kind = ExperimentCategory | "heatmap" | "volcano" | "immune" | "sequencing"
 
 function StageIcon({ kind }: { kind: Kind }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  if (["database", "cell", "animal", "analysis", "protein", "metabolism", "gene", "microfluidic", "clinical", "imaging", "materials", "device", "survey", "interview", "archive", "simulation"].includes(kind)) return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
+  if (["database", "cell", "animal", "analysis", "protein", "metabolism", "gene", "microfluidic", "clinical", "imaging", "materials", "device", "survey", "interview", "archive", "simulation", "chemistry", "software", "education", "field"].includes(kind)) return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
   return <span className={`er-symbol er-symbol-${kind}`} aria-hidden="true"><svg viewBox="0 0 64 64" {...common}>
     {kind === "database" && <><ellipse cx="32" cy="16" rx="19" ry="7" fill="#d4e9f8"/><path d="M13 16v27c0 4 8 7 19 7s19-3 19-7V16M13 29c0 4 8 7 19 7s19-3 19-7M13 41c0 4 8 7 19 7s19-3 19-7"/></>}
     {kind === "heatmap" && <><path d="M13 50V13h38" opacity=".45"/>{[0,1,2,3].flatMap(y => [0,1,2,3].map(x => <rect key={`${x}-${y}`} x={18+x*8} y={16+y*8} width="7" height="7" rx="1" fill={[["#507cb1","#a4c7d9","#e9c179","#df8468"],["#6a9cbd","#d6d9ae","#e99b76","#e4be7d"],["#d9dcae","#df987f","#638bb8","#a8ccdc"],["#edb580","#dfa190","#aacbd7","#5b80ad"]][y][x]} stroke="none"/>))}</>}
@@ -71,7 +71,7 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
     <header className="er-head"><div><span>RESEARCH ROUTE / 实验路线</span><h2>从研究问题到验证</h2><p>沿连接线查看方案，展开阶段即可在原处查看具体实验。</p></div><button type="button" onClick={() => { setExpanded(null); setInsight(insight === "review" && !expanded ? null : "review"); }}>整体方案检查 ↗</button></header>
     {insight === "review" && !expanded && artifactId && <DesignInsights artifactId={artifactId} nodes={design.nodes} onSelectNode={jump} initialTab="review" />}
     <div className="er-route-key"><span><i/> 方案阶段</span><span>→ 方案中已有的连接</span><span>图形表示实验类型</span></div>
-    <details className="er-library"><summary>查看常用研究图形分类</summary><p>同一类研究活动使用相同图形；图片是类别标记，不代表实际结果。</p><div className="er-library-grid">{([['cell','细胞实验'],['protein','蛋白检测'],['gene','基因操作'],['metabolism','代谢研究'],['animal','动物实验'],['clinical','临床研究'],['imaging','医学影像'],['microfluidic','微流控'],['database','数据来源'],['analysis','数据分析'],['materials','材料与性能'],['device','工程器件'],['simulation','仿真建模'],['survey','问卷调查'],['interview','访谈与田野'],['archive','文本与档案']] as const).map(([kind,label]) => <div key={kind}><StageIcon kind={kind} /><span>{label}</span></div>)}</div></details>
+    <details className="er-library"><summary>查看常用研究图形分类</summary><p>同一类研究活动使用相同图形；图片是类别标记，不代表实际结果。</p><div className="er-library-grid">{CATEGORY_OPTIONS.map(([kind,label]) => <div key={kind}><StageIcon kind={kind} /><span>{label}</span></div>)}</div></details>
     <div className="er-stages">{design.nodes.map((node, index) => {
       const open = expanded === node.id;
       const outgoing = design.edges.filter(e => e.source === node.id);

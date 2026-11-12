@@ -30,6 +30,10 @@ test("common experiments consistently map to their broad research category", () 
     survey: ["问卷调查", "questionnaire survey"],
     interview: ["半结构化访谈", "焦点小组", "qualitative interview"],
     archive: ["历史档案研究", "话语分析", "textual analysis"],
+    chemistry: ["有机合成", "色谱分析", "chemical reaction"],
+    software: ["机器学习算法训练", "software development"],
+    education: ["课堂教学干预", "educational intervention"],
+    field: ["环境监测", "野外采样", "field observation"],
   };
   for (const [expected, names] of Object.entries(examples)) for (const name of names) {
     assert.equal(classify(name), expected, name);
@@ -50,5 +54,8 @@ test("specific technique beats a general cell or pathway keyword", () => {
   assert.equal(classify("患者来源细胞培养"), "cell");
   assert.equal(classify("微流控芯片"), "microfluidic");
   assert.equal(classify("患者 MRI 检查"), "imaging");
+  assert.equal(classify("fuel cell performance"), "materials");
+  assert.equal(classify("control group"), "control");
+  assert.equal(classify("feedback control algorithm"), "software");
   assert.equal(classify("尚未指定的研究环节"), "generic");
 });
