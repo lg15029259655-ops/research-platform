@@ -98,6 +98,7 @@ class ExperimentStep(BaseModel):
     method: str = ""
     controls: str = ""
     readouts: str = ""
+    icon_category: str | None = Field(default=None, max_length=32)
 
 
 class DesignNode(BaseModel):

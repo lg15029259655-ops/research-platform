@@ -101,3 +101,21 @@ def test_design_schema_accepts_old_versions_and_structured_experiments():
     old["nodes"][0]["steps"] = [{"name": "Public database analysis", "purpose": "Identify candidates",
         "method": "Compare available groups", "controls": "To be determined", "readouts": "Expression"}]
     assert Design.model_validate(old).nodes[0].steps[0].name == "Public database analysis"
+
+
+def test_manual_icon_category_survives_versions_and_restore(monkeypatch):
+    async def fake_generate(_name, context):
+        return research.quick_design(context["goal"], "")
+    monkeypatch.setattr(research, "run_task", fake_generate)
+    with TestClient(app) as client:
+        first = client.post("/api/research/design", json={"goal": "Inspect category persistence"}).json()
+        draft = first["payload"]
+        draft["nodes"][0]["steps"] = [{"name": "Mixed research method", "icon_category": "interview"}]
+        response = client.post("/api/research/design/manual", json={"artifact_id": first["id"], "design": draft})
+        assert response.status_code == 200
+        saved = response.json()
+        assert saved["payload"]["nodes"][0]["steps"][0]["icon_category"] == "interview"
+        assert client.post(f"/api/research/design/versions/{first['version']['version_id']}/restore").status_code == 200
+        restored = client.post(f"/api/research/design/versions/{saved['version']['version_id']}/restore")
+        assert restored.status_code == 200
+        assert restored.json()["payload"]["nodes"][0]["steps"][0]["icon_category"] == "interview"

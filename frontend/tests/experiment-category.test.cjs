@@ -10,6 +10,7 @@ const code = ts.transpileModule(fs.readFileSync("src/components/experimentCatego
 }).outputText;
 vm.runInNewContext(code, { exports: exportsForTest });
 const classify = exportsForTest.experimentCategory;
+const effective = exportsForTest.effectiveCategory;
 
 test("common experiments consistently map to their broad research category", () => {
   const examples = {
@@ -33,6 +34,12 @@ test("common experiments consistently map to their broad research category", () 
   for (const [expected, names] of Object.entries(examples)) for (const name of names) {
     assert.equal(classify(name), expected, name);
   }
+});
+
+test("manual choice overrides automatic classification and can be reset", () => {
+  assert.equal(effective("患者 MRI 检查", "cell"), "cell");
+  assert.equal(effective("患者 MRI 检查", null), "imaging");
+  assert.equal(effective("患者 MRI 检查", "unknown-category"), "imaging");
 });
 
 test("specific technique beats a general cell or pathway keyword", () => {

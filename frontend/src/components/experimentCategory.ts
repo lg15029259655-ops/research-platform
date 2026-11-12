@@ -2,6 +2,19 @@
 // example from the description. More specific techniques precede broad terms.
 export type ExperimentCategory = "database" | "cell" | "animal" | "analysis" | "protein" | "metabolism" | "gene" | "microfluidic" | "pathway" | "sample" | "constraint" | "control" | "goal" | "microscope" | "clinical" | "imaging" | "materials" | "device" | "survey" | "interview" | "archive" | "simulation" | "generic";
 
+export const CATEGORY_OPTIONS: ReadonlyArray<readonly [ExperimentCategory, string]> = [
+  ["cell", "细胞实验"], ["protein", "蛋白检测"], ["gene", "基因操作"], ["metabolism", "代谢研究"],
+  ["animal", "动物实验"], ["clinical", "临床研究"], ["imaging", "医学影像"], ["microfluidic", "微流控"],
+  ["database", "数据来源"], ["analysis", "数据分析"], ["materials", "材料与性能"], ["device", "工程器件"],
+  ["simulation", "仿真建模"], ["survey", "问卷调查"], ["interview", "访谈与田野"], ["archive", "文本与档案"],
+  ["pathway", "通路分析"], ["sample", "样本处理"], ["microscope", "显微与成像"], ["control", "对照设置"],
+  ["goal", "研究目标"], ["constraint", "研究限制"], ["generic", "通用图形"],
+];
+
+export function effectiveCategory(name: string, override?: string | null): ExperimentCategory {
+  return CATEGORY_OPTIONS.find(([key]) => key === override)?.[0] ?? experimentCategory(name);
+}
+
 export function experimentCategory(name: string): ExperimentCategory {
   const text = name.toLowerCase();
   if (/微流控|微流体|液滴生成|液滴捕获|droplet|microfluid|lab.on.a.chip/.test(text)) return "microfluidic";

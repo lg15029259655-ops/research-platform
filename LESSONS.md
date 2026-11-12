@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Persist a user's experiment illustration choice
+
+- Status: implemented locally and verified with isolated version tests plus browser preview; model-based regeneration behavior remains unverified.
+- Evidence: keyword classification cannot reliably determine the main activity of every interdisciplinary step, and the previous structured schema discarded unknown fields when saving a version.
+- Action: add optional illustration category metadata to experiment steps; allow a preview, explicit save as a new version, or reset to automatic classification. Retain the legacy automatic behavior when metadata is absent.
+- Verification: an isolated backend test saves a manual category, restores another version, then restores the edited version and checks the category; the full backend suite passes (100 tests). Frontend category tests and TypeScript pass; browser inspection confirmed selection previews the chosen picture and reverting to automatic removes the pending save without altering the saved user version.
+- Boundary: matching still uses step names, stage-level artwork is automatic, and AI-generated modifications may replace step metadata; review selections after regeneration. Visual categories are conceptual and do not validate the experiment itself.
+
 ## 2026-11-12 — Offer cross-disciplinary activity illustrations
 
 - Status: category mapping tested with representative names; existing design and illustration library inspected locally in a browser.
