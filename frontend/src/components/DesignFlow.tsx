@@ -19,20 +19,21 @@ function iconType(label: string): Kind {
   if (/免疫|浸润|immune/.test(text)) return "immune";
   if (/通路|富集|pathway|gsea|kegg|\bgo\b/.test(text)) return "pathway";
   if (/动物|小鼠|大鼠|体内|mouse|mice|murine|xenograft/.test(text)) return "animal";
-  if (/敲除|敲低|过表达|基因编辑|crispr|knockout|knockdown|sirna/.test(text)) return "gene";
+  if (/敲除|敲低|过表达|功能缺失|功能获得|缺失\/获得|基因编辑|crispr|knockout|knockdown|sirna/.test(text)) return "gene";
   if (/细胞|增殖|迁移|侵袭|凋亡|cell|viability/.test(text)) return "cell";
   if (/数据库|公共数据|队列|geo\b|tcga\b|dataset/.test(text)) return "database";
   if (/样本|标本|预处理|sample/.test(text)) return "sample";
   if (/限制|约束|条件|constraint|limitation/.test(text)) return "constraint";
   if (/对照|control/.test(text)) return "control";
   if (/显微|染色|成像|组织学|免疫组化|microscop|imaging/.test(text)) return "microscope";
-  if (/分析|筛选|统计|预测|验证|评估|pca|analys/.test(text)) return "analysis";
+  if (/分析|筛选|初筛|统计|预测|验证|评估|脂质代谢|蛋白表达|pca|analys/.test(text)) return "analysis";
   if (/目标|假设|问题|goal|hypothesis/.test(text)) return "goal";
   return "generic";
 }
 
 function StageIcon({ kind }: { kind: Kind }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  if (["database", "cell", "animal", "analysis"].includes(kind)) return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
   return <span className={`er-symbol er-symbol-${kind}`} aria-hidden="true"><svg viewBox="0 0 64 64" {...common}>
     {kind === "database" && <><ellipse cx="32" cy="16" rx="19" ry="7" fill="#d4e9f8"/><path d="M13 16v27c0 4 8 7 19 7s19-3 19-7V16M13 29c0 4 8 7 19 7s19-3 19-7M13 41c0 4 8 7 19 7s19-3 19-7"/></>}
     {kind === "heatmap" && <><path d="M13 50V13h38" opacity=".45"/>{[0,1,2,3].flatMap(y => [0,1,2,3].map(x => <rect key={`${x}-${y}`} x={18+x*8} y={16+y*8} width="7" height="7" rx="1" fill={[["#507cb1","#a4c7d9","#e9c179","#df8468"],["#6a9cbd","#d6d9ae","#e99b76","#e4be7d"],["#d9dcae","#df987f","#638bb8","#a8ccdc"],["#edb580","#dfa190","#aacbd7","#5b80ad"]][y][x]} stroke="none"/>))}</>}
@@ -91,14 +92,13 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
       const otherEdges = outgoing.filter(e => e !== nextEdge);
       const previews = node.steps || [];
       return <div className="er-stage-group" key={node.id} id={`er-node-${node.id}`}>
-        <div className="er-rail"><span className={open ? "is-active" : ""}>{String(index + 1).padStart(2,"0")}</span>{nextNode && <div className={nextEdge ? "er-rail-line is-linked" : "er-rail-line"}>{nextEdge && <b>↓</b>}</div>}</div>
         <article className={`er-stage${open ? " is-active" : ""}`}>
           <button type="button" className="er-stage-main" aria-expanded={open} onClick={() => select(node.id)}>
-            <StageIcon kind={iconType(node.label)} /><span className="er-stage-copy"><span className="er-number">阶段 {String(index + 1).padStart(2,"0")}{incoming.length > 1 ? ` · 汇合 ${incoming.length} 条路径` : ""}</span><strong>{node.label}</strong><span className="er-stage-meta">{previews.length ? `${previews.length} 项实验 / 分析` : "尚未记录具体实验"}</span></span><span className="er-toggle">{open ? "收起 −" : "展开 +"}</span>
+            <span className="er-index">{String(index + 1).padStart(2,"0")}</span><StageIcon kind={iconType(node.label)} /><span className="er-stage-copy"><span className="er-number">研究环节{incoming.length > 1 ? ` · ${incoming.length} 条关联` : ""}</span><strong>{node.label}</strong><span className="er-stage-meta">{previews.length ? `${previews.length} 项实验 / 分析` : "查看环节说明"}</span></span><span className="er-toggle">{open ? "收起 −" : "展开 +"}</span>
           </button>
-          {previews.length > 0 && <div className="er-preview" aria-label={`${node.label}包含的实验`}>{previews.map((item,i) => <button type="button" key={i} className="er-preview-item" onClick={() => { if (!open) select(node.id); }}><StageIcon kind={iconType(item.name)} /><span>{item.name}</span></button>)}</div>}
+          {!open && previews.length > 0 && <div className="er-preview" aria-label={`${node.label}包含的实验`}>{previews.map((item,i) => <button type="button" key={i} className="er-preview-item" onClick={() => select(node.id)}><StageIcon kind={iconType(item.name)} /><span>{item.name}</span></button>)}</div>}
           {open && <section className="er-detail" aria-label={`${node.label}的实验详情`}>
-            {node.detail && <details className="er-stage-description"><summary>查看阶段目的</summary><p>{node.detail}</p></details>}
+            {node.detail && <p className="er-stage-description">{node.detail}</p>}
             {previews.length ? <div className="er-experiments">{previews.map((item, i) => <article key={i}><div className="er-experiment-title"><StageIcon kind={iconType(item.name)} /><div><span>实验 / 分析 {String(i + 1).padStart(2,"0")}</span><h4>{item.name}</h4></div></div><details><summary>查看目的、方法与对照</summary><dl>{[["目的",item.purpose],["操作思路",item.method],["对照",item.controls],["检测指标",item.readouts]].map(([key,value]) => <div key={key}><dt>{key}</dt><dd>{value?.trim() || "待补充或核对"}</dd></div>)}</dl><button type="button" className="er-remove" disabled={saving} onClick={() => removeStep(i)} aria-label={`删除实验 ${item.name}`}>删除此实验并保存新版本</button></details></article>)}</div> : <p className="er-missing">此版本还没有记录具体实验。可手动添加，或让 AI 补充此阶段；不会将示例当作已有方案。</p>}
             {saveError && !adding && <p role="alert" className="er-missing">{saveError}</p>}
             <div className="er-actions"><button type="button" onClick={() => onSelectNode?.(node.id)}>编辑阶段</button><button type="button" onClick={() => { setAdding(!adding); setSaveError(""); }}>＋ 添加实验</button>{!previews.length && <button type="button" disabled={busy} onClick={() => onExpandNode?.(node.id)}>AI 补充实验</button>}<button type="button" onClick={() => setInsight(insight === "review" ? null : "review")}>检查方案</button><button type="button" onClick={() => setInsight(insight === "outcomes" ? null : "outcomes")}>推演此阶段结果</button></div>
@@ -107,7 +107,7 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
           </section>}
           {otherEdges.length > 0 && <div className="er-branches"><span>连接至</span>{otherEdges.map((edge,i) => <button type="button" key={i} onClick={() => names.has(edge.target) && jump(edge.target)}>↗ {names.get(edge.target) || edge.target}{edge.label && <small> · {edge.label}</small>}</button>)}</div>}
         </article>
-        {nextNode && <div className={`er-connector${nextEdge ? "" : " is-unlinked"}`}>{nextEdge ? <><span>↓</span><b>{nextEdge.label || "进入下一阶段"}</b></> : <small>以下阶段未记录与本阶段的直接连接</small>}</div>}
+        {nextNode && <div className={`er-connector${nextEdge ? "" : " is-unlinked"}`}>{nextEdge ? <><span>↓</span><b>{nextEdge.label || "下一环节"}</b></> : <small>独立环节</small>}</div>}
       </div>;
     })}</div>
     {design.edges.length > 0 && <details className="er-map"><summary>查看全部 {design.edges.length} 条连接</summary><div>{design.edges.map((edge, index) => <p key={index}><span>{names.get(edge.source) || edge.source}</span><b>→</b><span>{names.get(edge.target) || edge.target}</span>{edge.label && <small>{edge.label}</small>}</p>)}</div></details>}

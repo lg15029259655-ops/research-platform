@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-11 — Verify the populated route with the user's actual version
+
+- Status: locally verified with one real model generation and browser interaction; quality and evidence alignment remain unverified.
+- Evidence: the user rejected the preceding redesign: simple icons, an empty legacy version, long broken route lines and poor visual hierarchy. The previous check used an empty saved version and therefore could not demonstrate real experiment cards.
+- Action: generated a new reversible version for the existing research question, retained the old version, checked populated experiments in place, replaced the stretched rail with short inter-card connectors, and added an editorial illustration sheet alongside type-specific symbols.
+- Verification: the actual generated V2 displayed four connected stages and seven named experiments/analyses; browser inspection confirmed in-place expansion. TypeScript and diff checks pass. Model-generated examples rely in part on supplied papers not directly about single-cell cost reduction, so neither the scientific validity nor cost savings are established.
+- Boundary: the artwork covers four broad categories; other categories retain vector symbols. Branches remain links rather than drawn spatial paths. The new generated version is a draft, not a literature-verified protocol; scientific and aesthetic acceptance require further review.
+
 ## 2026-11-11 — Keep experiment details on their route, not below the whole map
 
 - Status: implemented locally; browser checked on the existing legacy design and narrow viewport, TypeScript passes.
