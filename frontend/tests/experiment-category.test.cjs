@@ -32,7 +32,7 @@ test("common experiments consistently map to their broad research category", () 
     archive: ["历史档案研究", "话语分析", "textual analysis"],
     chemistry: ["有机合成", "色谱分析", "chemical reaction"],
     software: ["机器学习算法训练", "software development"],
-    education: ["课堂教学干预", "educational intervention"],
+    education: ["课堂教学干预", "educational intervention", "即时学业成就后测", "基线学业与认知能力测评"],
     field: ["环境监测", "野外采样", "field observation"],
   };
   for (const [expected, names] of Object.entries(examples)) for (const name of names) {

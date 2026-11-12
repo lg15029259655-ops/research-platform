@@ -682,6 +682,22 @@ def version_data(version: DesignVersion, artifact: ResearchArtifact) -> dict:
             "payload": json.loads(artifact.payload_json), "created_at": version.created_at.isoformat()}
 
 
+def preserve_step_illustrations(previous: dict, revised: dict) -> None:
+    """Keep manual icons only when a step is unambiguously the same named step."""
+    old_nodes = {node.get("id"): node for node in previous.get("nodes", [])}
+    for node in revised.get("nodes", []):
+        old_steps = old_nodes.get(node.get("id"), {}).get("steps") or []
+        new_steps = node.get("steps") or []
+        for step in new_steps:
+            name = step.get("name", "").strip()
+            if not name:
+                continue
+            before = [item for item in old_steps if item.get("name", "").strip() == name]
+            after = [item for item in new_steps if item.get("name", "").strip() == name]
+            if len(before) == len(after) == 1 and before[0].get("icon_category"):
+                step["icon_category"] = before[0]["icon_category"]
+
+
 async def execute_design(owner: str, request: DesignRequest, *, emit=None,
                          timeout: float | None = None, fallback: bool = True) -> dict:
     actions = {"generate": "生成研究设计", "node": "局部优化节点", "causality": "加强因果识别", "cost": "降低成本",
@@ -748,6 +764,8 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
                         if edge["source"] in node_ids and edge["target"] in node_ids]
     if request.action == "node":
         payload = limit_node_revision(request.current_design or {}, payload, request.node_id or "")
+    if request.action != "generate" and request.current_design:
+        preserve_step_illustrations(request.current_design, payload)
     artifact_id = str(uuid4())
     with SessionLocal() as db:
         # Commit the workspace pointer, artifact and version as one change.

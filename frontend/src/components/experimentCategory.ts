@@ -22,7 +22,7 @@ export function experimentCategory(name: string): ExperimentCategory {
   if (/问卷|量表调查|问卷调查|survey|questionnaire/.test(text)) return "survey";
   if (/访谈|焦点小组|田野调查|口述史|interview|focus group|ethnograph/.test(text)) return "interview";
   if (/档案|史料|文献研读|文本分析|文献分析|话语分析|历史文献|archive|textual analysis|discourse analysis/.test(text)) return "archive";
-  if (/教学干预|教育干预|教学实验|课堂教学|课程改革|teaching intervention|educational intervention|classroom instruction/.test(text)) return "education";
+  if (/教学干预|教育干预|教学实验|课堂教学|课程改革|学业成就|学业与认知|teaching intervention|educational intervention|classroom instruction|academic achievement/.test(text)) return "education";
   if (/实地观测|野外观测|现场观测|野外采样|实地测量|环境监测|field observation|field measurement|environmental monitoring/.test(text)) return "field";
   if (/医学影像|影像学|磁共振|核磁|超声|放射影像|病理切片|\bmri\b|\bct\b|radiolog|medical imaging/.test(text)) return "imaging";
   if (/动物|小鼠|大鼠|体内实验|体内模型|mouse|mice|murine|xenograft|animal/.test(text)) return "animal";

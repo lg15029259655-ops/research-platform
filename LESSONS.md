@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Reduce design-stage controls and preserve manual visual choices
+
+- Status: implemented locally; browser checked on the existing education design and backend tested with mocked model responses.
+- Evidence: the user reported a cluttered fourth section; the open stage simultaneously displayed a category selector on every experiment, all editing actions and long stage description. A saved manual category could be lost when an AI adjustment omitted the optional metadata. Current education examples also fell back to a generic symbol for academic assessments.
+- Action: collapse low-frequency illustration, stage description, editing and addition controls; keep experiments and review/outcome actions visible; remove nested sidebar scrolling; recognize common academic assessment labels. Preserve manual illustration metadata only for an unambiguous matching name within the same stage on AI adjustments, never during full regeneration.
+- Verification: browser inspection on the user's existing education design confirmed the experiment cards and expandable editing/category controls. Backend full suite passed (101 tests before adding the final integration test); all 7 focused design tests including a mocked AI-adjustment save passed; category tests and TypeScript passed.
+- Boundary: the category match does not infer context from other steps, and a changed or ambiguous step name cannot safely inherit a manual choice. Results of design checks remain session-only, individual evidence claims are not tied to citations, and branch edges remain text links rather than a full graph. Real model quality and new designs were not evaluated.
+
 ## 2026-11-12 — Verify artwork coverage, not just category labels
 
 - Status: all currently selectable categories have local artwork and were checked in the browser and an automated asset test.

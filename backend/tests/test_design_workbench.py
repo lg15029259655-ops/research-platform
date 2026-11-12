@@ -119,3 +119,39 @@ def test_manual_icon_category_survives_versions_and_restore(monkeypatch):
         restored = client.post(f"/api/research/design/versions/{saved['version']['version_id']}/restore")
         assert restored.status_code == 200
         assert restored.json()["payload"]["nodes"][0]["steps"][0]["icon_category"] == "interview"
+
+
+def test_ai_revision_preserves_only_unambiguous_user_illustrations():
+    before = {"nodes": [{"id": "n1", "steps": [
+        {"name": "Shared step", "icon_category": "clinical"},
+        {"name": "Ambiguous", "icon_category": "gene"},
+        {"name": "Ambiguous", "icon_category": "cell"},
+    ]}]}
+    after = {"nodes": [{"id": "n1", "steps": [
+        {"name": "Shared step", "icon_category": None}, {"name": "Ambiguous", "icon_category": None},
+        {"name": "New step", "icon_category": None},
+    ]}, {"id": "n2", "steps": [{"name": "Shared step", "icon_category": None}]}]}
+    research.preserve_step_illustrations(before, after)
+    assert after["nodes"][0]["steps"][0]["icon_category"] == "clinical"
+    assert after["nodes"][0]["steps"][1]["icon_category"] is None
+    assert after["nodes"][0]["steps"][2]["icon_category"] is None
+    assert after["nodes"][1]["steps"][0]["icon_category"] is None
+
+
+def test_ai_adjustment_keeps_saved_illustration_when_model_omits_it(monkeypatch):
+    async def fake_run(_name, context):
+        if not context.get("current_design"):
+            return research.quick_design(context["goal"], "")
+        import copy
+        result = copy.deepcopy(context["current_design"])
+        result["nodes"][0]["steps"][0].pop("icon_category", None)
+        return result
+    monkeypatch.setattr(research, "run_task", fake_run)
+    with TestClient(app) as client:
+        first = client.post("/api/research/design", json={"goal": "Evaluate an education design"}).json()
+        draft = first["payload"]
+        draft["nodes"][0]["steps"] = [{"name": "Follow-up study", "icon_category": "education"}]
+        saved = client.post("/api/research/design/manual", json={"artifact_id": first["id"], "design": draft}).json()
+        revised = client.post("/api/research/design", json={"goal": draft["goal"], "action": "causality", "current_design": saved["payload"]})
+        assert revised.status_code == 200
+        assert revised.json()["payload"]["nodes"][0]["steps"][0]["icon_category"] == "education"
