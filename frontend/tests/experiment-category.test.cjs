@@ -32,7 +32,10 @@ test("common experiments consistently map to their broad research category", () 
     archive: ["历史档案研究", "话语分析", "textual analysis"],
     chemistry: ["有机合成", "色谱分析", "chemical reaction"],
     software: ["机器学习算法训练", "software development"],
-    education: ["课堂教学干预", "educational intervention", "即时学业成就后测", "基线学业与认知能力测评"],
+    education: ["课堂教学干预", "educational intervention"],
+    baseline: ["研究设计与基线评估", "基线学业与认知能力测评"],
+    outcome: ["短期效果验证", "非认知因素短期变化评估", "即时学业成就后测"],
+    followup: ["长期影响追踪与归因分析", "纵向追踪数据收集"],
     field: ["环境监测", "野外采样", "field observation"],
   };
   for (const [expected, names] of Object.entries(examples)) for (const name of names) {
@@ -44,6 +47,9 @@ test("manual choice overrides automatic classification and can be reset", () => 
   assert.equal(effective("患者 MRI 检查", "cell"), "cell");
   assert.equal(effective("患者 MRI 检查", null), "imaging");
   assert.equal(effective("患者 MRI 检查", "unknown-category"), "imaging");
+  assert.equal(effective("干预方案落地", null, "评估教育干预对学生的长期影响"), "education");
+  assert.equal(effective("干预方案落地", null, "评估肿瘤治疗"), "generic");
+  assert.equal(effective("细胞干预方案", null, "评估教育干预"), "cell");
 });
 
 test("specific technique beats a general cell or pathway keyword", () => {

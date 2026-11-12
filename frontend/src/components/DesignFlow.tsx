@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from "react";
 import DesignInsights from "./DesignInsights";
-import { experimentCategory as iconType, effectiveCategory, CATEGORY_OPTIONS, type ExperimentCategory } from "./experimentCategory";
+import { effectiveCategory, CATEGORY_OPTIONS, type ExperimentCategory } from "./experimentCategory";
 import "./experiment-route.css";
 
 export type Step = { name: string; purpose?: string; method?: string; controls?: string; readouts?: string; icon_category?: ExperimentCategory | null };
 type Node = { id: string; label: string; type: string; detail: string; steps?: Step[] };
 type Edge = { source: string; target: string; label: string };
-type Design = { nodes: Node[]; edges: Edge[] };
+type Design = { goal?: string; nodes: Node[]; edges: Edge[] };
 type Kind = ExperimentCategory | "heatmap" | "volcano" | "immune" | "sequencing";
 
 function StageIcon({ kind }: { kind: Kind }) {
@@ -75,12 +75,12 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
       return <div className="er-stage-group" key={node.id} id={`er-node-${node.id}`}>
         <article className={`er-stage${open ? " is-active" : ""}`}>
           <button type="button" className="er-stage-main" aria-expanded={open} onClick={() => select(node.id)}>
-            <span className="er-index">{String(index + 1).padStart(2,"0")}</span><StageIcon kind={iconType(node.label)} /><span className="er-stage-copy"><span className="er-number">研究环节{incoming.length > 1 ? ` · ${incoming.length} 条关联` : ""}</span><strong>{node.label}</strong><span className="er-stage-meta">{previews.length ? `${previews.length} 项实验 / 分析` : "查看环节说明"}</span></span><span className="er-toggle">{open ? "收起 −" : "展开 +"}</span>
+            <span className="er-index">{String(index + 1).padStart(2,"0")}</span><StageIcon kind={effectiveCategory(node.label, null, design.goal)} /><span className="er-stage-copy"><span className="er-number">研究环节{incoming.length > 1 ? ` · ${incoming.length} 条关联` : ""}</span><strong>{node.label}</strong><span className="er-stage-meta">{previews.length ? `${previews.length} 项实验 / 分析` : "查看环节说明"}</span></span><span className="er-toggle">{open ? "收起 −" : "展开 +"}</span>
           </button>
-          {!open && previews.length > 0 && <div className="er-preview" aria-label={`${node.label}包含的实验`}>{previews.map((item,i) => <button type="button" key={i} className="er-preview-item" onClick={() => select(node.id)}><StageIcon kind={effectiveCategory(item.name, item.icon_category)} /><span>{item.name}</span></button>)}</div>}
+          {!open && previews.length > 0 && <div className="er-preview" aria-label={`${node.label}包含的实验`}>{previews.map((item,i) => <button type="button" key={i} className="er-preview-item" onClick={() => select(node.id)}><StageIcon kind={effectiveCategory(item.name, item.icon_category, design.goal)} /><span>{item.name}</span></button>)}</div>}
           {open && <section className="er-detail" aria-label={`${node.label}的实验详情`}>
             {node.detail && <details className="er-stage-description"><summary>查看环节说明</summary><p>{node.detail}</p></details>}
-            {previews.length ? <div className="er-experiments">{previews.map((item, i) => { const shown = effectiveCategory(item.name, item.icon_category); return <article key={i}><div className="er-experiment-title"><StageIcon kind={shown} /><div><span>实验 / 分析 {String(i + 1).padStart(2,"0")}</span><h4>{item.name}</h4></div></div><details><summary>查看目的、方法与对照</summary><dl>{[["目的",item.purpose],["操作思路",item.method],["对照",item.controls],["检测指标",item.readouts]].map(([key,value]) => <div key={key}><dt>{key}</dt><dd>{value?.trim() || "待补充或核对"}</dd></div>)}</dl><button type="button" className="er-remove" disabled={saving} onClick={() => removeStep(i)} aria-label={`删除实验 ${item.name}`}>删除此实验并保存新版本</button></details></article>; })}</div> : <p className="er-missing">此版本还没有记录具体实验。可手动添加，或让 AI 补充此阶段；不会将示例当作已有方案。</p>}
+            {previews.length ? <div className="er-experiments">{previews.map((item, i) => { const shown = effectiveCategory(item.name, item.icon_category, design.goal); return <article key={i}><div className="er-experiment-title"><StageIcon kind={shown} /><div><span>实验 / 分析 {String(i + 1).padStart(2,"0")}</span><h4>{item.name}</h4></div></div><details><summary>查看目的、方法与对照</summary><dl>{[["目的",item.purpose],["操作思路",item.method],["对照",item.controls],["检测指标",item.readouts]].map(([key,value]) => <div key={key}><dt>{key}</dt><dd>{value?.trim() || "待补充或核对"}</dd></div>)}</dl><button type="button" className="er-remove" disabled={saving} onClick={() => removeStep(i)} aria-label={`删除实验 ${item.name}`}>删除此实验并保存新版本</button></details></article>; })}</div> : <p className="er-missing">此版本还没有记录具体实验。可手动添加，或让 AI 补充此阶段；不会将示例当作已有方案。</p>}
             {saveError && !adding && <p role="alert" className="er-missing">{saveError}</p>}
             <div className="er-actions"><button type="button" onClick={() => setInsight(insight === "review" ? null : "review")}>检查方案</button><button type="button" onClick={() => setInsight(insight === "outcomes" ? null : "outcomes")}>推演此阶段结果</button>{!previews.length && <button type="button" disabled={busy} onClick={() => onExpandNode?.(node.id)}>AI 补充实验</button>}<details className="er-more"><summary>编辑与添加</summary><div><button type="button" onClick={() => onSelectNode?.(node.id)}>编辑阶段</button><button type="button" onClick={() => { setAdding(!adding); setSaveError(""); }}>＋ 添加实验</button></div></details></div>
             {adding && <div className="er-add"><strong>添加到「{node.label}」</strong><p>保存后生成新版本；没有确定的信息可以留空。</p>{([["name","实验名称"],["purpose","目的"],["method","操作思路"],["controls","对照"],["readouts","检测指标"]] as const).map(([key,label]) => <label key={key}>{label}<input value={step[key] || ""} maxLength={key === "name" ? 200 : 2000} onChange={e => setStep(s => ({...s,[key]:e.target.value}))} /></label>)}{saveError && <p role="alert">{saveError}</p>}<button type="button" disabled={saving || !step.name.trim()} onClick={saveStep}>{saving ? "保存中…" : "保存为新版本"}</button></div>}

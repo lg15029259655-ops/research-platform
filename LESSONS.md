@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Match study-stage illustrations to their actual context
+
+- Status: locally tested with representative names and the user's existing education design; broad semantic coverage remains unverified.
+- Evidence: the user showed that baseline assessment, short-term evaluation and long-term follow-up all received a bioinformatics graphic because the generic keywords for evaluation/analysis matched a biomedical data illustration. The previous audit checked asset presence rather than whether each icon represented its actual task.
+- Action: provide separate baseline, outcome and follow-up illustrations, replace the general data graphic with a discipline-neutral statistics illustration, and use the stated education goal only to disambiguate explicitly named intervention/process steps. Keep explicit laboratory techniques and saved user choices higher priority.
+- Verification: category and asset tests and TypeScript pass. Fresh-browser inspection of the current education route verified its baseline, intervention, short-term outcome, follow-up and model-analysis illustrations without changing saved data.
+- Boundary: matching still uses rules and a narrow use of the research goal, not general semantic understanding. Similar words in other contexts can remain ambiguous; conceptual charts are not experimental results.
+
 ## 2026-11-12 — Keep illustration selection out of the research workflow
 
 - Status: verified locally on the current saved education design.
