@@ -17,6 +17,7 @@ import type { Step } from "@/components/DesignFlow";
 import "../research.css";
 import "../studio.css";
 import "@/components/experiment-route.css";
+import "@/components/design-insights.css";
 
 const DesignFlow = dynamic(() => import("@/components/DesignFlow"), { ssr: false });
 const NoveltySpace = dynamic(() => import("@/components/NoveltySpace"), { ssr: false });

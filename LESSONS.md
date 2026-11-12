@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-12 — Classify common experiment illustrations consistently
+
+- Status: checked on the existing design in a fresh browser reload; keyword coverage is limited and should grow with real examples.
+- Evidence: protein and metabolism were previously classified as general analysis, microfluidics fell back to a generic symbol, and the outcome selector touched the action button. A dynamically imported stylesheet also failed to update in the existing browser tab until the page imported it directly and reloaded.
+- Action: use a tested, centralized experiment-name classification with specific techniques ahead of broad terms; add matching protein, metabolism, gene and microfluidics artwork and reuse the cell and data artwork; add 14px between the selector and button and load the insight stylesheet at page level.
+- Verification: category tests cover common Chinese and English names and conflicting keywords; TypeScript passes. Fresh-browser inspection of the saved V2 confirmed the expected category artwork for the user's examples and measured 14px spacing.
+- Boundary: this is name-based classification, not semantic understanding; ambiguous or unrecognized steps keep the generic symbol. The pictures represent categories and are not scientific results or validated molecular structures.
+
 ## 2026-11-11 — Verify the populated route with the user's actual version
 
 - Status: locally verified with one real model generation and browser interaction; quality and evidence alignment remain unverified.

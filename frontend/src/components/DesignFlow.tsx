@@ -2,38 +2,18 @@
 
 import { useEffect, useState } from "react";
 import DesignInsights from "./DesignInsights";
+import { experimentCategory as iconType, type ExperimentCategory } from "./experimentCategory";
 import "./experiment-route.css";
 
 export type Step = { name: string; purpose?: string; method?: string; controls?: string; readouts?: string };
 type Node = { id: string; label: string; type: string; detail: string; steps?: Step[] };
 type Edge = { source: string; target: string; label: string };
 type Design = { nodes: Node[]; edges: Edge[] };
-type Kind = "database" | "heatmap" | "volcano" | "pathway" | "immune" | "cell" | "gene" | "animal" | "sequencing" | "microscope" | "analysis" | "goal" | "sample" | "constraint" | "control" | "generic";
-
-// Names identify the activity; conditional examples in a description do not.
-function iconType(label: string): Kind {
-  const text = label.toLowerCase();
-  if (/热图|heatmap/.test(text)) return "heatmap";
-  if (/火山图|volcano|差异表达|差异基因/.test(text)) return "volcano";
-  if (/测序|转录组|单细胞|sequenc|rna-seq/.test(text)) return "sequencing";
-  if (/免疫|浸润|immune/.test(text)) return "immune";
-  if (/通路|富集|pathway|gsea|kegg|\bgo\b/.test(text)) return "pathway";
-  if (/动物|小鼠|大鼠|体内|mouse|mice|murine|xenograft/.test(text)) return "animal";
-  if (/敲除|敲低|过表达|功能缺失|功能获得|缺失\/获得|基因编辑|crispr|knockout|knockdown|sirna/.test(text)) return "gene";
-  if (/细胞|增殖|迁移|侵袭|凋亡|cell|viability/.test(text)) return "cell";
-  if (/数据库|公共数据|队列|geo\b|tcga\b|dataset/.test(text)) return "database";
-  if (/样本|标本|预处理|sample/.test(text)) return "sample";
-  if (/限制|约束|条件|constraint|limitation/.test(text)) return "constraint";
-  if (/对照|control/.test(text)) return "control";
-  if (/显微|染色|成像|组织学|免疫组化|microscop|imaging/.test(text)) return "microscope";
-  if (/分析|筛选|初筛|统计|预测|验证|评估|脂质代谢|蛋白表达|pca|analys/.test(text)) return "analysis";
-  if (/目标|假设|问题|goal|hypothesis/.test(text)) return "goal";
-  return "generic";
-}
+type Kind = ExperimentCategory | "heatmap" | "volcano" | "immune" | "sequencing";
 
 function StageIcon({ kind }: { kind: Kind }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  if (["database", "cell", "animal", "analysis"].includes(kind)) return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
+  if (["database", "cell", "animal", "analysis", "protein", "metabolism", "gene", "microfluidic"].includes(kind)) return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
   return <span className={`er-symbol er-symbol-${kind}`} aria-hidden="true"><svg viewBox="0 0 64 64" {...common}>
     {kind === "database" && <><ellipse cx="32" cy="16" rx="19" ry="7" fill="#d4e9f8"/><path d="M13 16v27c0 4 8 7 19 7s19-3 19-7V16M13 29c0 4 8 7 19 7s19-3 19-7M13 41c0 4 8 7 19 7s19-3 19-7"/></>}
     {kind === "heatmap" && <><path d="M13 50V13h38" opacity=".45"/>{[0,1,2,3].flatMap(y => [0,1,2,3].map(x => <rect key={`${x}-${y}`} x={18+x*8} y={16+y*8} width="7" height="7" rx="1" fill={[["#507cb1","#a4c7d9","#e9c179","#df8468"],["#6a9cbd","#d6d9ae","#e99b76","#e4be7d"],["#d9dcae","#df987f","#638bb8","#a8ccdc"],["#edb580","#dfa190","#aacbd7","#5b80ad"]][y][x]} stroke="none"/>))}</>}
