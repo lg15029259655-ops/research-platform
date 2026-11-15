@@ -333,3 +333,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Fixed minimum lane heights left large empty blocks when evidence was sparse; the comparison prompt also requested only one or two claims. Lanes now size to their contents, and the prompt requests broader coverage only when supported by the provided text. A missing contradictory result must not be invented.
 - Avoid repeating the current version as a selectable button when there is only one version. Existing saved comparisons remain unchanged; rerun is necessary to apply a changed generation prompt.
 - Checks: frontend TypeScript and 30 backend research tests passed. This does not prove improved evidence recall, or validate visual design on all screens.
+
+## 2026-11-15 — Markdown whitespace in the reader
+
+- Status: code and TypeScript verified; visual acceptance with the user's saved paper is pending.
+- Inherited `white-space: pre-wrap` preserved Markdown source newlines in addition to rendered block spacing, producing large gaps. Rendered Markdown and recap cards now use normal whitespace; plain streaming text retains newlines.
+- Limit assistant message width for easier reading and use one stable SVG for both library-toggle states. Responsive behavior and existing messages remain intact in code; verify visually with real long and short responses.

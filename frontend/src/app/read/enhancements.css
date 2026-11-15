@@ -53,6 +53,21 @@
 .readerShell { height: 100dvh; }
 .readerShell .chatControls { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 
+/* Markdown already turns line breaks into block elements; preserving source
+   whitespace as well adds large gaps between headings, lists and paragraphs. */
+.readerShell .bubble.assistant { width: min(100%, 880px); align-self: center; }
+.readerShell .bubble.assistant .markdownBody,
+.readerShell .bubble.assistant .summaryGrid { white-space: normal; }
+.readerShell .bubble.assistant .streamText { white-space: pre-wrap; }
+.readerShell .markdownBody { line-height: 1.75; }
+.readerShell .markdownBody :is(h1,h2,h3,h4) { margin: 1em 0 .4em; }
+.readerShell .markdownBody :is(ul,ol) { margin: .45em 0; padding-left: 1.5em; }
+.readerShell .markdownBody li + li { margin-top: .25em; }
+.readerShell .markdownBody li > p { margin: .25em 0; }
+.readerShell .markdownBody > :first-child { margin-top: 0; }
+.readerShell .markdownBody > :last-child { margin-bottom: 0; }
+.libraryToggle { display: inline-grid; place-items: center; }
+
 @media(max-width:680px) {
   /* D7：<680 时 370/300px 的聊天列会把 375px 视口撑出横向溢出 */
   .readerShell .chatColumn { min-width: 0; }
