@@ -353,3 +353,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - “条件培养基转移实验” matched a generic restriction category because the rule treated every occurrence of “条件” as a limitation. Recognize the actual cell-culture method first and restrict generic limitation terms; clear biological method names also take priority over stale saved categories.
 - Add sequencing, extracellular-vesicle, biochemical-assay and microscopy illustrations, while retaining shared category images for cell and animal experiments. Explicitly distinguish wet-lab sequencing from analysis and microfluidic devices from general cell work.
 - Tests cover the reported name, legacy misclassification, closely related Chinese and English names, and asset availability. This representative set does not establish coverage for all biology papers.
+
+## 2026-11-15 — Check existing designs for illustration gaps
+
+- Status: representative classification tests and TypeScript passed; broad population coverage remains unmeasured.
+- A read-only sample of saved design titles exposed gaps in real wording, including public clinical dataset mining and metabolic tracing. Extend method matching and test those examples, plus common organoid, immunohistochemistry, viral, gene-silencing and sequencing terminology, using existing category images when appropriate.
+- Priority matters: wet-lab metabolic tracing should not be inferred as data analysis merely because a title also mentions pathway analysis; sequencing data analysis should not be shown as an instrument experiment.
+- Boundaries: sampled designs are not representative of every field and ambiguous wording can still be misclassified; no percentage coverage claim is supported.
