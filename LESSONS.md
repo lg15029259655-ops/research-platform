@@ -319,3 +319,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - The prior filter check used keyword search only. OpenAlex rejects `topics.domain.id` on semantic search, so the novelty job failed even though the keyword request and mocked tests passed. The job handler also hid the actionable search error.
 - Semantic search now filters the returned maximum 50 candidates locally by topic domain before pagination; keyword search retains server-side filtering. Tests check both request shapes and filtering, and the novelty handler preserves search errors.
 - Boundary: filtering a bounded candidate set and automatic topic labels can omit relevant papers. Live verification confirms this example, not all queries or model responses.
+
+## 2026-11-15 — Keep design actions in their proper scope
+
+- Status: implementation and frontend checks verified; live interaction with a saved user design was not repeated.
+- Repeating the same review and outcome tabs inside each stage made an overall review look stage-specific. Keep whole-design review at the route header and stage outcome exploration inside its stage, with no duplicate switcher.
+- Keep manual experiment addition directly available in each expanded stage and retain the existing versioned save path. Remove redundant interface instructions while retaining evidence-quality and version-state information.
+- Verification: frontend TypeScript and six existing frontend tests passed. An end-to-end manual save remains unverified in this round.
