@@ -469,12 +469,17 @@ def test_discovery_uses_semantic_search_and_handles_public_budget(monkeypatch):
 
     async def fake_get(path, params=None):
         calls.append((path, params))
-        return {"meta": {"count": 1000}, "results": []}
+        return {"meta": {"count": 1000}, "results": [
+            {"id": "https://openalex.org/W1", "title": "Biology", "topics": [{"domain": {"id": "https://openalex.org/domains/1"}}]},
+            {"id": "https://openalex.org/W2", "title": "Engineering", "topics": [{"domain": {"id": "https://openalex.org/domains/3"}}]},
+            {"id": "https://openalex.org/W3", "title": "Health", "topics": [{"domain": {"id": "https://openalex.org/domains/4"}}]},
+        ]}
 
     monkeypatch.setattr("app.services.openalex_service._get", fake_get)
-    result = asyncio.run(search_works("How do cells respond to therapy?", 2))
-    assert calls[-1] == ("/works", {"search.semantic": "How do cells respond to therapy?", "page": 2, "per_page": 10, "filter": "topics.domain.id:1|4"})
-    assert result["count"] == 50
+    result = asyncio.run(search_works("How do cells respond to therapy?", 2, per_page=1))
+    assert calls[-1] == ("/works", {"search.semantic": "How do cells respond to therapy?", "page": 1, "per_page": 50})
+    assert result["count"] == 2
+    assert [item["title"] for item in result["items"]] == ["Health"]
     asyncio.run(search_works("exact paper title", mode="keyword"))
     assert calls[-1][1]["search"] == "exact paper title"
     assert calls[-1][1]["filter"] == "topics.domain.id:1|4"

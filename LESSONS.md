@@ -312,3 +312,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - When narrowing to biological sciences, remove unrelated built-in examples, illustration assets and templates, but preserve existing user papers and saved designs. Map older illustration categories to a supported biological or generic category rather than deleting data.
 - OpenAlex life and health science topic filters need a new search cache version so older unfiltered results do not reappear. A sample filter query returned HTTP 200; automatic topic assignment may miss interdisciplinary work.
 - Verification: 102 backend tests and 6 frontend tests passed, as did TypeScript checking. This does not establish production deployment or validate every biological subfield.
+
+## 2026-11-15 — Verify each OpenAlex search mode end to end
+
+- Status: verified against the live service and a complete local novelty job using a Chinese biological research question.
+- The prior filter check used keyword search only. OpenAlex rejects `topics.domain.id` on semantic search, so the novelty job failed even though the keyword request and mocked tests passed. The job handler also hid the actionable search error.
+- Semantic search now filters the returned maximum 50 candidates locally by topic domain before pagination; keyword search retains server-side filtering. Tests check both request shapes and filtering, and the novelty handler preserves search errors.
+- Boundary: filtering a bounded candidate set and automatic topic labels can omit relevant papers. Live verification confirms this example, not all queries or model responses.

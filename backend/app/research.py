@@ -70,7 +70,7 @@ def cache_key(kind: str, query: str, mode: str = "", page: int = 1) -> str:
     # Old search caches predate the life/health science scope.
     parts = [kind, " ".join(query.casefold().split()), mode, page]
     if kind == "search":
-        parts.insert(1, "bio-v1")
+        parts.insert(1, "bio-v2")
     canonical = json.dumps(parts, ensure_ascii=False)
     return sha256(canonical.encode("utf-8")).hexdigest()
 

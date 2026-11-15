@@ -41,6 +41,8 @@ async def _run_novelty(ctx: worker.JobContext) -> dict:
         return await execute_novelty(ctx.owner, query, emit=ctx.emit, fallback=False)
     except StructuredAIError as exc:
         raise worker.JobFailed(str(exc), code="ai_failed") from exc
+    except HTTPException as exc:
+        raise worker.JobFailed(str(exc.detail), code="search_failed") from exc
 
 
 async def _run_design(ctx: worker.JobContext) -> dict:

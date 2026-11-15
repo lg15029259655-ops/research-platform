@@ -9,6 +9,22 @@ from app.main import app
 from app.jobs import store, worker
 
 
+def test_novelty_job_preserves_search_error(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from app.jobs import handlers
+    import pytest
+
+    async def fail_search(*args, **kwargs):
+        raise HTTPException(503, "文献检索暂时不可用")
+
+    monkeypatch.setattr(handlers, "execute_novelty", fail_search)
+    ctx = SimpleNamespace(params={"query": "测试生物研究问题"}, owner="test", emit=None)
+    with pytest.raises(worker.JobFailed, match="文献检索暂时不可用") as error:
+        asyncio.run(handlers._run_novelty(ctx))
+    assert error.value.code == "search_failed"
+
+
 def test_terminal_event_survives_full_subscriber_queue():
     from app.jobs import events
 
