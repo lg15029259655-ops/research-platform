@@ -305,3 +305,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Status: pending workflow support, local work retained.
 - `python` resolves to the Microsoft Store placeholder; the verified bundled host interpreter ran the workflow query and tests.
 - This project has no COLLABORATION.json and is not in the shared-project registry. `editor.py claim` fails on the missing manifest; `project_entry.py init` only accepts migrating/shared stages. Do not mark a local project as migrating simply to obtain a token. No Git submission or shared migration was performed this round.
+
+## 2026-11-15 — Narrowing the research scope without losing existing work
+
+- Status: validated in local automated tests and a public OpenAlex sample query; classification coverage is not guaranteed.
+- When narrowing to biological sciences, remove unrelated built-in examples, illustration assets and templates, but preserve existing user papers and saved designs. Map older illustration categories to a supported biological or generic category rather than deleting data.
+- OpenAlex life and health science topic filters need a new search cache version so older unfiltered results do not reappear. A sample filter query returned HTTP 200; automatic topic assignment may miss interdisciplinary work.
+- Verification: 102 backend tests and 6 frontend tests passed, as did TypeScript checking. This does not establish production deployment or validate every biological subfield.

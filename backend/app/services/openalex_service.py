@@ -89,7 +89,10 @@ async def search_works(query: str, page: int = 1, per_page: int = 10,
         raise DiscoveryError("无效的检索模式")
     # OpenAlex semantic search accepts up to 2000 characters and returns at most 50 hits.
     search_mode = "search.semantic" if mode == "semantic" else "search"
-    data = await _get("/works", {search_mode: query[:2000], "page": page, "per_page": per_page})
+    # Any assigned life-sciences or health-sciences topic keeps relevant
+    # interdisciplinary work while excluding unrelated primary-only searches.
+    data = await _get("/works", {search_mode: query[:2000], "page": page, "per_page": per_page,
+                                "filter": "topics.domain.id:1|4"})
     total = (data.get("meta") or {}).get("count", 0)
     if mode == "semantic":
         total = min(total, 50)

@@ -22,7 +22,7 @@ type Paper = { id: string; title: string; openalex_id: string | null; status: st
 type Search = { items: Work[]; count: number; page: number; mode: "semantic" | "keyword"; cached?: boolean; stale?: boolean; fetched_at?: string };
 type Graph = { nodes: Work[]; links: { source: string; target: string; relation: string }[]; cached?: boolean; fetched_at?: string };
 
-const domains: Record<string, string> = { biomed: "生物医学", cs: "计算机 / AI", materials: "材料 / 化学", engineering: "工程", social: "社会科学", general: "跨学科" };
+const domains: Record<string, string> = { biomed: "生物科学", review: "综述", general: "领域待确认" };
 
 export default function DiscoverPage() {
   const router = useRouter();
@@ -247,7 +247,7 @@ export default function DiscoverPage() {
     const paper = saved.find((item) => item.openalex_id === work.openalex_id);
     const acting = pendingWorkId === work.openalex_id;
     return <article key={work.openalex_id} className={`workCard ${compact ? "compact" : ""}`}>
-      <div className="workMeta"><span>{domains[work.domain || ""] || "跨学科"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${paper?.status === "parsed" ? "fulltext" : ""}`}>{paper?.status === "parsed" ? "已有全文" : "尚无全文"}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
+      <div className="workMeta"><span>{domains[work.domain || ""] || "领域待确认"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${paper?.status === "parsed" ? "fulltext" : ""}`}>{paper?.status === "parsed" ? "已有全文" : "尚无全文"}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
       <h3>{work.title}</h3><p className="workAuthors">{work.authors.slice(0, 4).join(" · ") || "作者未提供"}</p>
       {work.abstract && <p className="workAbstract">{work.abstract}</p>}
       <div className="workPrimaryActions"><button onClick={() => showLineage(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献谱系 <span>↗</span></button>{paper?.status === "parsed" ? <Link href={`/read?paper=${paper.id}`}>打开全文精读 <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
@@ -257,10 +257,10 @@ export default function DiscoverPage() {
   }
 
   return <><ResearchNav current="/discover" /><main id="main" className="researchPage">
-    <div className="pageIntro"><div className="eyebrow">01 / DISCOVER</div><h1>从一个问题，找到值得深读的论文。</h1><p>自然语言检索 OpenAlex；先看研究关系，再决定哪些论文需要全文精读。</p></div>
+    <div className="pageIntro"><div className="eyebrow">01 / DISCOVER</div><h1>从一个问题，找到值得深读的论文。</h1><p>检索 OpenAlex 中标注为生命科学或健康科学的文献；自动分类可能遗漏相关研究，请核对原文。</p></div>
     <form className="searchBox" onSubmit={(e) => { e.preventDefault(); search(1); }}><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="例如：单细胞测序如何揭示肿瘤耐药机制？" aria-label="论文检索" /><button disabled={busy || !query.trim()} aria-busy={busy}>{busy ? "检索中…" : "检索论文 ↗"}</button></form>
     <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("semantic"); window.localStorage.setItem("medread-search-mode", "semantic"); setResult({ items: [], count: 0, page: 0, mode: "semantic" }); }}>语义检索</button><button className={mode === "keyword" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("keyword"); window.localStorage.setItem("medread-search-mode", "keyword"); setResult({ items: [], count: 0, page: 0, mode: "keyword" }); }}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
-    {!result.items.length && <div className="suggestions">试试：{["single cell RNA sequencing cancer", "transformer model efficiency", "perovskite solar cell stability", "education policy regression"].map((term) => <button key={term} onClick={() => { setQuery(term); search(1, term); }}>{term}</button>)}</div>}
+    {!result.items.length && <div className="suggestions">试试：{["single cell RNA sequencing cancer", "tumor immune microenvironment", "gene expression metabolic pathway", "CRISPR cell function"].map((term) => <button key={term} onClick={() => { setQuery(term); search(1, term); }}>{term}</button>)}</div>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {busy && !loadingGraph && !loadingLineage && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
     {result.page === 0 && !busy && !error && <div className="discoverStarter"><div><span className="sectionLabel">HOW IT WORKS</span><h2>先检索，再决定读哪篇</h2><p>输入研究问题后，先查看摘要和论文关系；找到相关文献，再获取或上传 PDF 进入全文精读。</p></div><ol><li><b>01</b><span>检索主题</span></li><li><b>02</b><span>查看论文关系</span></li><li><b>03</b><span>取得 PDF 后精读</span></li></ol></div>}

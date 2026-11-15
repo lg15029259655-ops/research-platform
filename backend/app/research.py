@@ -67,7 +67,11 @@ async def _run_task(name: str, context: dict, emit=None, *, timeout: float | Non
 
 
 def cache_key(kind: str, query: str, mode: str = "", page: int = 1) -> str:
-    canonical = json.dumps([kind, " ".join(query.casefold().split()), mode, page], ensure_ascii=False)
+    # Old search caches predate the life/health science scope.
+    parts = [kind, " ".join(query.casefold().split()), mode, page]
+    if kind == "search":
+        parts.insert(1, "bio-v1")
+    canonical = json.dumps(parts, ensure_ascii=False)
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -102,38 +106,18 @@ async def cached_discovery(key: str, kind: str, query: str, mode: str, page: int
 
 
 def route_research(title: str, abstract: str = "", field: str = "") -> dict[str, str]:
+    """Choose a biological research reading template; unknown topics stay unconfirmed."""
     content = f"{title} {abstract}".lower()
-    if any(term in content for term in ("meta-analysis", "systematic review", "scoping review",
-                                        "narrative review", "progress article", "荟萃分析", "系统综述")):
+    if any(term in content for term in ("meta-analysis", "systematic review", "scoping review", "narrative review", "荟萃分析", "系统综述")):
         return {"domain": "review", "study_type": "evidence_synthesis", "template": "review_synthesis"}
-    if any(term in content for term in ("theorem", "lemma", "proof", "axiom", "定理", "引理", "证明")):
-        return {"domain": "theory", "study_type": "theoretical", "template": "theory_proof"}
-    if any(term in content for term in ("finite element simulation", "computational simulation", "numerical simulation", "分子动力学模拟", "数值模拟")):
-        return {"domain": "simulation", "study_type": "computational", "template": "simulation_validation"}
     if any(term in content for term in ("randomized controlled trial", "cohort study", "case-control study", "retrospective study", "prospective study", "随机对照试验", "队列研究", "病例对照研究")):
         return {"domain": "biomed", "study_type": "clinical_observational", "template": "clinical_study"}
-    groups = [
-        ("cs", ("algorithm", "neural network", "machine learning", "benchmark", "transformer", "算法", "计算机", "深度学习"), "cs_algorithm"),
-        ("materials", ("material", "catalyst", "polymer", "alloy", "electrode", "perovskite", "材料", "催化", "电池"), "material_experiment"),
-        ("engineering", ("engineering", "finite element", "robotics", "manufacturing", "control system", "structural design", "sensor network", "工程", "机器人", "传感器"), "engineering_design"),
-        ("social", ("survey", "regression", "policy", "sociology", "economics", "population study", "问卷", "社会", "政策"), "social_statistics"),
-        ("biomed", ("cell", "mouse", "clinical", "patient", "disease", "gene", "protein", "cancer", "tumor", "医学", "细胞", "临床", "肿瘤"), "biomed_experiment"),
-    ]
-    field_terms = {"cs": ("computer science",), "materials": ("materials science", "chemistry", "chemical engineering"),
-                   "engineering": ("engineering", "mechanical engineering", "electrical engineering", "civil engineering"),
-                   "social": ("social sciences", "economics", "psychology", "business"),
-                   "biomed": ("medicine", "biochemistry", "immunology", "neuroscience", "pharmacology")}
-    scored = [(sum(content.count(word) for word in words) +
-               4 * any(term in field.lower() for term in field_terms[domain]), domain, template)
-              for domain, words, template in groups]
-    score, domain, template = max(scored, key=lambda row: row[0])
-    if score == 0:
-        return {"domain": "general", "study_type": "unspecified", "template": "general_research"}
-    study_type = {
-        "cs": "algorithm", "materials": "experiment", "engineering": "design",
-        "social": "statistics", "biomed": "experiment",
-    }[domain]
-    return {"domain": domain, "study_type": study_type, "template": template}
+    biology_words = r"\b(?:cells?|mouse|mice|clinical|patients?|diseases?|genes?|proteins?|cancers?|tumou?rs?|rna|genom\w*|immun\w*|microbi\w*|organisms?)\b"
+    biology_terms = ("医学", "细胞", "临床", "肿瘤", "基因", "蛋白", "免疫", "生物")
+    biology_fields = ("medicine", "biology", "biochemistry", "immunology", "neuroscience", "pharmacology", "genetics", "oncology", "生物", "医学")
+    if not re.search(r"\b(?:fuel|solar) cells?\b", content) and (re.search(biology_words, content) or any(term in content for term in biology_terms) or any(term in field.lower() for term in biology_fields)):
+        return {"domain": "biomed", "study_type": "experiment", "template": "biomed_experiment"}
+    return {"domain": "general", "study_type": "unspecified", "template": "general_research"}
 
 
 def save_artifact(owner: str, kind: str, paper_ids: list[str], payload: dict, *,

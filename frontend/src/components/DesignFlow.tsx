@@ -2,36 +2,15 @@
 
 import { useEffect, useState } from "react";
 import DesignInsights from "./DesignInsights";
-import { effectiveCategory, CATEGORY_OPTIONS, BIO_CATEGORY_OPTIONS, type ExperimentCategory } from "./experimentCategory";
+import { effectiveCategory, BIO_CATEGORY_OPTIONS, type ExperimentCategory } from "./experimentCategory";
 import "./experiment-route.css";
 
 export type Step = { name: string; purpose?: string; method?: string; controls?: string; readouts?: string; icon_category?: ExperimentCategory | null };
 type Node = { id: string; label: string; type: string; detail: string; steps?: Step[] };
 type Edge = { source: string; target: string; label: string };
 type Design = { goal?: string; nodes: Node[]; edges: Edge[] };
-type Kind = ExperimentCategory | "heatmap" | "volcano" | "immune" | "sequencing";
-
-function StageIcon({ kind }: { kind: Kind }) {
-  const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  if (CATEGORY_OPTIONS.some(([category]) => category === kind)) return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
-  return <span className={`er-symbol er-symbol-${kind}`} aria-hidden="true"><svg viewBox="0 0 64 64" {...common}>
-    {kind === "database" && <><ellipse cx="32" cy="16" rx="19" ry="7" fill="#d4e9f8"/><path d="M13 16v27c0 4 8 7 19 7s19-3 19-7V16M13 29c0 4 8 7 19 7s19-3 19-7M13 41c0 4 8 7 19 7s19-3 19-7"/></>}
-    {kind === "heatmap" && <><path d="M13 50V13h38" opacity=".45"/>{[0,1,2,3].flatMap(y => [0,1,2,3].map(x => <rect key={`${x}-${y}`} x={18+x*8} y={16+y*8} width="7" height="7" rx="1" fill={[["#507cb1","#a4c7d9","#e9c179","#df8468"],["#6a9cbd","#d6d9ae","#e99b76","#e4be7d"],["#d9dcae","#df987f","#638bb8","#a8ccdc"],["#edb580","#dfa190","#aacbd7","#5b80ad"]][y][x]} stroke="none"/>))}</>}
-    {kind === "volcano" && <><path d="M12 12v40h40M32 50V31M16 29h34" opacity=".55"/><g fill="#d57862" stroke="none">{[[17,18],[21,23],[24,30],[28,35],[36,38],[40,30],[44,23],[49,16],[34,41],[19,35]].map(([x,y],i)=><circle key={i} cx={x} cy={y} r="2.5"/>)}</g></>}
-    {kind === "pathway" && <><path d="M17 19l14 10 15-13M31 29l-8 17M31 29l17 15"/><g fill="#d9eedf"><circle cx="17" cy="19" r="6"/><circle cx="31" cy="29" r="6"/><circle cx="46" cy="16" r="6"/><circle cx="23" cy="46" r="6"/><circle cx="48" cy="44" r="6"/></g></>}
-    {kind === "immune" && <><path d="M32 10l17 7v13c0 11-7 18-17 23-10-5-17-12-17-23V17z" fill="#e2eafa"/><circle cx="32" cy="29" r="8"/><path d="M32 17v4m0 16v4M20 29h4m16 0h4M24 21l3 3m10 10l3 3m0-16l-3 3m-10 10l-3 3"/></>}
-    {kind === "cell" && <><circle cx="32" cy="32" r="22" fill="#e7f1e9"/><circle cx="33" cy="31" r="8" fill="#add4bf"/><path d="M18 26c2-3 4-3 6-2m18 14c3-2 5-2 7 1M22 42c2 1 4 1 5-1M40 20c2-1 4 0 5 2"/></>}
-    {kind === "gene" && <><path d="M19 11c0 19 26 21 26 42M45 11c0 19-26 21-26 42M22 18h20M25 25h14M26 38h12M22 46h20"/><path d="M45 25l7-4m-6 8l8 1" stroke="#dc856e"/></>}
-    {kind === "animal" && <><path d="M13 39c0-10 8-16 19-16 9 0 15 5 18 12l5 3-5 4-4 8H22l-3-6-6-2z" fill="#eee6d9"/><circle cx="27" cy="22" r="6" fill="#f4e9dd"/><circle cx="45" cy="35" r="1.5" fill="currentColor"/><path d="M13 40c-7-1-8-7-4-9M23 50v4m17-4v4"/></>}
-    {kind === "sequencing" && <><path d="M17 10c1 16 29 26 30 44M47 10C46 26 18 36 17 54M20 17h24M23 24h18M27 32h10M23 40h18M20 47h24"/><circle cx="51" cy="16" r="4" fill="#e8b281"/></>}
-    {kind === "microscope" && <><path d="M25 12l8-3 7 16-8 3zM29 28l-3 5m-7 2h19M22 35c1 8 6 11 13 11 8 0 13-6 13-14M16 52h35M22 46h23"/><circle cx="46" cy="29" r="4" fill="#d9e9f5"/></>}
-    {kind === "analysis" && <><path d="M13 12v40h40M20 44V34h7v10M31 44V25h7v19M42 44V17h7v27" fill="#dceaf4"/><path d="M20 27l10-7 9 2 11-10" stroke="#d78169"/></>}
-    {kind === "goal" && <><circle cx="32" cy="32" r="21"/><circle cx="32" cy="32" r="13"/><circle cx="32" cy="32" r="5" fill="#e8a886"/><path d="M35 29l15-15m-5 0h5v5"/></>}
-    {kind === "sample" && <><path d="M21 12h22M24 12v12l-8 21c-1 4 2 7 6 7h20c4 0 7-3 6-7l-8-21V12"/><path d="M20 38h24l3 8c1 3-1 4-4 4H21c-3 0-5-1-4-4z" fill="#cce7e7"/><circle cx="30" cy="43" r="2" fill="#7fb6bb"/></>}
-    {kind === "constraint" && <><rect x="14" y="15" width="36" height="36" rx="10" fill="#f4ecde"/><path d="M32 22v12m0 7v1" stroke="#b68b55" strokeWidth="3"/></>}
-    {kind === "control" && <><path d="M18 15v32M46 15v32M12 21h12M40 21h12M12 42h12M40 42h12"/><circle cx="18" cy="29" r="4" fill="#afd6d0"/><circle cx="46" cy="36" r="4" fill="#efc49f"/></>}
-    {kind === "generic" && <><rect x="14" y="16" width="36" height="32" rx="8" fill="#edf3f8"/><path d="M23 26h18M23 33h18M23 40h11"/></>}
-  </svg></span>;
+function StageIcon({ kind }: { kind: ExperimentCategory }) {
+  return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
 }
 
 export default function DesignFlow({ design, artifactId, onSelectNode, onExpandNode, onAddStep, onRemoveStep, busy = false }: { design: Design; artifactId: string; onSelectNode?: (id: string) => void; onExpandNode?: (id: string) => void; onAddStep?: (id: string, step: Step) => Promise<void>; onRemoveStep?: (id: string, index: number) => Promise<void>; busy?: boolean }) {

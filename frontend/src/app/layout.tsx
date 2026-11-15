@@ -3,7 +3,7 @@ import "./tokens.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MedRead · 跨学科科研工作台",
+  title: "MedRead · 生物科学科研工作台",
   description: "文献发现、全文精读、文献综合与科研设计：让研究过程有迹可循。",
 };
 

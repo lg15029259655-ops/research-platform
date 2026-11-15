@@ -1,4 +1,4 @@
-# MedRead 跨学科科研工作台
+# MedRead 生物科学科研工作台
 
 Windows 本地运行的前后端分离项目：Next.js + TypeScript、FastAPI、SQLite、PyMuPDF、React-PDF、React Flow 和 react-force-graph。
 
@@ -64,7 +64,7 @@ Windows 本地运行的前后端分离项目：Next.js + TypeScript、FastAPI、
 
 第一次访问时后端生成匿名身份并设置约 180 天的 HttpOnly Cookie。正常关闭浏览器后仍可恢复论文、聊天、进度；清除 Cookie、无痕模式或换浏览器视为新用户。请始终使用 `http://127.0.0.1:3000`，不要与 `localhost` 混用。匿名模式不提供跨设备找回。旧测试数据已清理。
 
-AI 讲解规则位于 `backend/app/prompts/reading_rules.md`，可替换为完整 V3 规则。跨学科 Router 目前根据标题、摘要和 OpenAlex 学科字段使用规则判断；交叉领域分类需人工核对。当前章节识别采用标题规则，对复杂排版、双栏论文和扫描件可能不完整，使用时需核对原文。
+AI 讲解规则位于 `backend/app/prompts/reading_rules.md`，可替换为完整 V3 规则。研究类型路由依据标题、摘要和 OpenAlex 学科字段做初步判断；领域或证据不明确时仍需人工核对。当前章节识别采用标题规则，对复杂排版、双栏论文和扫描件可能不完整，使用时需核对原文。
 
 ## 测试
 

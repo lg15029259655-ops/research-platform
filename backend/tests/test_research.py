@@ -356,22 +356,13 @@ def test_comparison_timeout_returns_promptly(monkeypatch, tmp_path):
             clean(client)
 
 
-def test_cross_domain_templates():
-    samples = [("Neural network algorithm benchmark", "cs_algorithm"),
-               ("Perovskite material stability", "material_experiment"),
-               ("Robotics engineering design", "engineering_design"),
-               ("Education policy regression analysis", "social_statistics"),
-               ("Clinical cell therapy", "biomed_experiment")]
-    for title, expected in samples:
-        assert route_research(title)["template"] == expected
-    assert route_research("Unknown topic")["template"] == "general_research"
-    for title, expected in [
-        ("Randomized controlled trial of stroke care", "clinical_study"),
-        ("Finite element simulation of a bridge", "simulation_validation"),
-        ("A proof of the main theorem", "theory_proof"),
-        ("Systematic review and meta-analysis of therapy", "review_synthesis"),
-    ]:
-        assert route_research(title)["template"] == expected
+def test_biological_research_templates():
+    assert route_research("Clinical cell therapy")["template"] == "biomed_experiment"
+    assert route_research("Randomized controlled trial of stroke care")["template"] == "clinical_study"
+    assert route_research("Systematic review and meta-analysis of therapy")["template"] == "review_synthesis"
+    assert route_research("Fuel cell materials")["domain"] == "general"
+    assert route_research("Unknown topic")["domain"] == "general"
+    assert route_research("Molecular pathways", field="Biology")["domain"] == "biomed"
 
 
 def test_discovery_cache_refresh_and_offline_fallback(monkeypatch):
@@ -482,10 +473,11 @@ def test_discovery_uses_semantic_search_and_handles_public_budget(monkeypatch):
 
     monkeypatch.setattr("app.services.openalex_service._get", fake_get)
     result = asyncio.run(search_works("How do cells respond to therapy?", 2))
-    assert calls[-1] == ("/works", {"search.semantic": "How do cells respond to therapy?", "page": 2, "per_page": 10})
+    assert calls[-1] == ("/works", {"search.semantic": "How do cells respond to therapy?", "page": 2, "per_page": 10, "filter": "topics.domain.id:1|4"})
     assert result["count"] == 50
     asyncio.run(search_works("exact paper title", mode="keyword"))
     assert calls[-1][1]["search"] == "exact paper title"
+    assert calls[-1][1]["filter"] == "topics.domain.id:1|4"
 
     async def no_budget(*_args, **_kwargs):
         raise DiscoveryRateLimited("quota")
