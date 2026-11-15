@@ -346,3 +346,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - The async authentication middleware performed synchronous SQLite access on the event loop, so a database wait could delay unrelated requests. Session resolution and job event snapshot reads now run in a thread pool; paper-list image counts use a database count instead of loading image records.
 - Tests simulate blocked session resolution while the event loop progresses and verify image counts and owner isolation. All 105 backend tests passed; local workspace and paper-list requests returned HTTP 200.
 - Boundary: model inference and PDF parsing can still take substantial time, and this does not establish a system-wide speedup or solve every contention path.
+
+## 2026-11-15 — Match biological methods before generic words
+
+- Status: representative mapping and asset tests passed; visual and broad real-paper coverage remain to be validated.
+- “条件培养基转移实验” matched a generic restriction category because the rule treated every occurrence of “条件” as a limitation. Recognize the actual cell-culture method first and restrict generic limitation terms; clear biological method names also take priority over stale saved categories.
+- Add sequencing, extracellular-vesicle, biochemical-assay and microscopy illustrations, while retaining shared category images for cell and animal experiments. Explicitly distinguish wet-lab sequencing from analysis and microfluidic devices from general cell work.
+- Tests cover the reported name, legacy misclassification, closely related Chinese and English names, and asset availability. This representative set does not establish coverage for all biology papers.
