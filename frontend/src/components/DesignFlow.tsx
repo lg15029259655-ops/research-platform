@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import DesignInsights from "./DesignInsights";
-import { effectiveCategory, CATEGORY_OPTIONS, type ExperimentCategory } from "./experimentCategory";
+import { effectiveCategory, CATEGORY_OPTIONS, BIO_CATEGORY_OPTIONS, type ExperimentCategory } from "./experimentCategory";
 import "./experiment-route.css";
 
 export type Step = { name: string; purpose?: string; method?: string; controls?: string; readouts?: string; icon_category?: ExperimentCategory | null };
@@ -63,7 +63,7 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
     <header className="er-head"><div><span>RESEARCH ROUTE / 实验路线</span><h2>从研究问题到验证</h2><p>沿连接线查看方案，展开阶段即可在原处查看具体实验。</p></div><button type="button" onClick={() => { setExpanded(null); setInsight(insight === "review" && !expanded ? null : "review"); }}>整体方案检查 ↗</button></header>
     {insight === "review" && !expanded && artifactId && <DesignInsights artifactId={artifactId} nodes={design.nodes} onSelectNode={jump} initialTab="review" />}
     <div className="er-route-key"><span><i/> 方案阶段</span><span>→ 方案中已有的连接</span><span>图形表示实验类型</span></div>
-    <details className="er-library"><summary>查看常用研究图形分类</summary><p>同一类研究活动使用相同图形；图片是类别标记，不代表实际结果。</p><div className="er-library-grid">{CATEGORY_OPTIONS.map(([kind,label]) => <div key={kind}><StageIcon kind={kind} /><span>{label}</span></div>)}</div></details>
+    <details className="er-library"><summary>查看常用生物研究图形</summary><p>同一类研究活动使用相同图形；图片是类别标记，不代表实际结果。</p><div className="er-library-grid">{BIO_CATEGORY_OPTIONS.map(([kind,label]) => <div key={kind}><StageIcon kind={kind} /><span>{label}</span></div>)}</div></details>
     <div className="er-stages">{design.nodes.map((node, index) => {
       const open = expanded === node.id;
       const outgoing = design.edges.filter(e => e.source === node.id);

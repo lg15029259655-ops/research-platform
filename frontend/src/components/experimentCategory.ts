@@ -1,8 +1,14 @@
 // Classification is based on the experiment's own name, never a conditional
 // example from the description. More specific techniques precede broad terms.
-export type ExperimentCategory = "database" | "cell" | "animal" | "analysis" | "protein" | "metabolism" | "gene" | "microfluidic" | "pathway" | "sample" | "constraint" | "control" | "goal" | "microscope" | "clinical" | "imaging" | "materials" | "device" | "survey" | "interview" | "archive" | "simulation" | "chemistry" | "software" | "education" | "field" | "baseline" | "outcome" | "followup" | "pharmacology" | "microbiology" | "fabrication" | "physics" | "ecology" | "policy" | "economics" | "mathematics" | "generic";
+export type ExperimentCategory = "bioinformatics" | "molecular" | "histology" | "database" | "cell" | "animal" | "analysis" | "protein" | "metabolism" | "gene" | "microfluidic" | "pathway" | "sample" | "constraint" | "control" | "goal" | "microscope" | "clinical" | "imaging" | "materials" | "device" | "survey" | "interview" | "archive" | "simulation" | "chemistry" | "software" | "education" | "field" | "baseline" | "outcome" | "followup" | "pharmacology" | "microbiology" | "fabrication" | "physics" | "ecology" | "policy" | "economics" | "mathematics" | "generic";
+
+export const BIO_CATEGORY_OPTIONS: ReadonlyArray<readonly [ExperimentCategory, string]> = [
+  ["bioinformatics", "生信与数据分析"], ["cell", "细胞实验"], ["animal", "动物实验"], ["molecular", "分子检测"],
+  ["histology", "组织病理"], ["sample", "临床与样本"], ["microbiology", "微生物实验"], ["pharmacology", "药物研究"], ["metabolism", "代谢检测"],
+];
 
 export const CATEGORY_OPTIONS: ReadonlyArray<readonly [ExperimentCategory, string]> = [
+  ["bioinformatics", "生信与数据分析"], ["molecular", "分子检测"], ["histology", "组织病理"],
   ["cell", "细胞实验"], ["protein", "蛋白检测"], ["gene", "基因操作"], ["metabolism", "代谢研究"],
   ["animal", "动物实验"], ["clinical", "临床研究"], ["imaging", "医学影像"], ["microfluidic", "微流控"],
   ["database", "数据来源"], ["analysis", "数据分析"], ["materials", "材料与性能"], ["device", "工程器件"],
@@ -15,9 +21,27 @@ export const CATEGORY_OPTIONS: ReadonlyArray<readonly [ExperimentCategory, strin
   ["goal", "研究目标"], ["constraint", "研究限制"], ["generic", "通用图形"],
 ];
 
+// Group by the activity itself. A named computational analysis takes precedence
+// over the model mentioned; animal and cell experiments take precedence over
+// the molecular target manipulated inside that experiment.
+export function biologicalCategory(name: string): ExperimentCategory | null {
+  const text = name.toLowerCase();
+  if (/差异基因|差异表达|差异分析|生信|生物信息|数据库|免疫浸润|富集分析|通路分析|基因集富集|go富集|蛋白互作网络|ppi网络|网络药理学|生存分析|预后模型|热图|火山图|单细胞.{0,12}(分析|聚类|注释|数据)|转录组.{0,12}(分析|数据)|测序数据.{0,8}(分析|处理)|\bgeo\b|\btcga\b|\bgsea\b|\bkegg\b|\bdeg\b|\bumap\b|\bpca\b|bioinformatic|differential expression|single.cell.{0,15}(analysis|clustering)|enrichment analysis|heatmap|volcano plot/.test(text)) return "bioinformatics";
+  if (/动物|小鼠|大鼠|裸鼠|斑马鱼|体内实验|体内模型|移植瘤|成瘤|mouse|mice|murine|animal|xenograft/.test(text)) return "animal";
+  if (/细菌培养|细菌生长|微生物培养|微生物鉴定|真菌培养|菌株培养|菌落计数|bacterial culture|microbial culture|fungal culture|colony count/.test(text)) return "microbiology";
+  if (/细胞|共培养|免疫细胞|流式|增殖|迁移|侵袭|凋亡|划痕实验|集落形成|克隆形成|\bcell(?:s|ular)?\b|coculture|co.culture|\bcck.?8\b|transwell|flow cytometry/.test(text)) return "cell";
+  if (/组织切片|组织病理|病理切片|组织染色|苏木精|伊红|\bh\s*&\s*e\b|\bhe染色|histolog|histopatholog/.test(text)) return "histology";
+  if (/药物筛选|药效评价|药代动力学|药物相互作用|药物毒性|pharmacokinetic|drug screening|drug efficacy|drug toxicity/.test(text)) return "pharmacology";
+  if (/临床样本|患者样本|组织样本|血液样本|样本处理|样本收集|标本|clinical sample|patient sample|specimen/.test(text)) return "sample";
+  if (/蛋白|免疫印迹|免疫组化|免疫荧光|基因敲除|基因敲低|基因过表达|转录组测序|rna测序|western\s*blot|\belisa\b|\bqpcr\b|\bpcr\b|\bcrispr\b|protein|knockout|knockdown|rna.?seq/.test(text)) return "molecular";
+  return null;
+}
+
 export function effectiveCategory(name: string, override?: string | null, goal = ""): ExperimentCategory {
   const selected = CATEGORY_OPTIONS.find(([key]) => key === override)?.[0];
   if (selected) return selected;
+  const biological = biologicalCategory(name);
+  if (biological) return biological;
   const automatic = experimentCategory(name);
   // Use the research goal only for explicitly related, otherwise ambiguous
   // intervention/process labels; do not override a named laboratory technique.

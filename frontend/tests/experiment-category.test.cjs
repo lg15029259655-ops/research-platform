@@ -11,6 +11,27 @@ const code = ts.transpileModule(fs.readFileSync("src/components/experimentCatego
 vm.runInNewContext(code, { exports: exportsForTest });
 const classify = exportsForTest.experimentCategory;
 const effective = exportsForTest.effectiveCategory;
+const biological = exportsForTest.biologicalCategory;
+
+test("groups common biological workflows into shared illustrations", () => {
+  const examples = {
+    bioinformatics: ["GEO数据库筛选差异基因", "单细胞数据分析", "GO富集分析", "免疫浸润分析", "火山图", "蛋白互作网络分析"],
+    cell: ["细胞共培养", "免疫细胞流式检测", "细胞基因敲除", "CCK-8", "Transwell"],
+    animal: ["小鼠基因敲除", "动物对照实验", "裸鼠成瘤实验"],
+    molecular: ["Western blot", "qPCR", "蛋白表达检测"],
+    histology: ["组织病理", "HE染色", "histopathology"],
+    sample: ["临床样本收集", "患者样本处理"],
+    microbiology: ["细菌培养", "菌落计数"],
+    pharmacology: ["药物筛选", "药代动力学"],
+  };
+  for (const [expected, names] of Object.entries(examples)) for (const name of names) {
+    assert.equal(biological(name), expected, name);
+    assert.equal(effective(name), expected, name);
+  }
+  assert.equal(biological("研究假设"), null);
+  assert.equal(biological("细胞增殖"), biological("细胞共培养"));
+  assert.equal(biological("GSEA富集分析"), biological("单细胞聚类分析"));
+});
 
 test("common experiments consistently map to their broad research category", () => {
   const examples = {

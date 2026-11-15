@@ -1,5 +1,13 @@
 # Project lessons
 
+## 2026-11-15 — Group biological activities into reusable illustrations
+
+- Status: implemented locally; tested on representative names and the illustration gallery, not validated against a representative literature corpus.
+- Evidence: the user clarified that biological research should use a small number of shared category illustrations: animal experiments share one image, cell experiments share one, and bioinformatics analyses share one. The previous cross-disciplinary categories were too fragmented and could classify the gene manipulated in a cell experiment instead of the activity.
+- Action: provide a biological category catalog and two shared four-panel illustration sheets, reuse the existing metabolism image, and prioritize explicit bioinformatics, animal and cell activities ahead of molecular targets; retain saved category overrides and legacy classifications for compatibility.
+- Verification: category tests cover example workflows and matching precedence; TypeScript passes; browser inspection showed nine biological classes using the intended images. The user's current stored design was not edited.
+- Boundary: there is no measured 80% coverage; matches rely on names and can misclassify ambiguous or combined activities. Images are conceptual; teammate integration into the reading section has not been performed or verified.
+
 ## 2026-11-12 — Define cross-disciplinary illustration mappings with examples
 
 - Status: expanded locally; representative matching and asset tests pass, but exhaustive discipline coverage is not established.
