@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 
 from .db import SessionLocal
@@ -24,14 +25,7 @@ def current_owner(request: Request) -> str:
     return request.state.owner_id
 
 
-async def anonymous_session(request: Request, call_next):
-    if request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
-        return await call_next(request)
-    origin = request.headers.get("origin")
-    if request.method in {"POST", "DELETE"} and origin and origin != os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000"):
-        return JSONResponse({"detail": "请求来源无效"}, status_code=403)
-
-    token = request.cookies.get(COOKIE_NAME, "")
+def _resolve_owner(token: str) -> tuple[str, str | None]:
     user = None
     if len(token) == 43:
         with SessionLocal() as db:
@@ -44,7 +38,19 @@ async def anonymous_session(request: Request, call_next):
             user = User(id=str(uuid4()), session_hash=session_hash(new_token))
             db.add(user)
             db.commit()
-    request.state.owner_id = user.id
+    return user.id, new_token
+
+
+async def anonymous_session(request: Request, call_next):
+    if request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    origin = request.headers.get("origin")
+    if request.method in {"POST", "DELETE"} and origin and origin != os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000"):
+        return JSONResponse({"detail": "请求来源无效"}, status_code=403)
+
+    token = request.cookies.get(COOKIE_NAME, "")
+    owner_id, new_token = await run_in_threadpool(_resolve_owner, token)
+    request.state.owner_id = owner_id
     response = await call_next(request)
     if new_token:
         response.set_cookie(

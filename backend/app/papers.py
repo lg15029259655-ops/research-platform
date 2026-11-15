@@ -13,8 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from sqlalchemy import select, update
-from sqlalchemy.orm import selectinload
+from sqlalchemy import func, select, update
 
 from .db import SessionLocal
 from .models import Message, Paper, PaperImage, ReadingUnit, ResearchArtifact, ResearchWorkspace
@@ -81,13 +80,13 @@ def paper_source_matches(paper: Paper) -> bool:
     return not (paper.parse_warning or "").startswith("重新解析失败")
 
 
-def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
+def paper_data(paper: Paper, units: list[ReadingUnit] | None = None, *, image_count: int | None = None) -> dict:
     data = {"id": paper.id, "title": paper.title, "original_filename": paper.original_filename,
             "current_unit_id": paper.current_unit_id, "status": paper.status,
             "warning": paper.parse_warning,
             "created_at": paper.created_at.isoformat() if paper.created_at else None,
             "last_read_at": paper.last_read_at.isoformat() if paper.last_read_at else None,
-            "image_count": len(paper.images),
+            "image_count": image_count if image_count is not None else len(paper.images),
             "authors": paper.authors, "year": paper.year, "journal": paper.journal,
             "doi": paper.doi, "openalex_id": paper.openalex_id,
             "abstract": paper.abstract, "citation_count": paper.citation_count,
@@ -318,8 +317,9 @@ def reparse_paper(paper_id: str, background_tasks: BackgroundTasks, owner: str =
 @router.get("")
 def list_papers(owner: str = Owner):
     with SessionLocal() as db:
-        papers = db.scalars(select(Paper).options(selectinload(Paper.images)).where(Paper.owner_id == owner).order_by(Paper.created_at.desc())).all()
-        return [paper_data(paper) for paper in papers]
+        count = select(func.count(PaperImage.id)).where(PaperImage.paper_id == Paper.id).scalar_subquery()
+        rows = db.execute(select(Paper, count).where(Paper.owner_id == owner).order_by(Paper.created_at.desc())).all()
+        return [paper_data(paper, image_count=count) for paper, count in rows]
 
 
 @router.get("/{paper_id}")

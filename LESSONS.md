@@ -339,3 +339,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Status: code and TypeScript verified; visual acceptance with the user's saved paper is pending.
 - Inherited `white-space: pre-wrap` preserved Markdown source newlines in addition to rendered block spacing, producing large gaps. Rendered Markdown and recap cards now use normal whitespace; plain streaming text retains newlines.
 - Limit assistant message width for easier reading and use one stable SVG for both library-toggle states. Responsive behavior and existing messages remain intact in code; verify visually with real long and short responses.
+
+## 2026-11-15 — Keep request authentication off the event loop
+
+- Status: verified in isolated local tests and local API smoke checks; no production or before/after latency benchmark.
+- The async authentication middleware performed synchronous SQLite access on the event loop, so a database wait could delay unrelated requests. Session resolution and job event snapshot reads now run in a thread pool; paper-list image counts use a database count instead of loading image records.
+- Tests simulate blocked session resolution while the event loop progresses and verify image counts and owner isolation. All 105 backend tests passed; local workspace and paper-list requests returned HTTP 200.
+- Boundary: model inference and PDF parsing can still take substantial time, and this does not establish a system-wide speedup or solve every contention path.

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from pydantic import BaseModel, Field
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from ..auth import current_owner
 from . import events, sse, store, worker
@@ -49,7 +50,7 @@ async def cancel_job(job_id: str, owner: str = Owner):
 
 @router.get("/{job_id}/events")
 async def job_events(job_id: str, owner: str = Owner):
-    snapshot = store.load_owned(job_id, owner)
+    snapshot = await run_in_threadpool(store.load_owned, job_id, owner)
     if snapshot is None:
         raise HTTPException(404, "任务不存在")
 
@@ -57,7 +58,7 @@ async def job_events(job_id: str, owner: str = Owner):
 
     async def stream():
         try:
-            current = store.load_owned(job_id, owner) or snapshot
+            current = await run_in_threadpool(store.load_owned, job_id, owner) or snapshot
             yield sse.sse_event("snapshot", current)
             if current["status"] == "done" and current.get("result") is not None:
                 yield sse.sse_event("result", current["result"])
