@@ -326,3 +326,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Repeating the same review and outcome tabs inside each stage made an overall review look stage-specific. Keep whole-design review at the route header and stage outcome exploration inside its stage, with no duplicate switcher.
 - Keep manual experiment addition directly available in each expanded stage and retain the existing versioned save path. Remove redundant interface instructions while retaining evidence-quality and version-state information.
 - Verification: frontend TypeScript and six existing frontend tests passed. An end-to-end manual save remains unverified in this round.
+
+## 2026-11-15 — Evidence density and version controls
+
+- Status: local code and automated checks verified; new model output and visual acceptance are pending.
+- Fixed minimum lane heights left large empty blocks when evidence was sparse; the comparison prompt also requested only one or two claims. Lanes now size to their contents, and the prompt requests broader coverage only when supported by the provided text. A missing contradictory result must not be invented.
+- Avoid repeating the current version as a selectable button when there is only one version. Existing saved comparisons remain unchanged; rerun is necessary to apply a changed generation prompt.
+- Checks: frontend TypeScript and 30 backend research tests passed. This does not prove improved evidence recall, or validate visual design on all screens.

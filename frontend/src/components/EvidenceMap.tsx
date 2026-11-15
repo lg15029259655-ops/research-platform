@@ -27,7 +27,7 @@ export default function EvidenceMap({ claims, papers, onReviseSelection }: {
       : "本次所选论文没有提供同一对象、条件和指标下可直接比较的相反结果；因此不能判为“结果不一致”，也不能据此证明领域内没有冲突。",
     INSUFFICIENT: "本次列出的命题均有可定位的结果依据；仍需核对原文与研究条件。",
   };
-  return <div><div className="evidenceMapIntro"><strong>Claim–Evidence Map</strong><span>点击命题查看论文、原文位置与证据边界</span></div>
+  return <div><div className="evidenceMapIntro"><strong>文献证据关系</strong><span>共 {visibleClaims.length} 条命题</span></div>
     {!!visibleClaims.length && !hasDirectRelation && <div className="evidenceGuidance" role="note"><strong>这组材料尚不能判断支持或冲突</strong><p>当前论文片段未建立可直接比较的共同命题。“证据不足”表示缺少判断所需的结果，并不表示研究没有被检索到，更不能证明它不存在。可打开命题详情查看缺口。</p>{onReviseSelection && <button type="button" onClick={onReviseSelection}>更换论文并重新综合 →</button>}</div>}
     {!visibleClaims.length && <div className="evidenceEmpty"><span>证据地图尚未建立</span><h3>这次综合分析没有生成可定位的具体命题</h3><p>现有结果不能判断论文之间是否相互支持或冲突。可先查看对比矩阵，再补充可解析的全文重新分析。</p>{onReviseSelection && <button type="button" className="quietButton" onClick={onReviseSelection}>更换论文并重新综合 →</button>}<div><b>{papers.length}</b><small>篇参与综合的论文</small><b>0</b><small>条可核验命题</small></div></div>}
     {!!visibleClaims.length && <p className="miniNotice">分类由 AI 根据所选片段提出；原文引用匹配不等于已验证支持或冲突关系，请核对研究条件和上下文。空栏不代表整个领域没有相关证据。</p>}

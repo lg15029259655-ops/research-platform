@@ -34,6 +34,32 @@
 .designGrid{grid-template-columns:310px minmax(0,1fr)}.designSidebar{max-height:600px;overflow:auto;padding:20px;margin-top:0;border-radius:var(--r-panel)}.designSideHeader span{color:var(--c-primary);letter-spacing:.12em;font-size:12px;font-weight:800}.designSideHeader h2{margin:6px 0 12px}.designSideHeader p{font-size:12px;line-height:1.6;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;margin:0 0 14px}.designSummary{border-radius:var(--r-panel);padding:13px;background:var(--c-surface);border:1px solid var(--c-line)}.designSummary b,.designActions>b{display:block;color:var(--c-primary);font-size:12px}.designSummary p{margin:5px 0 0;line-height:1.6;font-size:12px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden}.designActions{margin-top:18px}.designActions .actionRow{margin:8px 0 16px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.designActions .actionRow button{text-align:center;padding:8px 5px;font-size:12px;border-radius:var(--r-pill)}.designDetails{border-top:1px solid var(--c-line);padding:12px 0;color:var(--c-text-mid);font-size:12px}.designDetails summary{cursor:pointer;list-style:none;font-weight:700;font-size:12px;display:flex;justify-content:space-between}.designDetails summary:after{content:"＋";color:var(--c-primary)}.designDetails[open] summary:after{content:"－"}.designDetails summary small{font-weight:400;color:var(--c-text-soft);margin-left:auto;margin-right:9px}.designDetails ul{margin:12px 0 2px;padding-left:19px;line-height:1.65}.designDetails li{margin:5px 0}.designDetails h4{font-size:12px;margin:13px 0 4px;color:var(--c-primary)}.designDetails .versionChanges{margin-top:12px}
 /* Similarity tiers stay readable at any paper count */
 .designSummary details{margin-top:8px}.designSummary details summary{cursor:pointer;color:var(--c-primary);font-size:12px;font-weight:700}.designSummary details p{display:block;-webkit-line-clamp:unset;margin-top:8px}
+
+/* Compact evidence lanes and a quieter research-design workspace. */
+.evidenceColumns{align-items:start;gap:14px}
+.evidenceLane{min-height:0;padding:18px;background:#f8faf9;border-radius:16px}
+.evidenceLane header{padding:0 30px 12px 0}
+.evidenceLane h3{font-size:16px}.evidenceLane small{line-height:1.45}
+.evidenceNode{padding:14px;margin-top:12px;border-radius:12px;box-shadow:none}
+.evidenceNode strong{display:block;-webkit-line-clamp:unset;overflow:visible;font-size:13px}
+.emptyLane{padding:12px 0 0;margin:0;line-height:1.65}
+.versionBar{gap:14px;padding:13px 16px;background:#fff;border:1px solid #e1e9e6;border-radius:14px;color:#284c50}
+.versionBar>strong{display:flex;align-items:center;gap:8px;white-space:nowrap;color:#526e70}
+.versionBar>strong span{padding:4px 9px;border-radius:7px;background:#eaf2ee;color:#315e57}
+.versionBar>div{gap:6px;min-width:0}
+.versionBar button{border-radius:9px;border-color:#dce7e2;color:#42665f;background:#fff;padding:8px 12px}
+.versionBar button.active{background:#315f58;border-color:#315f58;color:#fff}
+.designSidebar.sectionBox{max-height:none;align-self:start;padding:22px;background:#fbfcfb;border:1px solid #e1e9e5;border-radius:16px}
+.designSideHeader span{color:#688a80;letter-spacing:.08em}.designSideHeader h2{color:#24443f;font-size:20px;margin:7px 0 12px}
+.designSideHeader p{display:block;overflow:visible;font-size:13px;line-height:1.7;color:#405b57}
+.designSummary{padding:15px;border:0;border-left:3px solid #8fb9a8;border-radius:0 10px 10px 0;background:#eef5f1}
+.designSummary b,.designActions>b{color:#426b5f}.designSummary p{font-size:13px;color:#405b57}
+.designSummary details summary{color:#426b5f}.designActions{margin-top:24px}
+.designActions .actionRow{gap:8px}.designActions .actionRow button{border:1px solid #dbe8e1;border-radius:9px;background:#fff;color:#40685e;padding:10px 7px}
+.designActions .actionRow button:hover{background:#edf6f0;border-color:#a7c6b6}
+.designDetails{padding:14px 0;border-color:#e2eae6}.designDetails summary{color:#405b57;font-size:13px}
+.designDetails summary:after{color:#658d7d}
+@media(max-width:900px){.designGrid{grid-template-columns:1fr}.designSidebar.sectionBox{max-height:none}}
 .versionChanges button{border:1px solid var(--c-line-strong);background:var(--c-primary-weak);border-radius:var(--r-1);padding:7px 9px;color:var(--c-primary);text-align:left;font-size:12px;line-height:1.35;cursor:pointer}.versionChanges button:hover{background:var(--c-primary-weak);border-color:var(--c-line-strong)}
 .gapMissing{margin:7px 0 15px;padding:13px 16px;border:1px solid var(--c-line-strong);border-radius:var(--r-1);background:var(--c-warn-bg);color:var(--c-warn);font-size:12px;line-height:1.65}
 .conceptAngles{align-items:stretch}.conceptAngles strong{flex:0 0 100%;font-size:12px}.conceptAngles span{flex:1 1 280px;padding:12px 14px;font-size:12px;line-height:1.65;border:1px solid var(--c-line);background:var(--c-primary-weak)}.gapStepItems button{font-size:13px}.gapMissing{font-size:12px}
