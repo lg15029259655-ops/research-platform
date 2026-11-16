@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import ExperimentIcon from "@/components/experiment/ExperimentIcon";
-import { categoryById, detectCategory, iconUrl } from "@/lib/experiment-categories";
+import ExperimentIcon, { workflowArtwork } from "@/components/experiment/ExperimentIcon";
+import { categoryById, detectCategory, iconUrl, specificMethodCategory } from "@/lib/experiment-categories";
 import "./experiment-workflow.css";
 
 /**
@@ -137,6 +137,8 @@ type LaidEdge = { id: string; path: string };
 type Layout = { nodes: LaidNode[]; edges: LaidEdge[]; width: number; height: number };
 
 function resolveCategory(raw: string | null | undefined, title: string, detail: string | null | undefined): string | null {
+  const specific = specificMethodCategory(title);
+  if (specific) return specific;
   if (raw && categoryById(raw)) return raw;
   // 后端应给出合法 id；万一缺失/拼错，用同一套关键词规则兜底，避免整个节点没图标位。
   return detectCategory(`${title} ${detail || ""}`);
@@ -306,18 +308,31 @@ function escapeXml(value: string): string {
 async function iconDataUrl(category: string): Promise<string | null> {
   try {
     const response = await fetch(iconUrl(category));
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    if (!blob.type.startsWith("image/")) return null;
-    return await new Promise<string | null>((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
-  } catch {
-    return null;
-  }
+    if (response.ok) {
+      const blob = await response.blob();
+      if (blob.type.startsWith("image/")) return await new Promise<string | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+    }
+    const artwork = workflowArtwork[category];
+    if (!artwork) return null;
+    const image = new Image();
+    image.src = `/research-elements/${artwork[0]}`;
+    await image.decode();
+    const columns = artwork[0] === "workflow-extra-v1.png" ? 3 : 2;
+    const [horizontal, vertical] = artwork[1].split(" ");
+    const x = horizontal === "100%" ? columns - 1 : horizontal === "50%" ? 1 : 0;
+    const y = vertical === "100%" ? 1 : 0;
+    const canvas = document.createElement("canvas");
+    canvas.width = 512; canvas.height = 512;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(image, x * image.naturalWidth / columns, y * image.naturalHeight / 2, image.naturalWidth / columns, image.naturalHeight / 2, 0, 0, 512, 512);
+    return canvas.toDataURL("image/png");
+  } catch { return null; }
 }
 
 async function buildSvgString(layout: Layout): Promise<string> {

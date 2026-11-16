@@ -378,3 +378,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Starting the preview on port 3001 with a backend on 8001 while leaving FRONTEND_ORIGIN at its 3000 default blocked browser sessions and POST requests. Health checks alone did not reveal this.
 - Restarted the preview backend with FRONTEND_ORIGIN=http://127.0.0.1:3001. Verified the session CORS header, POST preflight, and that a missing-file POST reaches validation (422), not origin rejection. A real PDF upload and parsing remain unverified.
 - For alternate-port previews, set both NEXT_PUBLIC_API_URL and FRONTEND_ORIGIN, and check a browser-origin request before handing over the URL.
+
+## 2026-11-16 — Specific workflow method illustrations
+
+- Added distinct Western blot, PCR, Transwell and flow cytometry illustrations. Specific method names override broad diagram categories; ambiguous titles keep their broad category. Tests cover Chinese and English examples and generic controls; visual inspection in the live diagram remains pending.
+- Two initial asset/test writes used paths prefixed with frontend while already in the frontend directory; both failed without writing. Corrected by checking the command working directory before using relative paths; rerun and test succeeded.
+- Boundary: these mappings apply to the existing design workflow. A paper-grounded experiment map in the reading section remains outstanding.

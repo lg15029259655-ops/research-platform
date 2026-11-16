@@ -113,9 +113,25 @@ export const EXPERIMENT_CATEGORIES: ExperimentCategory[] = [
   },
 ];
 
+// Only specific, recognizable methods override a broad saved workflow category.
+export const METHOD_CATEGORIES: ExperimentCategory[] = [
+  { id: "western_blot", name: "蛋白印迹", short: "WB", includes: ["Western blot", "蛋白印迹"], keywords: [], priority: "P1" },
+  { id: "pcr_assay", name: "PCR 检测", short: "PCR", includes: ["PCR", "qPCR", "RT-PCR"], keywords: [], priority: "P1" },
+  { id: "transwell_assay", name: "Transwell 实验", short: "迁移", includes: ["Transwell", "迁移侵袭"], keywords: [], priority: "P1" },
+  { id: "flow_cytometry", name: "流式细胞术", short: "流式", includes: ["flow cytometry", "流式细胞术"], keywords: [], priority: "P1" },
+];
+export function specificMethodCategory(text: string | null | undefined): string | null {
+  const value = (text || "").toLowerCase();
+  if (/western\s*blot|蛋白印迹|免疫印迹|\bwb\b/.test(value)) return "western_blot";
+  if (/\b(?:rt[- ]?)?q?pcr\b|聚合酶链式反应/.test(value)) return "pcr_assay";
+  if (/transwell|迁移侵袭|侵袭迁移/.test(value)) return "transwell_assay";
+  if (/flow\s+cytometry|流式细胞|流式检测|流式分析/.test(value)) return "flow_cytometry";
+  return null;
+}
+
 export const CATEGORY_IDS = EXPERIMENT_CATEGORIES.map((item) => item.id);
 
-const BY_ID = new Map(EXPERIMENT_CATEGORIES.map((item) => [item.id, item]));
+const BY_ID = new Map([...EXPERIMENT_CATEGORIES, ...METHOD_CATEGORIES].map((item) => [item.id, item]));
 
 export function categoryById(id: string | null | undefined): ExperimentCategory | null {
   if (!id) return null;

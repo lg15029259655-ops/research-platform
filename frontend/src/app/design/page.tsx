@@ -289,7 +289,7 @@ export default function DesignPage() {
         <div className="ew-tabHead">
           <div>
             <h2>实验流程导图</h2>
-            <p>按研究阶段拆解具体实验；每个阶段和实验左侧都是图标位，图片未放置时显示虚线占位框。</p>
+            <p>按研究阶段拆解具体实验，并通过分类插图展示实验类型。</p>
           </div>
           <button
             type="button"
