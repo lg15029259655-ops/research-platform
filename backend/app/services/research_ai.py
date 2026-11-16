@@ -148,6 +148,46 @@ class MindAnnotations(BaseModel):
     annotations: list[MindAnnotation] = []
 
 
+# 实验流程导图的 11 个粗分类。必须与前端 frontend/src/lib/experiment-categories.ts
+# 保持一致：前端按 id 找图标，后端按 id 做二次校验。增删分类要两边同时改。
+EXPERIMENT_CATEGORY_IDS = (
+    "data_analysis", "cell_experiment", "animal_experiment", "molecular_experiment",
+    "clinical_sample", "imaging", "materials_prep", "engineering_test",
+    "modeling_algorithm", "survey_statistics", "result_conclusion",
+)
+
+ExperimentCategoryId = Literal[
+    "data_analysis", "cell_experiment", "animal_experiment", "molecular_experiment",
+    "clinical_sample", "imaging", "materials_prep", "engineering_test",
+    "modeling_algorithm", "survey_statistics", "result_conclusion",
+]
+
+
+class WorkflowStep(BaseModel):
+    """实验流程导图的一个节点（stage 或 leaf）。
+
+    只做形状校验；title/detail 长度、节点数量、分类合法性由 experiment_service
+    再裁剪一次——模型经常写超长标题，Pydantic 校验失败会把整份结果降级成模板，
+    不如保留可用部分。
+    """
+
+    id: str
+    title: str
+    category: ExperimentCategoryId
+    detail: str = ""
+    children: list["WorkflowStep"] = []
+
+
+class ExperimentWorkflow(BaseModel):
+    goal: str
+    stages: list[WorkflowStep]
+
+
+# 自引用模型需要在类定义后显式 rebuild，否则 Pydantic 拿不到 WorkflowStep 的最终结构。
+WorkflowStep.model_rebuild()
+ExperimentWorkflow.model_rebuild()
+
+
 SCHEMAS: dict[str, type[BaseModel]] = {
     "paper_summary": XRay,
     "paper_compare": Comparison,
@@ -155,6 +195,7 @@ SCHEMAS: dict[str, type[BaseModel]] = {
     "novelty_analysis": Novelty,
     "experiment_design": Design,
     "mindmap_annotate": MindAnnotations,
+    "experiment_workflow": ExperimentWorkflow,
 }
 
 SHAPES: dict[str, dict[str, Any]] = {
@@ -179,6 +220,11 @@ SHAPES: dict[str, dict[str, Any]] = {
         "controls": ["对照"], "readouts": ["评估指标"], "assumptions": ["待验证假设"]},
     "mindmap_annotate": {"annotations": [{"node_id": "输入骨架中的节点 id", "label": "不超过24字的中文标注",
         "kind": "question/method/evidence/finding/limitation/extension 之一", "unit_ids": ["输入中真实存在的单元ID"]}]},
+    "experiment_workflow": {"goal": "输入的研究目标",
+        "stages": [{"id": "S1", "title": "阶段名（≤24字）", "category": "输入的 11 个分类 id 之一",
+                    "detail": "一句话说明（≤60字）",
+                    "children": [{"id": "S1-1", "title": "具体实验名（≤24字）", "category": "分类 id",
+                                  "detail": "一句话说明（≤60字）", "children": []}]}]},
 }
 
 TASKS = {
@@ -187,6 +233,7 @@ TASKS = {
     "paper_compare": "用中文比较给出的论文。dimensions 至少包含研究问题、方法、关键结果、证据局限；另按领域增加适用维度：生医可比较模型/对照/外推，算法可比较基线/消融/泛化，材料可比较表征/稳定性，工程可比较设计约束/性能/可靠性，社科可比较混杂/测量。混合领域只选双方可比较的维度，不强行套用不适用字段。每格必须引用对应 paper_id 和源章节。controversies 请先从 Results、Discussion 或 Conclusion 片段提取 1–2 条范围明确、能直接引用原文的结果命题；即使只有一篇论文提供直接结果，也可以标为 SUPPORTS，并在 reason 中说明证据仅来自该论文及其研究条件。只有至少两篇论文针对同一对象、条件和结果指标给出相反或不一致的结果，才标为 REFUTES；研究主题不同、研究设计不同或某篇没提到该指标，不构成反对。用户可能关心但片段尚未证明的直接因果关系可单列 INSUFFICIENT。若没有可定位的结果证据，只给 1 条 INSUFFICIENT，不能硬凑支持或冲突。stance 仅可为 SUPPORTS、REFUTES、INSUFFICIENT；每条 SUPPORTS 或 REFUTES 必须提供输入中真实存在的 paper_id 与 unit_id 作为 evidence_refs。没有直接证据时写证据不足并让 evidence_refs 为空。只基于提供的全文片段，禁止编造；片段未提供的信息不能写成论文未报告。",
     "novelty_analysis": "比较研究想法与检索元数据和摘要。similarity_level 只能为高、中、低；每篇论文必须使用输入中的真实 openalex_id 与 title。不得宣称已经阅读全文，不得给出虚假精确相似度。",
     "experiment_design": "按研究领域提出可检验的研究设计，不要假设所有领域都有动物模型或实验组。若提供 research_context，先保持其中的研究对象、疾病、论文范围和证据边界；它是前序综合，不等于独立核验的事实。若问题指向特定疾病或人群，不得擅自换成其他疾病的细胞系、动物模型或人群；未给出具体模型时应写模型选择标准及待验证条件，不要自造具体名称。nodes 表示问题、方法、证据、验证、结论等步骤；edges 引用现有节点 id。说明关键对照、评估指标、假设及限制。change_summary 说明相较现有方案的具体变化；初次生成则写初稿。若 request 为降低成本，必须真正替换、合并或删减至少一个高成本节点，并在 change_summary 中指出替代方案与代价，不要仅增加新的检测和对照。若 request 为局部优化节点，保持现有节点 id，仅修改 node_id 指定节点及确有必要的下游节点；保留其他节点。未经输入资料支持，不要凭空设定具体细胞系、样本量、效应阈值、成本价格或统计显著性门槛；尤其不要编造节省百分比。确需举例时标为待预实验或功效分析确定。",
+    "experiment_workflow": "为研究目标编排实验流程导图。stages 为 3–6 个阶段，每阶段 2–5 个具体实验（children），树深最多两层，叶子 children 必须为空。阶段顺序按领域合理裁剪：生物医学按 数据分析 → 细胞实验 → 动物实验 → 分子实验/临床样本 → 结论 的顺序（与该目标无关的阶段不要硬凑）；工程/材料/社科/计算机分别使用 engineering_test、materials_prep、survey_statistics、modeling_algorithm 分类，不要套用细胞或动物阶段。category 只能取输入 categories 里的 11 个 id 之一，不要自造。title 要具体、能看出做什么实验（如“差异表达与富集分析”而不是“实验一”），不超过 24 个汉字；detail 用一句话说明这一步的目的或读点，不超过 60 个汉字。禁止编造样本量、浓度、剂量、p 值、周期、温度等任何具体数值或试剂/细胞系名称；未给出的条件写成待确定。只返回一个合法 JSON 对象，不要 Markdown。",
     "mindmap_annotate": "为输入的论文骨架节点写中文标注。只能使用输入中真实存在的 node_id 与 unit_ids，不得输出骨架之外的节点；每个 node_id 最多一条 annotation，不要重复。label 不超过 24 个汉字，写具体内容（研究对象、方法、关键结果或局限），不要写“本章介绍了……”这类空话。kind 只能取 question、method、evidence、finding、limitation、extension 之一。没有证据支撑的节点不要输出；不得编造数字、样本量、百分比、统计显著性、细胞系或模型名称。annotations 可以为空数组。",
 }
 
@@ -209,7 +256,10 @@ def parse_json(raw: str, schema: type[BaseModel]) -> dict[str, Any]:
 
 # 关思考只对"已确认延迟敏感且结构简单"的任务开启；阅读 / X-Ray / 新颖性保持模型默认
 # （思考开启），避免用质量换速度。mindmap_annotate 只输出 ≤24 字标注，属于同类的低风险任务。
-FAST_STRUCTURED_TASKS = frozenset({"paper_compare", "experiment_design", "evidence_extract", "mindmap_annotate"})
+# experiment_workflow 与 experiment_design 同类：只输出粗分类的流程骨架，不产生证据判断，
+# 关思考可以显著降低设计页首次出图延迟；若质量回归发现节点过粗，把它从本集合移除即可（一行回退）。
+FAST_STRUCTURED_TASKS = frozenset({"paper_compare", "experiment_design", "evidence_extract",
+                                    "mindmap_annotate", "experiment_workflow"})
 MAX_OUTPUT_CHARS = 80_000
 PROGRESS_MIN_CHARS = 400
 PROGRESS_MIN_SECONDS = 1.5
