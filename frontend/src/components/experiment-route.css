@@ -28,3 +28,5 @@
 .er-stage-description summary{cursor:pointer;color:#4a8072;font-weight:700}.er-stage-description p{margin:9px 0 0}.er-experiments article>details+details{margin-top:10px}.er-more{font-size:12px}.er-more summary{border:1px solid #d7e5dd;border-radius:9px;background:white;color:#487368;padding:8px 10px;cursor:pointer;list-style:none}.er-more summary::-webkit-details-marker{display:none}.er-more summary::after{content:'  ＋'}.er-more[open] summary::after{content:'  −'}.er-more>div{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
 @media(min-width:901px){.researchPage .designGrid{grid-template-columns:260px minmax(0,1fr);align-items:start}.researchPage .designSidebar{max-height:none;overflow:visible}}
 @media(max-width:700px){.er-route{padding:16px}.er-stage-main{gap:9px;padding:12px}.er-index{font-size:14px}.er-stage-main>.er-symbol{width:48px;height:48px}.er-stage-main>.er-symbol svg{width:38px;height:38px}.er-preview{padding:0 12px 12px}.er-connector{margin-left:23px}.er-head h2{font-size:21px}}
+
+.er-symbol > .exp-icon { width: 100% !important; height: 100% !important; }

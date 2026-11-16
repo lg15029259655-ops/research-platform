@@ -384,3 +384,8 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Added distinct Western blot, PCR, Transwell and flow cytometry illustrations. Specific method names override broad diagram categories; ambiguous titles keep their broad category. Tests cover Chinese and English examples and generic controls; visual inspection in the live diagram remains pending.
 - Two initial asset/test writes used paths prefixed with frontend while already in the frontend directory; both failed without writing. Corrected by checking the command working directory before using relative paths; rerun and test succeeded.
 - Boundary: these mappings apply to the existing design workflow. A paper-grounded experiment map in the reading section remains outstanding.
+
+## 2026-11-16 — Match illustrations across both design views
+
+- The design sandbox and workflow diagram used separate categorization systems, so newly added method-specific artwork appeared only in the latter. Both now apply the same explicit-name method mapping, falling back to their existing broader classifications for ambiguous names.
+- Added ELISA, IHC, cell proliferation and immunofluorescence artwork and reused existing sequencing, vesicle, histology, microbiology and metabolic sheets. Five category tests and TypeScript passed; local page and new image returned HTTP 200. Browser visual acceptance and broad real-world coverage remain unverified.

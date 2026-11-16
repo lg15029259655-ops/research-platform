@@ -119,9 +119,28 @@ export const METHOD_CATEGORIES: ExperimentCategory[] = [
   { id: "pcr_assay", name: "PCR 检测", short: "PCR", includes: ["PCR", "qPCR", "RT-PCR"], keywords: [], priority: "P1" },
   { id: "transwell_assay", name: "Transwell 实验", short: "迁移", includes: ["Transwell", "迁移侵袭"], keywords: [], priority: "P1" },
   { id: "flow_cytometry", name: "流式细胞术", short: "流式", includes: ["flow cytometry", "流式细胞术"], keywords: [], priority: "P1" },
+  { id: "sequencing_lab", name: "测序实验", short: "测序", includes: ["测序建库", "RNA测序"], keywords: [], priority: "P1" },
+  { id: "vesicle_lab", name: "细胞外囊泡", short: "囊泡", includes: ["外泌体", "细胞外囊泡"], keywords: [], priority: "P1" },
+  { id: "histology_lab", name: "组织病理", short: "病理", includes: ["HE染色", "组织病理"], keywords: [], priority: "P1" },
+  { id: "microbiology_lab", name: "微生物实验", short: "微生物", includes: ["细菌培养", "病毒滴度"], keywords: [], priority: "P1" },
+  { id: "metabolism_lab", name: "代谢检测", short: "代谢", includes: ["代谢流追踪", "糖酵解"], keywords: [], priority: "P1" },
+  { id: "elisa_assay", name: "ELISA 检测", short: "ELISA", includes: ["ELISA", "酶联免疫吸附"], keywords: [], priority: "P1" },
+  { id: "ihc_assay", name: "免疫组化", short: "IHC", includes: ["免疫组化", "IHC"], keywords: [], priority: "P1" },
+  { id: "cell_proliferation", name: "细胞增殖检测", short: "增殖", includes: ["CCK-8", "EdU"], keywords: [], priority: "P1" },
+  { id: "immunofluorescence", name: "免疫荧光", short: "免疫荧光", includes: ["免疫荧光", "immunofluorescence"], keywords: [], priority: "P1" },
 ];
 export function specificMethodCategory(text: string | null | undefined): string | null {
   const value = (text || "").toLowerCase();
+  if (/测序数据.{0,8}(分析|处理)|(?:rna.?seq|sequencing).{0,12}(?:data|analysis)/.test(value)) return null;
+  if (/外泌体|细胞外囊泡|胞外囊泡|exosome|extracellular vesicle/.test(value)) return "vesicle_lab";
+  if (/单细胞.{0,8}测序|rna测序|测序建库|全基因组测序|高通量测序|rna.?seq|sequencing library/.test(value)) return "sequencing_lab";
+  if (/细菌培养|菌落计数|病毒滴度|bacterial culture|viral titer/.test(value)) return "microbiology_lab";
+  if (/代谢流追踪|同位素示踪|糖酵解检测|metabolic flux tracing/.test(value)) return "metabolism_lab";
+  if (/\belisa\b|酶联免疫吸附/.test(value)) return "elisa_assay";
+  if (/免疫组织化学|免疫组化|\bihc\b|immunohistochem/.test(value)) return "ihc_assay";
+  if (/组织病理|病理切片|组织切片|\bhe\s*染色|h\s*&\s*e|histopatholog/.test(value)) return "histology_lab";
+  if (/\bcck[ -]?8\b|\bedu\b|细胞增殖检测|细胞增殖实验/.test(value)) return "cell_proliferation";
+  if (/免疫荧光|immunofluorescen/.test(value)) return "immunofluorescence";
   if (/western\s*blot|蛋白印迹|免疫印迹|\bwb\b/.test(value)) return "western_blot";
   if (/\b(?:rt[- ]?)?q?pcr\b|聚合酶链式反应/.test(value)) return "pcr_assay";
   if (/transwell|迁移侵袭|侵袭迁移/.test(value)) return "transwell_assay";
