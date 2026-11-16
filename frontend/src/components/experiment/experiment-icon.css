@@ -1,0 +1,40 @@
+.exp-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.exp-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* 图标未放置时的占位：虚线框 + 分类短名，提示"这里要插一张图" */
+.exp-icon-slot {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed var(--c-primary-line, #c9dcf7);
+  border-radius: calc(var(--r-2, 10px) * 0.8);
+  background: var(--c-primary-weak, #eef5ff);
+  color: var(--c-primary, #0a5ac2);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.exp-icon-label {
+  position: absolute;
+  left: 50%;
+  bottom: -16px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--c-text-soft, #8a97a8);
+  white-space: nowrap;
+}
