@@ -18,6 +18,10 @@ export type MindNode = {
   page: number | null;
   inferred: boolean;
   children: MindNode[];
+  /** 句子级要点摘要（后端新版本提供；旧数据没有时按普通节点渲染）。 */
+  detail?: string;
+  /** 跨页要点：起止页不同时显示页码范围。 */
+  page_end?: number | null;
 };
 
 export type MindMapPayload = {
@@ -26,6 +30,8 @@ export type MindMapPayload = {
   parse_revision: number | string;
   root: MindNode;
   legend: Record<string, string>;
+  /** 三层结构统计：章节数 / 要点数 / 总节点数（旧数据没有时前端自行统计）。 */
+  stats?: { sections: number; points: number; total: number };
 };
 
 /** 节点类型 → 颜色。与 mindmap.css 中的 --mm-* 变量保持同值；
@@ -41,12 +47,12 @@ export const KIND_COLORS: Record<string, string> = {
 };
 
 export const KIND_LABELS: Record<string, string> = {
-  question: "研究问题",
-  method: "方法",
-  evidence: "证据",
+  question: "问题/背景",
+  method: "方法/数据",
+  evidence: "证据/图表",
   finding: "发现",
-  limitation: "局限",
-  extension: "延伸",
+  limitation: "局限/边界",
+  extension: "贡献/启示",
   title: "题目",
 };
 
@@ -59,17 +65,31 @@ export function kindLabel(kind: string): string {
 }
 
 /* ---------- 布局常量 ---------- */
-const LEVEL_GAP = 56; // 父子节点框之间的横向留白（不是中心距，宽度不同也不会重叠）
-const SIBLING_GAP = 14; // 兄弟节点之间的纵向间距
-const MAX_NODE_WIDTH = 236;
-const MIN_NODE_WIDTH = 112;
-const H_PADDING_LEFT = 24; // 左侧圆点 + 文字缩进
-const H_PADDING_RIGHT = 16; // 右侧留白
-const BADGE_RESERVE = 44; // “推断”角标占位，只在 inferred 节点上预留
-export const MINDMAP_LINE_HEIGHT = 17; // 多行文本行高（与 MindMapPanel 渲染保持一致）
-const V_PADDING = 9; // 节点上下内边距
-const MIN_NODE_HEIGHT = 35;
-const MAX_LINES = 5; // 超过才会出现省略号（后端标签 ≤24 字，正常不会触发）
+const LEVEL_GAP = 48; // 父子节点框之间的横向留白
+const SIBLING_GAP = 16; // 兄弟节点之间的纵向间距
+const MAX_NODE_WIDTH = 268; // 普通节点最大宽度：超过才折行
+const MIN_NODE_WIDTH = 88; // 短标签（如“数据与方法”）自动收窄，不再一律 200+
+const ROOT_MAX_WIDTH = 320;
+const ROOT_MIN_WIDTH = 232;
+const H_PADDING_LEFT = 18; // 左侧色条/圆点 + 文字缩进
+const H_PADDING_RIGHT = 16;
+const BADGE_RESERVE = 40; // “推断”角标占位
+export const MINDMAP_LINE_HEIGHT = 18;
+export const MINDMAP_PAGE_LINE_HEIGHT = 13;
+const V_PADDING = 10;
+const MIN_NODE_HEIGHT = 36;
+
+/** 句末标点/收尾符号：标签里出现“。”或单独一行“。”都很难看，统一去掉。 */
+const TRAILING_PUNCT = /[。！？；;，,、：:.!?]+$/;
+const CLOSING_PUNCT = "。，、；：！？）」』】.,!?;:)%";
+
+/** 标签规范化：去首尾空白、去掉句末标点、去掉标点前的多余空格。 */
+export function normalizeLabel(label: string): string {
+  return label.trim()
+    .replace(/\s+([，。；：！？、])/g, "$1")
+    .replace(TRAILING_PUNCT, "")
+    .trim();
+}
 
 const CJK = /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]/;
 
@@ -85,6 +105,8 @@ export type NodeMetrics = {
   height: number;
   /** 折行后的文本行；渲染与导出都直接用它，避免再截断。 */
   lines: string[];
+  /** 页码脚注（如 "PDF p.3"）；根节点不显示，避免标题下多一行。 */
+  pageLabel: string | null;
 };
 
 /**
@@ -92,52 +114,78 @@ export type NodeMetrics = {
  *
  * 之前是单行 truncateLabel，字数一多就变成“…”，用户看不到完整信息；
  * 这里改成折行 + 节点高度自适应：中文按字断行，英文尽量在空格处断，
- * 只有极端超长（超过 MAX_LINES 行）才在最后一行收尾加省略号。
+ * 不再限制行数或加省略号：宁可节点变高，也要让用户看到完整短语。
  */
-export function wrapLabel(label: string, maxWidth: number, maxLines = MAX_LINES): string[] {
-  const chars = Array.from(label.trim());
+export function wrapLabel(label: string, maxWidth: number): string[] {
+  const text = normalizeLabel(label);
+  if (!text) return [""];
+  const natural = measureLabel(text);
+  if (natural <= maxWidth) return [text];
+
+  const chars = Array.from(text);
   const lines: string[] = [];
+  const linesNeeded = Math.max(2, Math.ceil(natural / Math.max(40, maxWidth)));
+  const target = natural / linesNeeded;
   let line = "";
   let width = 0;
-  let lastSpace = -1;
-  const flush = (preferSpace: boolean) => {
-    if (preferSpace && lastSpace > 0 && line.length > lastSpace) {
-      const head = line.slice(0, lastSpace).trimEnd();
-      const tail = line.slice(lastSpace).trimStart();
-      lines.push(head);
-      line = tail;
-      width = measureLabel(tail);
-    } else {
-      lines.push(line.trimEnd());
-      line = "";
-      width = 0;
-    }
-    lastSpace = -1;
-  };
+
   for (const ch of chars) {
     const charWidth = CJK.test(ch) ? 13 : 7;
-    if (line.length > 0 && width + charWidth > maxWidth) flush(!CJK.test(ch));
+    const wouldOverflow = line.length > 0 && width + charWidth > maxWidth;
+    const overTarget = line.length > 0 && width >= target && !CLOSING_PUNCT.includes(ch) && ch.trim() !== "";
+    if (wouldOverflow || overTarget) {
+      // 不把收尾标点甩到下一行：能塞进当前行就留在上一行。
+      if (CLOSING_PUNCT.includes(ch) && width + charWidth <= maxWidth + 4) {
+        line += ch;
+        width += charWidth;
+        lines.push(line.trimEnd());
+      } else {
+        lines.push(line.trimEnd());
+        line = ch;
+        width = charWidth;
+      }
+      continue;
+    }
     line += ch;
     width += charWidth;
-    if (ch === " ") lastSpace = line.length;
   }
   if (line.trim().length) lines.push(line.trimEnd());
-  if (lines.length === 0) return [""];
-  if (lines.length <= maxLines) return lines;
-  const kept = lines.slice(0, maxLines);
-  kept[maxLines - 1] = `${kept[maxLines - 1]}…`;
-  return kept;
+
+  // 防止最后一行只剩 1–2 个字/一个标点：从上一行末尾挪一点字过来，凑成可读的一行。
+  let guard = 0;
+  while (lines.length > 1 && guard < 3) {
+    const last = lines[lines.length - 1];
+    if (last.replace(/\s/g, "").length > 2) break;
+    const prev = lines[lines.length - 2];
+    if (prev.length <= 6) break;
+    const move = prev.slice(-3);
+    lines[lines.length - 2] = prev.slice(0, -3).trimEnd();
+    lines[lines.length - 1] = `${move}${last}`;
+    guard += 1;
+  }
+  return lines.filter((item) => item.length > 0);
 }
 
-/** 节点尺寸由文本折行结果决定：短标签一行，长标签最多 5 行，节点高度随之增加。 */
+/** 节点尺寸由文本折行结果决定：标题行数 + 摘要行数共同决定高度。 */
 export function nodeMetrics(node: MindNode): NodeMetrics {
+  const isRoot = node.id === "root";
+  const isSection = !isRoot && (node.children?.length || 0) > 0;
   const badge = node.inferred ? BADGE_RESERVE : 0;
-  const natural = Math.round(measureLabel(node.label)) + H_PADDING_LEFT + H_PADDING_RIGHT + badge;
-  const width = Math.min(MAX_NODE_WIDTH, Math.max(MIN_NODE_WIDTH + badge, natural));
-  const textWidth = Math.max(40, width - H_PADDING_LEFT - H_PADDING_RIGHT - badge);
-  const lines = wrapLabel(node.label, textWidth);
-  const height = Math.max(MIN_NODE_HEIGHT, lines.length * MINDMAP_LINE_HEIGHT + V_PADDING * 2);
-  return { width, height, lines };
+  const label = normalizeLabel(node.label);
+  const padLeft = isRoot ? 22 : H_PADDING_LEFT;
+  const padRight = isRoot ? 22 : H_PADDING_RIGHT;
+  const natural = Math.round(measureLabel(label)) + padLeft + padRight + badge;
+  const maxWidth = isRoot ? ROOT_MAX_WIDTH : MAX_NODE_WIDTH;
+  const minWidth = isRoot ? ROOT_MIN_WIDTH : MIN_NODE_WIDTH;
+  // 关键：先按“一行放得下就不折行”定宽，字数少就窄框，不再所有框一样宽。
+  const width = Math.max(minWidth + badge, Math.min(maxWidth, natural));
+  const textWidth = Math.max(40, width - padLeft - padRight - badge);
+  const lines = wrapLabel(label, textWidth);
+  const pageLabel = node.page && !isRoot && !isSection ? `PDF p.${node.page}` : null;
+  const contentHeight =
+    lines.length * MINDMAP_LINE_HEIGHT + (pageLabel ? MINDMAP_PAGE_LINE_HEIGHT : 0);
+  const height = Math.max(MIN_NODE_HEIGHT, contentHeight + V_PADDING * 2);
+  return { width, height, lines, pageLabel };
 }
 
 export type LaidMindNode = {
@@ -154,6 +202,8 @@ export type LaidMindNode = {
   height: number;
   /** 折行后的文本行（渲染/导出直接使用，不再做单行截断）。 */
   lines: string[];
+  /** 页码脚注（根节点为空）。 */
+  pageLabel: string | null;
   hasChildren: boolean;
   collapsed: boolean;
   parentId: string | null;
@@ -271,6 +321,7 @@ function place(
     width: metrics.width,
     height: metrics.height,
     lines: metrics.lines,
+    pageLabel: metrics.pageLabel,
     hasChildren: (node.children?.length || 0) > 0,
     collapsed: collapsed.has(node.id),
     parentId: parent ? parent.id : null,
@@ -317,6 +368,7 @@ export function layoutMindmap(root: MindNode, collapsed: Iterable<string> = []):
     width: rootMetrics.width,
     height: rootMetrics.height,
     lines: rootMetrics.lines,
+    pageLabel: rootMetrics.pageLabel,
     hasChildren: (root.children?.length || 0) > 0,
     collapsed: collapsedSet.has(root.id),
     parentId: null,
@@ -368,4 +420,20 @@ export function collectIds(root: MindNode): string[] {
   };
   walk(root);
   return ids;
+}
+
+/** 统计节点总数（旧 payload 没有 stats 时前端自己算，用于判断是否默认折叠）。 */
+export function countNodes(root: MindNode): number {
+  let total = 0;
+  const walk = (node: MindNode) => {
+    total += 1;
+    (node.children || []).forEach(walk);
+  };
+  walk(root);
+  return total;
+}
+
+/** 一级章节节点 id：节点数量太多时默认只展开到这一层。 */
+export function collectSectionIds(root: MindNode): string[] {
+  return (root.children || []).filter((child) => (child.children?.length || 0) > 0).map((child) => child.id);
 }

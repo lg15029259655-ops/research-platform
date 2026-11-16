@@ -37,38 +37,79 @@ def fake_paper(title: str = "Threshold paper") -> Paper:
 
 def test_skeleton_is_deterministic_and_ordered():
     paper = fake_paper()
-    units = [unit("p1:0", "ABSTRACT", "Abstract"), unit("p1:1", "METHODS", "Methods"),
-             unit("p1:2", "RESULTS", "Results"), unit("p1:3", "FIGURE", "Figure 1"),
-             unit("p1:4", "DISCUSSION", "Discussion"), unit("p1:5", "CONCLUSION", "Conclusion")]
+    def real(uid: str, kind: str, heading: str, text: str) -> ReadingUnit:
+        return ReadingUnit(id=uid, paper_id="p1", position=int(uid.split(":")[-1]), kind=kind,
+                           heading=heading, page_start=1, page_end=1, source_text=text)
+    units = [real("p1:0", "ABSTRACT", "摘要", "本研究旨在解决阈值选择问题，并提出三种指标。"),
+             real("p1:1", "METHODS", "方法", "我们比较三种检测器，并使用统一设置。"),
+             real("p1:2", "RESULTS", "结果", "结果表明阈值会改变排名。"),
+             real("p1:3", "FIGURE", "图 1", "图 1：不同数据集上的阈值排名。"),
+             real("p1:4", "DISCUSSION", "讨论", "结果受限于三个数据集，未来需要更多验证。"),
+             real("p1:5", "CONCLUSION", "结论", "我们贡献了一个可复现的评估流程。")]
     first = mindmap_service.build_skeleton(paper, units)
     second = mindmap_service.build_skeleton(paper, units)
     assert first == second
     assert first["id"] == "root"
     headings = [child["label"] for child in first["children"]]
-    assert headings[:3] == ["摘要", "方法", "结果"]
-    results = next(child for child in first["children"] if child["id"] == "sec:results")
-    assert any(node["id"].startswith("fig:") for node in results["children"])
+    assert "研究问题与动机" in headings
+    assert "数据与方法" in headings and "主要发现" in headings
+    assert headings.index("数据与方法") < headings.index("主要发现")
+    evidence = next(child for child in first["children"] if child["id"] == "an:evidence")
+    assert any(node["id"].startswith("pt:evidence:") for node in evidence["children"])
+
+
+def test_skeleton_is_three_layers_with_sentence_points():
+    """无 AI 时也要足够细：章节下必须有句子级 point，且带页码/摘要。"""
+    paper = fake_paper()
+    def real(uid: str, kind: str, heading: str, text: str, page: int = 1) -> ReadingUnit:
+        return ReadingUnit(id=uid, paper_id="p1", position=int(uid.split(":")[-1]), kind=kind,
+                           heading=heading, page_start=page, page_end=page, source_text=text)
+
+    units = [
+        real("p1:0", "ABSTRACT", "Abstract", "We test thresholds. Results suggest ranking changes."),
+        real("p1:1", "METHODS", "Methods", "We compare three detectors. Settings are matched."),
+        real("p1:2", "RESULTS", "Results", "Threshold choice flips the ranking. Two datasets disagree."),
+        real("p1:3", "RESULTS", "Results", "Second dataset shows smaller gaps. Variance is reported."),
+        real("p1:4", "FIGURE", "Figure 1", "Figure 1. Ranking by threshold across datasets."),
+        real("p1:5", "CONCLUSION", "Conclusion", "A procedure, not a metric. Validation is needed."),
+    ]
+    tree = mindmap_service.build_skeleton(paper, units)
+    stats = mindmap_service.skeleton_stats(tree)
+    assert stats["sections"] >= 4  # 问题/方法/发现/证据/贡献 等分析维度
+    assert stats["points"] >= 4
+    assert stats["total"] == stats["sections"] + stats["points"] + 1
+    for section in tree["children"]:
+        assert section["children"], f"{section['label']} 没有句子级要点"
+        for point in section["children"]:
+            assert point["page"] is not None
+            assert point["detail"], "句子级要点需要 detail"
+            assert point["unit_ids"], "要点必须挂真实阅读单元"
+    for section in tree["children"]:
+        labels = [point["label"] for point in section["children"]]
+        assert len(labels) == len(set(labels)), f"{section['label']} 内部要点重名"
 
 
 def test_annotations_reject_unknown_nodes_and_units():
     paper = fake_paper()
-    units = [unit("p1:0", "ABSTRACT", "Abstract"), unit("p1:1", "RESULTS", "Results")]
+    units = [unit("p1:0", "METHODS", "方法"), unit("p1:1", "RESULTS", "结果")]
+    units[0].source_text = "我们比较三种检测器。"
+    units[1].source_text = "结果表明阈值会改变排名。"
     tree = mindmap_service.build_skeleton(paper, units)
     tree = mindmap_service.apply_annotations(
         tree,
         [
-            {"node_id": "sec:abstract", "label": "阈值指标被拆成三部分", "kind": "question",
+            {"node_id": "an:method", "label": "阈值指标被拆成三部分", "kind": "question",
              "unit_ids": ["p1:0", "does-not-exist"]},
             {"node_id": "ghost-node", "label": "不存在的节点", "kind": "finding", "unit_ids": ["p1:0"]},
-            {"node_id": "sec:results", "label": "排名被阈值左右", "kind": "not-a-kind", "unit_ids": ["p1:1"]},
+            {"node_id": "an:finding", "label": "排名被阈值左右", "kind": "not-a-kind", "unit_ids": ["p1:1"]},
         ],
         {"p1:0", "p1:1"},
     )
     nodes = {node["id"]: node for node in mindmap_service._flatten(tree)}
-    assert nodes["sec:abstract"]["label"] == "阈值指标被拆成三部分"
-    assert nodes["sec:abstract"]["unit_ids"] == ["p1:0"]
-    assert nodes["sec:results"]["label"] == "排名被阈值左右"
-    assert nodes["sec:results"]["kind"] == "finding"  # 非法 kind 不覆盖，保留骨架类型
+    assert nodes["an:method"]["label"] == "阈值指标被拆成三部分"
+    assert nodes["an:method"]["unit_ids"] == ["p1:0"]
+    assert nodes["an:finding"]["label"] == "排名被阈值左右"
+    assert nodes["an:finding"]["kind"] == "finding"  # 非法 kind 不覆盖，保留骨架类型
     assert "ghost-node" not in nodes
 
 
@@ -114,7 +155,7 @@ def test_mindmap_job_uses_skeleton_plus_valid_annotations(client, monkeypatch):
     async def fake_run(name, context, emit=None, thinking_budget=None):
         assert name == "mindmap_annotate"
         return {"annotations": [
-            {"node_id": "sec:results", "label": "排名被阈值左右", "kind": "finding",
+            {"node_id": "an:finding", "label": "排名被阈值左右", "kind": "finding",
              "unit_ids": [unit_ids[0], "bogus-id"]},
             {"node_id": "missing-node", "label": "不该出现", "kind": "finding", "unit_ids": []},
         ]}
@@ -127,8 +168,8 @@ def test_mindmap_job_uses_skeleton_plus_valid_annotations(client, monkeypatch):
     assert payload["root"]["id"] == "root"
     assert payload["annotation_count"] == 2  # 模型返回两条，节点校验在合并阶段做
     nodes = {node["id"]: node for node in mindmap_service._flatten(payload["root"])}
-    assert nodes["sec:results"]["label"] == "排名被阈值左右"
-    assert nodes["sec:results"]["unit_ids"] == [unit_ids[0]]
+    assert nodes["an:finding"]["label"] == "排名被阈值左右"
+    assert nodes["an:finding"]["unit_ids"] == [unit_ids[0]]
     assert "missing-node" not in nodes
 
     # 第二次调用应命中同一 artifact（按 parse_revision 缓存），不重复计费

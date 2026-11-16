@@ -355,3 +355,214 @@
     transition: none;
   }
 }
+
+/* 句子级摘要：比标题小一号、灰度更低，避免抢走标题层级 */
+.mm-node-detail {
+  font-size: 10.5px;
+  fill: var(--c-text-soft);
+}
+
+/* 页码脚注：给"这段来自 PDF 第几页"一个固定位置，点击节点可直接跳页 */
+.mm-node-page {
+  font-size: 9.5px;
+  fill: var(--c-text-soft);
+  letter-spacing: .02em;
+  opacity: .85;
+}
+
+/* ---------- 专业思维导图视觉：根=渐变胶囊，分支=浅色块，要点=无边框文字 ---------- */
+.mm-node.is-point .mm-node-bg {
+  fill: var(--c-surface-2);
+  stroke: none;
+  opacity: 0.85;
+}
+.mm-node.is-point.is-hover .mm-node-bg {
+  fill: var(--c-surface-2);
+}
+.mm-node.is-point.is-selected .mm-node-bg {
+  fill: var(--c-primary-weak);
+  stroke: var(--c-primary);
+  stroke-width: 1.2;
+}
+.mm-node.is-section .mm-node-bg {
+  filter: drop-shadow(0 2px 6px rgba(10, 90, 194, 0.06));
+}
+.mm-svg .mm-root-text {
+  fill: #FFFFFF;
+  font-size: 14px;
+  font-weight: 700;
+}
+.mm-node.is-root .mm-node-bg {
+  filter: drop-shadow(0 8px 18px rgba(10, 90, 194, 0.22));
+}
+.mm-svg .mm-section-text {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+.mm-svg .mm-point-text {
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+/* 章节编号徽标：白字 + 分支色底 */
+.mm-branch-chip text {
+  fill: #FFFFFF;
+  font-size: 9.5px;
+  font-weight: 700;
+}
+/* 画布背景：中心柔光，避免一整片死白 */
+.mm-viewport, .mm-canvas {
+  background:
+    radial-gradient(900px 520px at 50% 28%, rgba(10, 90, 194, 0.05) 0%, rgba(10, 90, 194, 0) 70%),
+    var(--c-surface);
+}
+
+/* 根节点渐变必须用 CSS 覆盖 .mm-node-bg 的默认白底（SVG 的 fill 属性优先级低于 CSS 类） */
+.mm-node.is-root .mm-node-bg {
+  fill: url(#mmRootGradient);
+  stroke: none;
+}
+
+/* 缩放控件：与实验流程保持一致的 − / % / + 组 */
+.mm-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-1);
+  overflow: hidden;
+  background: var(--c-surface);
+}
+.mm-zoom button {
+  width: 28px;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--c-text-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.mm-zoom button:hover:not(:disabled) { background: var(--c-surface-2); color: var(--c-primary); }
+.mm-zoom button:disabled { opacity: .45; cursor: default; }
+.mm-zoom span {
+  min-width: 42px;
+  text-align: center;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-text-2);
+  border-left: 1px solid var(--c-line);
+  border-right: 1px solid var(--c-line);
+  line-height: 28px;
+}
+/* 与站点字体保持一致（SVG text 不会自动继承所有字体属性） */
+.mm-svg, .mm-svg text {
+  font-family: var(--font-sans);
+}
+/* 折叠按钮：白底描边，贴在节点边缘内侧 */
+.mm-toggle circle {
+  fill: var(--c-surface);
+  stroke: var(--c-line-strong);
+  stroke-width: 1;
+}
+.mm-toggle:hover circle { stroke: var(--c-primary); }
+.mm-toggle text {
+  fill: var(--c-text-2);
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+}
+.mm-toggle:hover text { fill: var(--c-primary); }
+
+/* ---------- 行文导图视觉重构（第四版）：根=深色卡片、章节=彩色胶囊、要点=白卡+色条 ---------- */
+.mm-node.is-root .mm-node-bg {
+  fill: url(#mmRootGradient);
+  stroke: none;
+  filter: drop-shadow(0 14px 28px rgba(10, 90, 194, 0.28));
+}
+.mm-node.is-root.is-selected .mm-node-bg {
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 2;
+}
+.mm-svg .mm-root-text {
+  fill: #FFFFFF;
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.mm-node.is-section .mm-node-bg {
+  stroke: none;
+  filter: drop-shadow(0 5px 14px rgba(16, 24, 40, 0.16));
+}
+.mm-svg .mm-section-text {
+  fill: #FFFFFF;
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.mm-node.is-point .mm-node-bg {
+  fill: #FFFFFF;
+  opacity: 1;
+  stroke: var(--c-line);
+  stroke-width: 1;
+  filter: drop-shadow(0 2px 6px rgba(16, 24, 40, 0.05));
+}
+.mm-node.is-point.is-hover .mm-node-bg {
+  stroke: color-mix(in srgb, var(--c-primary) 35%, var(--c-line));
+  filter: drop-shadow(0 8px 18px rgba(10, 90, 194, 0.14));
+}
+.mm-node.is-point.is-selected .mm-node-bg {
+  stroke: var(--c-primary);
+  stroke-width: 1.5;
+}
+.mm-svg .mm-point-text {
+  fill: var(--c-text);
+  font-size: 12.5px;
+  letter-spacing: 0.005em;
+}
+.mm-svg .mm-node-page {
+  fill: var(--c-text-3);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+}
+.mm-toggle { display: none; }
+
+/* ---------- 动效：入场、连线生长、悬停抬升、画布柔光 ---------- */
+.mm-viewport { position: relative; }
+.mm-viewport::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(560px 320px at 30% 18%, rgba(10, 90, 194, 0.06), transparent 66%);
+  z-index: 0;
+}
+.mm-canvas { position: relative; z-index: 1; }
+.mm-node-anim {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.18s ease;
+}
+.mm-node:hover .mm-node-anim { transform: translateY(-2px); }
+@media (prefers-reduced-motion: no-preference) {
+  .mm-anim .mm-node-anim { animation: mmNodeIn 0.52s cubic-bezier(0.2, 0.75, 0.3, 1) backwards; }
+  .mm-anim .mm-edge-path { animation: mmEdgeFade 0.55s ease-out both; }
+  .mm-anim .mm-node.is-root .mm-node-bg { animation: mmRootIn 0.6s cubic-bezier(0.2, 0.75, 0.3, 1) backwards; transform-box: fill-box; transform-origin: center; }
+  .mm-viewport::before { animation: mmAurora 16s ease-in-out infinite alternate; }
+}
+@keyframes mmNodeIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mmRootIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mmEdgeFade {
+  from { stroke-opacity: 0; }
+  to { stroke-opacity: 1; }
+}
+@keyframes mmAurora {
+  from { transform: translate3d(-1.5%, -1%, 0) scale(1); }
+  to { transform: translate3d(2%, 2%, 0) scale(1.06); }
+}

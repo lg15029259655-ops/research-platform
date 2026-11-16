@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import ExperimentIcon from "@/components/experiment/ExperimentIcon";
 import { categoryById, detectCategory, iconUrl } from "@/lib/experiment-categories";
 import "./experiment-workflow.css";
@@ -108,12 +108,16 @@ function wrapText(text: string, maxWidth: number, size: number): string[] {
 /* 布局常量与类型                                                       */
 /* ------------------------------------------------------------------ */
 
-const ROOT = { width: 262, pad: 14, labelSize: 10, titleSize: 14.5, lineHeight: 21 };
-const STAGE = { width: 258, pad: 12, icon: 48, gap: 10, titleSize: 13.5, titleLineHeight: 19, detailSize: 12, detailLineHeight: 16 };
-const CHILD = { width: 238, pad: 10, icon: 28, gap: 9, titleSize: 12.5, titleLineHeight: 17, detailSize: 11.5, detailLineHeight: 15 };
+const ROOT = { width: 276, pad: 16, labelSize: 11, titleSize: 16.5, lineHeight: 24 };
+const STAGE = { width: 268, pad: 14, icon: 50, gap: 10, titleSize: 15.5, titleLineHeight: 21, detailSize: 13.5, detailLineHeight: 18 };
+const CHILD = { width: 246, pad: 12, icon: 30, gap: 9, titleSize: 14, titleLineHeight: 19, detailSize: 13, detailLineHeight: 17 };
 const LEVEL_GAP = 72;
 const SIBLING_GAP = 16;
-const MIN_ZOOM = 0.5;
+/** 阶段卡片的强调色：按阶段顺序取色，连线与卡片左边条同色，避免整张图只有一种蓝。 */
+const STAGE_ACCENTS = ["#0A5AC2", "#0E7C86", "#7A5AF8", "#B26A00", "#2F80ED", "#5B7089"];
+/** 流水线箭头两侧留白（放在阶段卡片之间，避免箭头贴住卡片）。 */
+const PIPELINE_GAP = 66;
+const MIN_ZOOM = 0.28; // 手机窄屏需要更小缩放才能一屏看全（桌面通常 >0.5，不受影响）
 const MAX_ZOOM = 2;
 
 type LaidNode = {
@@ -130,11 +134,27 @@ type LaidNode = {
   hiddenCount: number;
   collapsed: boolean;
   stageId?: string;
+  /** 阶段强调色（一级阶段按顺序分配，子实验继承所在阶段）。 */
+  accent: string;
+  /** 阶段序号（1 起）；子实验也记录所属阶段序号用于 “2.1” 这样的编号。 */
+  stageIndex: number;
+  /** 阶段下的步骤总数（用于“3 步”徽标）。 */
+  childCount: number;
+  /** 子实验在本阶段内的序号（1 起），阶段节点为空。 */
+  stepIndex?: number;
 };
 
-type LaidEdge = { id: string; path: string };
+type LaidEdge = {
+  id: string;
+  path: string;
+  /** flow = 阶段之间/目标到阶段的流程箭头；branch = 阶段连到子实验的枝线。 */
+  kind: "flow" | "branch";
+  accent: string;
+};
 
-type Layout = { nodes: LaidNode[]; edges: LaidEdge[]; width: number; height: number };
+/* 阶段色带：每个阶段背后一条很浅的同色块，把“阶段+它的步骤”在视觉上框成一组。 */
+type LaidBand = { id: string; x: number; y: number; width: number; height: number; accent: string };
+type Layout = { nodes: LaidNode[]; edges: LaidEdge[]; bands: LaidBand[]; width: number; height: number };
 
 function resolveCategory(raw: string | null | undefined, title: string, detail: string | null | undefined): string | null {
   if (raw && categoryById(raw)) return raw;
@@ -170,81 +190,147 @@ function buildLayout(workflow: ExperimentWorkflow, collapsed: Set<string>): Layo
   const constraintLines = workflow.constraints
     ? wrapText(workflow.constraints, ROOT.width - ROOT.pad * 2, 11)
     : [];
-  // 约束条件也要算进根节点高度，否则多行约束会盖住目标文字。
   const rootHeight =
-    ROOT.pad * 2 +
-    15 +
-    Math.max(1, goalLines.length) * ROOT.lineHeight +
+    ROOT.pad * 2 + 15 + Math.max(1, goalLines.length) * ROOT.lineHeight +
     (constraintLines.length ? 6 + constraintLines.length * 16 : 0);
 
   const stages = (workflow.stages || []).slice(0, 6);
-  const stageX = ROOT.width + LEVEL_GAP;
-  const childX = stageX + STAGE.width + LEVEL_GAP;
-
   const nodes: LaidNode[] = [];
   const edges: LaidEdge[] = [];
-  const rootCenterX = ROOT.width;
+  const bands: LaidBand[] = [];
 
-  let cursor = 0;
-  const childNodes: LaidNode[] = [];
+  /* 每行最多 3 个阶段：单行 5 个阶段时画布只有 ~60% 缩放、字会糊；
+     折成 3+2 两行后，非全屏也能按接近 1:1 阅读，同时保留“阶段 1→2→3 ↓ 4→5”的流程语义。 */
+  const PER_ROW = 6; // 单行流水线：全屏时能一屏看全；非全屏默认按 100% 显示、拖动查看，保证字号可读
+  const ROW_GAP = 86;
+  const firstStageX = ROOT.width + 96;
 
-  for (const stage of stages) {
+  type Prepared = {
+    stage: (typeof stages)[number];
+    index: number;
+    accent: string;
+    isCollapsed: boolean;
+    headerHeight: number;
+    blockHeight: number;
+    kids: { child: NonNullable<(typeof stages)[number]["children"]>[number]; cm: ReturnType<typeof childMetrics> }[];
+    x: number;
+    y: number;
+  };
+
+  const prepared: Prepared[] = stages.map((stage, index) => {
+    const accent = STAGE_ACCENTS[index % STAGE_ACCENTS.length];
     const isCollapsed = collapsed.has(stage.id);
     const metrics = stageMetrics(stage, isCollapsed);
-    const kids = isCollapsed ? [] : (stage.children || []).slice(0, 5);
-    const kidMetrics = kids.map((child) => ({ child, ...childMetrics(child) }));
-    const kidsHeight = kidMetrics.reduce((sum, item) => sum + item.height, 0) + Math.max(0, kidMetrics.length - 1) * SIBLING_GAP;
-    const subtreeHeight = Math.max(metrics.height, kidsHeight);
+    const kids = (isCollapsed ? [] : (stage.children || []).slice(0, 5)).map((child) => ({ child, cm: childMetrics(child) }));
+    const kidsHeight = kids.reduce((sum, item) => sum + item.cm.height, 0) + Math.max(0, kids.length - 1) * 12;
+    const blockHeight = metrics.height + (kids.length ? 30 + kidsHeight : 0);
+    return { stage, index, accent, isCollapsed, headerHeight: metrics.height, blockHeight, kids, x: 0, y: 0 };
+  });
 
-    const stageY = cursor + (subtreeHeight - metrics.height) / 2;
-    const category = resolveCategory(stage.category, stage.title, stage.detail);
-    const node: LaidNode = {
+  let rowTop = 0;
+  for (let rowStart = 0; rowStart < prepared.length; rowStart += PER_ROW) {
+    const row = prepared.slice(rowStart, rowStart + PER_ROW);
+    const rowBlockHeight = Math.max(...row.map((item) => item.blockHeight));
+    row.forEach((item, column) => {
+      item.x = firstStageX + column * (STAGE.width + PIPELINE_GAP);
+      item.y = rowTop;
+    });
+    rowTop += rowBlockHeight + ROW_GAP;
+  }
+
+  prepared.forEach((item) => {
+    const { stage, index, accent, isCollapsed, headerHeight, kids, x, y } = item;
+    const metrics = stageMetrics(stage, isCollapsed);
+    nodes.push({
       id: stage.id,
       kind: "stage",
-      x: stageX,
-      y: stageY,
+      x,
+      y,
       width: STAGE.width,
       height: metrics.height,
-      category,
+      category: resolveCategory(stage.category, stage.title, stage.detail),
       titleLines: metrics.titleLines,
       detailLines: metrics.detailLines,
       hiddenCount: isCollapsed ? (stage.children?.length || 0) : 0,
       collapsed: isCollapsed,
       stageId: stage.id,
-    };
-    nodes.push(node);
-
-    if (kidMetrics.length) {
-      let childY = cursor + (subtreeHeight - kidsHeight) / 2;
-      for (const item of kidMetrics) {
-        childNodes.push({
-          id: item.child.id || `${stage.id}-${childY}`,
-          kind: "child",
-          x: childX,
-          y: childY,
-          width: CHILD.width,
-          height: item.height,
-          category: resolveCategory(item.child.category, item.child.title, item.child.detail),
-          titleLines: item.titleLines,
-          detailLines: item.detailLines,
-          hiddenCount: 0,
-          collapsed: false,
-          stageId: stage.id,
-        });
-        childY += item.height + SIBLING_GAP;
-      }
-    }
-
-    edges.push({
-      id: `e-${stage.id}`,
-      path: bezier(rootCenterX, rootHeight / 2, stageX, stageY + metrics.height / 2),
+      accent,
+      stageIndex: index + 1,
+      childCount: (stage.children || []).length,
     });
 
-    cursor += subtreeHeight + SIBLING_GAP;
-  }
+    const childX = x + 26;
+    const childWidth = STAGE.width - 26;
+    let cursorY = y + headerHeight + 30;
+    let lastCenterY = 0;
+    kids.forEach(({ child, cm }, childIndex) => {
+      lastCenterY = cursorY + cm.height / 2;
+      nodes.push({
+        id: child.id || `${stage.id}-${childIndex}`,
+        kind: "child",
+        x: childX,
+        y: cursorY,
+        width: childWidth,
+        height: cm.height,
+        category: resolveCategory(child.category, child.title, child.detail),
+        titleLines: cm.titleLines,
+        detailLines: cm.detailLines,
+        hiddenCount: 0,
+        collapsed: false,
+        stageId: stage.id,
+        accent,
+        stageIndex: index + 1,
+        childCount: 0,
+        stepIndex: childIndex + 1,
+      });
+      edges.push({
+        id: `e-${stage.id}-${childIndex}`,
+        kind: "branch",
+        accent,
+        path: `M ${x + 13} ${lastCenterY} H ${childX - 4}`,
+      });
+      cursorY += cm.height + 12;
+    });
+    if (kids.length) {
+      edges.push({
+        id: `spine-${stage.id}`,
+        kind: "branch",
+        accent,
+        path: `M ${x + 13} ${y + headerHeight} V ${lastCenterY}`,
+      });
+    }
+    bands.push({ id: `band-${stage.id}`, x: x - 16, y: y - 16, width: STAGE.width + 32, height: item.blockHeight + 32, accent });
+  });
 
-  const stagesBottom = Math.max(0, cursor - SIBLING_GAP);
-  const rootY = stagesBottom / 2 - rootHeight / 2;
+  /* 流程箭头：同行向右；换行时从上一个阶段底部折到下一行第一个阶段顶部。 */
+  prepared.forEach((item, index) => {
+    const next = prepared[index + 1];
+    if (!next) return;
+    const arrowY = item.y + item.headerHeight / 2;
+    if (next.y === item.y) {
+      edges.push({ id: `flow-${index}`, kind: "flow", accent: item.accent, path: `M ${item.x + STAGE.width + 10} ${arrowY} H ${next.x - 14}` });
+      edges.push({ id: `flow-head-${index}`, kind: "flow", accent: item.accent, path: `M ${next.x - 20} ${arrowY - 5} L ${next.x - 13} ${arrowY} L ${next.x - 20} ${arrowY + 5}` });
+    } else {
+      const startX = item.x + STAGE.width / 2;
+      const startY = item.y + item.blockHeight;
+      const endX = next.x + next.headerHeight / 2; // 端点用左侧卡片中心
+      const midY = item.y + item.blockHeight + ROW_GAP / 2;
+      edges.push({
+        id: `flow-${index}`,
+        kind: "flow",
+        accent: item.accent,
+        path: `M ${startX} ${startY} V ${midY} H ${next.x + STAGE.width / 2} V ${next.y - 14}`,
+      });
+      edges.push({
+        id: `flow-head-${index}`,
+        kind: "flow",
+        accent: item.accent,
+        path: `M ${next.x + STAGE.width / 2 - 5} ${next.y - 20} L ${next.x + STAGE.width / 2} ${next.y - 13} L ${next.x + STAGE.width / 2 + 5} ${next.y - 20}`,
+      });
+    }
+  });
+
+  const rootY = prepared.length ? prepared[0].headerHeight / 2 - rootHeight / 2 : 0;
   nodes.push({
     id: "root",
     kind: "root",
@@ -257,26 +343,31 @@ function buildLayout(workflow: ExperimentWorkflow, collapsed: Set<string>): Layo
     detailLines: constraintLines,
     hiddenCount: 0,
     collapsed: false,
+    accent: STAGE_ACCENTS[0],
+    stageIndex: 0,
+    childCount: 0,
   });
-
-  for (const child of childNodes) {
-    const parent = nodes.find((node) => node.id === child.stageId);
-    if (!parent) continue;
+  if (prepared.length) {
+    const first = prepared[0];
+    const arrowY = first.headerHeight / 2;
     edges.push({
-      id: `e-${parent.id}-${child.id}`,
-      path: bezier(
-        parent.x + parent.width,
-        parent.y + parent.height / 2,
-        child.x,
-        child.y + child.height / 2,
-      ),
+      id: "root-flow",
+      kind: "flow",
+      accent: STAGE_ACCENTS[0],
+      path: `M ${ROOT.width + 10} ${rootY + rootHeight / 2} H ${first.x - 14}`,
     });
-    nodes.push(child);
+    edges.push({
+      id: "root-flow-head",
+      kind: "flow",
+      accent: STAGE_ACCENTS[0],
+      path: `M ${first.x - 20} ${arrowY - 5} L ${first.x - 13} ${arrowY} L ${first.x - 20} ${arrowY + 5}`,
+    });
   }
 
   const width = Math.max(ROOT.width, ...nodes.map((node) => node.x + node.width));
-  const height = Math.max(...nodes.map((node) => node.y + node.height), 1);
-  return { nodes, edges, width, height };
+  const lastRowBottom = Math.max(...prepared.map((item) => item.y + item.blockHeight), 0);
+  const height = Math.max(lastRowBottom, ...nodes.map((node) => node.y + node.height), 1);
+  return { nodes, edges, bands, width, height };
 }
 
 function bezier(x1: number, y1: number, x2: number, y2: number): string {
@@ -335,24 +426,36 @@ async function buildSvgString(layout: Layout): Promise<string> {
     `<g transform="translate(${pad} ${pad})">`,
   );
 
+  for (const band of layout.bands) {
+    parts.push(`<rect x="${band.x}" y="${band.y}" width="${band.width}" height="${band.height}" rx="18" fill="${band.accent}" fill-opacity="0.06" stroke="${band.accent}" stroke-opacity="0.12" stroke-width="1"/>`);
+  }
   for (const edge of layout.edges) {
-    parts.push(`<path d="${edge.path}" fill="none" stroke="${COLORS.primaryLine}" stroke-width="1.5"/>`);
+    const opacity = edge.kind === "branch" ? 0.65 : 0.95;
+    parts.push(`<path d="${edge.path}" fill="none" stroke="${edge.accent}" stroke-width="1.6" stroke-opacity="${opacity}" stroke-linecap="round"/>`);
   }
 
   for (const node of layout.nodes) {
     const isRoot = node.kind === "root";
     const isStage = node.kind === "stage";
-    const fill = isRoot ? COLORS.weak : isStage ? COLORS.surface : COLORS.surface2;
+    const fill = isRoot ? COLORS.primary : isStage ? COLORS.surface : COLORS.surface;
     parts.push(`<rect x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="12" fill="${fill}" stroke="${COLORS.primaryLine}" stroke-width="1"/>`);
+    if (!isRoot) {
+      // 左侧强调色条 + 阶段/步骤序号：同一阶段同色，导出后也能一眼看出流程分组。
+      if (isStage) parts.push(`<rect x="${node.x}" y="${node.y}" width="${node.width}" height="3" rx="1.5" fill="${node.accent}"/>`);
+      parts.push(`<rect x="${node.x}" y="${node.y + 10}" width="4" height="${node.height - 20}" rx="2" fill="${node.accent}"/>`);
+      const indexText = isStage ? String(node.stageIndex).padStart(2, "0") : `${node.stageIndex}.${node.stepIndex || 1}`;
+      parts.push(`<text x="${node.x + node.width - 10}" y="${node.y + 18}" font-size="10" font-weight="700" fill="${node.accent}" text-anchor="end" letter-spacing=".5">${indexText}</text>`);
+      if (isStage) parts.push(`<text x="${node.x + node.width - 10}" y="${node.y + node.height - 10}" font-size="10" fill="${COLORS.soft}" text-anchor="end">${node.childCount} 步</text>`);
+    }
 
     if (isRoot) {
-      parts.push(`<text x="${node.x + ROOT.pad}" y="${node.y + ROOT.pad + 9}" font-size="10" fill="${COLORS.soft}" letter-spacing="1">研究目标</text>`);
+      parts.push(`<text x="${node.x + ROOT.pad}" y="${node.y + ROOT.pad + 9}" font-size="10" fill="#CFE4FF" letter-spacing="1">研究目标</text>`);
       node.titleLines.forEach((line, index) => {
-        parts.push(`<text x="${node.x + ROOT.pad}" y="${node.y + ROOT.pad + 34 + index * ROOT.lineHeight}" font-size="${ROOT.titleSize}" font-weight="700" fill="${COLORS.ink}">${escapeXml(line)}</text>`);
+        parts.push(`<text x="${node.x + ROOT.pad}" y="${node.y + ROOT.pad + 34 + index * ROOT.lineHeight}" font-size="${ROOT.titleSize}" font-weight="700" fill="#FFFFFF">${escapeXml(line)}</text>`);
       });
       const detailTop = node.y + node.height - ROOT.pad - node.detailLines.length * 16;
       node.detailLines.forEach((line, index) => {
-        parts.push(`<text x="${node.x + ROOT.pad}" y="${detailTop + index * 16}" font-size="11" fill="${COLORS.soft}">${escapeXml(line)}</text>`);
+        parts.push(`<text x="${node.x + ROOT.pad}" y="${detailTop + index * 16}" font-size="11" fill="#DCE9FA">${escapeXml(line)}</text>`);
       });
       continue;
     }
@@ -437,7 +540,9 @@ export default function ExperimentWorkflowMap({ workflow, pending = false, onRet
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+    // 首次渲染是空态（workflow=null，视口 div 还没挂载）：必须等图表真正出现后再挂 observer，
+    // 否则 viewport 恒为 0，fitView 永远提前返回，用户看到的就是"适配画布没反应"。
+  }, [layout !== null]);
 
   const fitView = useCallback((next = layout) => {
     if (!next || !viewport.width || !viewport.height) return;
@@ -448,10 +553,12 @@ export default function ExperimentWorkflowMap({ workflow, pending = false, onRet
       1.1,
     );
     const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+    // 非全屏时 5 个阶段并排会被压到 60% 左右，字小到看不清；宁可默认 100%、左右拖动。
+    const readable = clamped < 0.85 ? 1 : clamped;
     setView({
-      scale: clamped,
-      x: (viewport.width - next.width * clamped) / 2,
-      y: (viewport.height - next.height * clamped) / 2,
+      scale: readable,
+      x: (viewport.width - next.width * readable) / 2,
+      y: (viewport.height - next.height * readable) / 2,
     });
   }, [layout, viewport.width, viewport.height]);
 
@@ -636,13 +743,34 @@ export default function ExperimentWorkflowMap({ workflow, pending = false, onRet
             transform={`translate(${view.x} ${view.y}) scale(${view.scale})`}
             style={reduceMotion ? undefined : { transition: "transform 160ms ease-out" }}
           >
-            {layout?.edges.map((edge) => (
-              <path key={edge.id} d={edge.path} className="ew-edge" />
+            {layout?.bands.map((band) => (
+              <rect
+                key={band.id}
+                className="ew-band"
+                x={band.x}
+                y={band.y}
+                width={band.width}
+                height={band.height}
+                rx={18}
+                fill={band.accent}
+                fillOpacity={0.06}
+                stroke={band.accent}
+                strokeOpacity={0.12}
+                strokeWidth={1}
+              />
             ))}
-            {layout?.nodes.map((node) => (
+            {layout?.edges.map((edge) => (
+              <path
+                key={edge.id}
+                d={edge.path}
+                className={`ew-edge ew-edge-path${edge.kind === "flow" ? " is-flow" : ""}`}
+                style={{ stroke: edge.accent, opacity: edge.kind === "branch" ? 0.65 : 0.95, animationDelay: `${edge.kind === "flow" ? 60 : 160}ms` }}
+              />
+            ))}
+            {layout?.nodes.map((node, index) => (
               <foreignObject key={node.id} x={node.x} y={node.y} width={node.width} height={node.height} className="ew-foreign">
                 {node.kind === "root" ? (
-                  <div className="ew-node ew-node-root">
+                  <div className="ew-node ew-node-root" style={{ animationDelay: `${index * 45}ms` }}>
                     <span className="ew-kicker">研究目标</span>
                     <div className="ew-root-title">
                       {node.titleLines.map((line, index) => <div key={index} className="ew-line">{line}</div>)}
@@ -654,8 +782,13 @@ export default function ExperimentWorkflowMap({ workflow, pending = false, onRet
                     )}
                   </div>
                 ) : node.kind === "stage" ? (
-                  <div className={`ew-node ew-node-stage${node.collapsed ? " is-collapsed" : ""}`}>
+                  <div
+                    className={`ew-node ew-node-stage${node.collapsed ? " is-collapsed" : ""}`}
+                    style={{ "--ew-accent": node.accent, background: `${node.accent}0a`, animationDelay: `${index * 45}ms` } as CSSProperties}
+                  >
                     <div className="ew-stage-head">
+                      <span className="ew-stage-watermark" aria-hidden="true">{String(node.stageIndex).padStart(2, "0")}</span>
+                      <span className="ew-stage-index">{String(node.stageIndex).padStart(2, "0")}</span>
                       <span className="ew-icon-slot">
                         <ExperimentIcon category={node.category} size={48} />
                       </span>
@@ -664,16 +797,8 @@ export default function ExperimentWorkflowMap({ workflow, pending = false, onRet
                           {node.titleLines.map((line, index) => <div key={index} className="ew-line">{line}</div>)}
                         </div>
                         {node.category && <span className="ew-stage-cat">{categoryById(node.category)?.short || ""}</span>}
+                        <span className="ew-stage-count">{node.childCount} 步</span>
                       </div>
-                      <button
-                        type="button"
-                        className="ew-toggle"
-                        aria-expanded={!node.collapsed}
-                        aria-label={node.collapsed ? `展开阶段：${node.titleLines.join("")}` : `折叠阶段：${node.titleLines.join("")}`}
-                        onClick={() => node.stageId && toggleStage(node.stageId)}
-                      >
-                        {node.collapsed ? "＋" : "−"}
-                      </button>
                     </div>
                     {node.detailLines.length > 0 && (
                       <div className="ew-stage-detail">
@@ -685,8 +810,12 @@ export default function ExperimentWorkflowMap({ workflow, pending = false, onRet
                     )}
                   </div>
                 ) : (
-                  <div className="ew-node ew-node-child">
+                  <div
+                    className="ew-node ew-node-child"
+                    style={{ "--ew-accent": node.accent, animationDelay: `${index * 45}ms` } as CSSProperties}
+                  >
                     <div className="ew-child-head">
+                      <span className="ew-step-index">{node.stageIndex}.{node.stepIndex}</span>
                       <span className="ew-icon-slot ew-icon-slot-sm">
                         <ExperimentIcon category={node.category} size={28} />
                       </span>
@@ -724,7 +853,7 @@ export default function ExperimentWorkflowMap({ workflow, pending = false, onRet
             </button>
           ))}
         </div>
-        <p className="ew-hint">图标位对应 <code>public/icons/experiments/&lt;分类&gt;.png</code>，放入图片后刷新即可显示；缺失时显示虚线占位框。</p>
+        <p className="ew-hint">画布可按住拖动 / 滚轮缩放；点「全屏」可一屏看完整流程。图标位对应 <code>public/icons/experiments/&lt;分类&gt;.png</code>，放入图片后刷新即可显示。</p>
       </div>
     </div>
   );

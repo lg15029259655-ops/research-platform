@@ -10,6 +10,7 @@ import ResearchNav from "@/components/ResearchNav";
 import JobProgress from "@/components/jobs/JobProgress";
 import ThinkingTrail from "@/components/reader/ThinkingTrail";
 import MindMapPanel, { type MindMapPayload } from "@/components/mindmap/MindMapPanel";
+import PaperExperimentsPanel, { type PaperExperimentsPayload } from "@/components/experiment-map/PaperExperimentsPanel";
 import { submitJob, watchJob, type JobProgress as JobProgressData } from "@/lib/jobs";
 import { updateWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
@@ -45,20 +46,26 @@ export default function ReadPage() {
   const [pdfWidth, setPdfWidth] = useState(38);
   const [activeHeading, setActiveHeading] = useState("");
   const [page, setPage] = useState(1);
-  const [readerTab, setReaderTab] = useState<"read" | "mindmap">("read");
+  const [readerTab, setReaderTab] = useState<"read" | "mindmap" | "experiments">("read");
   const [thinking, setThinking] = useState("");
   const [mindmap, setMindmap] = useState<MindMapPayload | null>(null);
   const [mindmapBusy, setMindmapBusy] = useState(false);
   const [mindmapStage, setMindmapStage] = useState("");
   const [mindmapStartedAt, setMindmapStartedAt] = useState<number | null>(null);
   const [mindmapProgress, setMindmapProgress] = useState<JobProgressData | null>(null);
+  const [experiments, setExperiments] = useState<PaperExperimentsPayload | null>(null);
+  const [experimentsBusy, setExperimentsBusy] = useState(false);
+  const [experimentsStage, setExperimentsStage] = useState("");
+  const [experimentsStartedAt, setExperimentsStartedAt] = useState<number | null>(null);
+  const [experimentsProgress, setExperimentsProgress] = useState<JobProgressData | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
   const modeTabs = tabGroup(["split", "pdf", "ai"] as const, mode, setMode);
-  const readerTabs = tabGroup(["read", "mindmap"] as const, readerTab, setReaderTab);
+  const readerTabs = tabGroup(["read", "mindmap", "experiments"] as const, readerTab, setReaderTab);
   // 任务请求的 in-flight 令牌。pending 与同页其它请求共用，不能拿来判重；
   // abort 会顺带取消服务端任务，切论文时旧结果不会串到新论文上。
   const mindmapAbort = useRef<AbortController | null>(null);
+  const experimentsAbort = useRef<AbortController | null>(null);
   const paperRequest = useRef(0);
   const chatRequest = useRef<AbortController | null>(null);
   const libraryUploadRef = useRef<HTMLInputElement>(null);
@@ -78,6 +85,9 @@ export default function ReadPage() {
     mindmapAbort.current?.abort();
     mindmapAbort.current = null;
     setMindmapBusy(false); setMindmapStartedAt(null); setMindmapProgress(null); setMindmapStage("");
+    experimentsAbort.current?.abort();
+    experimentsAbort.current = null;
+    setExperimentsBusy(false); setExperimentsStartedAt(null); setExperimentsProgress(null); setExperimentsStage("");
   }
 
   const loadList = useCallback(async () => {
@@ -102,7 +112,7 @@ export default function ReadPage() {
     updateWorkspace({core_paper_id: id}).catch(() => {});
     // 注意不要在这里清 thinking：act() 结束后也会调用 loadPaper 刷新消息，
     // 清掉的话「已完成、可展开」的思考轨迹会在回答刚结束时立刻消失。
-    setReaderTab("read"); setMindmap(null);
+    setReaderTab("read"); setMindmap(null); setExperiments(null);
     abortReaderJobs();
     const current = data.units?.find((unit) => unit.id === data.current_unit_id);
     const requestedPage = Number(new URLSearchParams(window.location.search).get("page"));
@@ -283,6 +293,40 @@ export default function ReadPage() {
     void loadMindmap();
   }
 
+  /** 实验导图 = 论文"实际做过"的实验链；与设计页"实验设计图"不同，源数据是方法与结果单元。 */
+  async function loadExperiments() {
+    if (!paper || paper.status !== "parsed") return;
+    if (experiments || experimentsAbort.current) return;
+    const controller = new AbortController();
+    experimentsAbort.current = controller;
+    setExperimentsBusy(true); setError("");
+    setExperimentsStage("正在读取方法与结果单元"); setExperimentsStartedAt(Date.now()); setExperimentsProgress(null);
+    try {
+      const job = await submitJob("paper_experiments", { paper_id: paper.id });
+      const snapshot = await watchJob(job.id, {
+        onStage: (_stage, label) => setExperimentsStage(label),
+        onProgress: (progress) => setExperimentsProgress(progress),
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (snapshot.status !== "done") throw new Error(snapshot.error?.message || "实验导图生成未完成，请重试");
+      const artifact = snapshot.result as { payload?: PaperExperimentsPayload } | null;
+      if (artifact?.payload) setExperiments(artifact.payload);
+      else throw new Error("实验导图没有返回可用结果");
+    } catch (e) {
+      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "实验导图生成失败");
+    } finally {
+      if (experimentsAbort.current === controller) {
+        experimentsAbort.current = null; setExperimentsBusy(false);
+        setExperimentsStartedAt(null); setExperimentsProgress(null); setExperimentsStage("");
+      }
+    }
+  }
+
+  function openExperiments() {
+    setReaderTab("experiments");
+    void loadExperiments();
+  }
+
   function jumpTo(unitId: string) {
     const unit = paper?.units?.find((item) => item.id === unitId);
     if (unit?.page_start) setPage(unit.page_start);
@@ -378,7 +422,7 @@ export default function ReadPage() {
     </aside>}
     <section className="workspace">
       <header className="readerTop"><div className="readerTitle"><button className="libraryToggle" onClick={() => setLibraryOpen((open) => !open)} aria-label={libraryOpen ? "收起论文库" : "展开论文库"} title={libraryOpen ? "收起论文库" : "展开论文库"}>{libraryOpen ? "☰" : "▤"}</button><div><span className="sectionLabel">AI DEEP READING</span><h1>{paper?.title || "选择或上传一篇论文"}</h1></div></div>{paper?.status === "parsed" && readerTab === "read" && <div className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">{(["split", "pdf", "ai"] as const).map((item) => <button key={item} {...modeTabs.item(item)}>{item === "split" ? "左右分屏" : item === "pdf" ? "仅 PDF" : "仅 AI"}</button>)}</div>}</header>
-      {paper?.status === "parsed" && <div className="readerSubnav" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>思维导图</button></div>}
+      {paper?.status === "parsed" && <div className="readerSubnav" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>}
       {error && <div className="alert" role="alert">{error}</div>}
       {parseStage && paper && <div className="parseNotice" role="status">{parseStage}</div>}
       {paper?.warning && <div className="alert" role="status">{paper.warning}</div>}
@@ -387,8 +431,12 @@ export default function ReadPage() {
       {!paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || (openingPaper ? "正在打开论文…" : "让阅读从原文开始")}</h2><p>上传本地 PDF 后，左侧查看原文，右侧按科学问题和证据链逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> :
       readerTab === "mindmap" ? <>
-        {mindmapBusy && <JobProgress title="正在生成思维导图" stageLabel={mindmapStage} progress={mindmapProgress} startedAt={mindmapStartedAt} onCancel={() => mindmapAbort.current?.abort()} />}
+        {mindmapBusy && <JobProgress title="正在生成行文导图" stageLabel={mindmapStage} progress={mindmapProgress} startedAt={mindmapStartedAt} onCancel={() => mindmapAbort.current?.abort()} />}
         <MindMapPanel mindmap={mindmap} pending={mindmapBusy} onJump={jumpTo} />
+      </> :
+      readerTab === "experiments" ? <>
+        {experimentsBusy && <JobProgress title="正在提取论文实验链" stageLabel={experimentsStage} progress={experimentsProgress} startedAt={experimentsStartedAt} onCancel={() => experimentsAbort.current?.abort()} />}
+        <PaperExperimentsPanel payload={experiments} pending={experimentsBusy} onJump={jumpTo} />
       </> :
       <div className="split">
         {mode !== "ai" && <div className="pdfColumn" data-pdf-mode={mode} style={{ "--pdf-w": `${pdfWidth}%` } as CSSProperties}><PdfPane paperId={paper.id} page={page} totalPages={paper.page_count} onPageChange={setPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" role="separator" aria-orientation="vertical" tabIndex={0} aria-valuenow={Math.round(pdfWidth)} aria-valuemin={30} aria-valuemax={70} aria-label="调整 PDF 与 AI 面板宽度" onKeyDown={(e) => { let next = pdfWidth; if (e.key === "ArrowLeft") next = Math.max(30, pdfWidth - 2); else if (e.key === "ArrowRight") next = Math.min(70, pdfWidth + 2); else if (e.key === "Home") next = 30; else if (e.key === "End") next = 70; else return; e.preventDefault(); setPdfWidth(next); window.localStorage.setItem("reader-pdf-width", String(next)); }} onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</div>}
