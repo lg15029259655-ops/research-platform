@@ -16,8 +16,8 @@ type Planet = { paper: SimilarPaper; position: [number, number, number]; color: 
    图例色点走 CSS 的那一份，改这里必须同步改 tokens.css，否则图例与球体又会不同色。 */
 const levels = [["高", "高度相似", "#0A5AC2"], ["中", "部分相似", "#2F80ED"], ["低", "差异较大", "#5B7089"]] as const;
 
-function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly }: {
-  planets: Planet[]; onSelect: (paper: SimilarPaper) => void; onHover: (paper: SimilarPaper | null) => void; playing: boolean; searchOnly: boolean;
+function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly, selectedId }: {
+  planets: Planet[]; onSelect: (paper: SimilarPaper) => void; onHover: (paper: SimilarPaper | null) => void; playing: boolean; searchOnly: boolean; selectedId: string | null;
 }) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [interacting, setInteracting] = useState(false);
@@ -38,7 +38,7 @@ function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly }: {
       {searchOnly ? <mesh rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[2.42, .012, 5, 160]} /><meshBasicMaterial color="#5B7089" transparent opacity={.56} /></mesh> : levels.map(([level, , color], i) => <mesh key={level} rotation={[Math.PI / 2 - [.06, .19, -.13][i], 0, 0]}><torusGeometry args={[[1.55, 2.42, 3.26][i], .012, 5, 160]} /><meshBasicMaterial color={color} transparent opacity={.56} /></mesh>)}
       {planets.map(({ paper, position, color, size }) => <group key={paper.openalex_id} position={position}>
         <mesh onPointerOver={(event) => { event.stopPropagation(); setHovered(paper.openalex_id); onHover(paper); document.body.style.cursor = "pointer"; }} onPointerOut={() => { setHovered(null); onHover(null); document.body.style.cursor = ""; }} onClick={(event) => { event.stopPropagation(); onSelect(paper); }}>
-          <sphereGeometry args={[size, 32, 24]} /><meshPhysicalMaterial color={color} metalness={.03} roughness={.56} clearcoat={.08} clearcoatRoughness={.8} />
+          <sphereGeometry args={[selectedId === paper.openalex_id ? size * 1.35 : size, 32, 24]} /><meshPhysicalMaterial color={color} metalness={.03} roughness={.56} clearcoat={.08} clearcoatRoughness={.8} transparent opacity={selectedId && selectedId !== paper.openalex_id ? .32 : 1} />
         </mesh>
         {hovered === paper.openalex_id && <mesh><sphereGeometry args={[size * 1.4, 18, 12]} /><meshBasicMaterial color={color} transparent opacity={.11} depthWrite={false} /></mesh>}
       </group>)}
@@ -47,11 +47,11 @@ function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly }: {
   </>;
 }
 
-function Planetarium({ planets, onSelect, onHover, playing, searchOnly }: {
-  planets: Planet[]; onSelect: (paper: SimilarPaper) => void; onHover: (paper: SimilarPaper | null) => void; playing: boolean; searchOnly: boolean;
+function Planetarium({ planets, onSelect, onHover, playing, searchOnly, selectedId }: {
+  planets: Planet[]; onSelect: (paper: SimilarPaper) => void; onHover: (paper: SimilarPaper | null) => void; playing: boolean; searchOnly: boolean; selectedId: string | null;
 }) {
   return <Canvas camera={{ position: [0, 4.2, 7.4], fov: 38 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: "high-performance" }} frameloop={playing ? "always" : "demand"}>
-    <PlanetaryScene planets={planets} onSelect={onSelect} onHover={onHover} playing={playing} searchOnly={searchOnly} />
+    <PlanetaryScene planets={planets} onSelect={onSelect} onHover={onHover} playing={playing} searchOnly={searchOnly} selectedId={selectedId} />
   </Canvas>;
 }
 
@@ -79,7 +79,7 @@ export default function NoveltySpace({ novelty, busy, onView, onAdd }: {
   }), [novelty.similar_papers, novelty.search_only]);
   return <div><div className="evidenceMapIntro"><strong>相似研究星系</strong><span>拖动旋转 · 滚轮缩放 · 点击行星查看文献</span></div>
     <div className="planetariumWrap" role="group" aria-label={novelty.search_only ? "相关文献三维展示，相似程度待核验" : "周围文献的三维相似性分层图"}>
-      <div className="planetariumCanvas"><Planetarium planets={planets} onSelect={setSelected} onHover={setHovered} playing={playing} searchOnly={!!novelty.search_only} /></div>
+      <div className="planetariumCanvas"><Planetarium planets={planets} onSelect={setSelected} onHover={setHovered} playing={playing} searchOnly={!!novelty.search_only} selectedId={selected?.openalex_id || null} /></div>
       <div className="planetariumHeading"><span>YOUR RESEARCH IDEA</span><strong title={novelty.query}>{novelty.query}</strong></div>
       <button className="planetariumMotion" type="button" onClick={() => setPlaying((value) => !value)}>{playing ? "暂停运动" : "继续运动"} {playing ? "Ⅱ" : "▶"}</button>
       {hovered && <div className="planetariumHover"><span>{novelty.search_only ? "相似程度待核验" : hovered.similarity_level === "高" ? "高度相似" : hovered.similarity_level === "中" ? "部分相似" : "差异较大"}</span><strong>{hovered.title}</strong><small>{hovered.year || "年份未知"} · 点击查看文献</small></div>}

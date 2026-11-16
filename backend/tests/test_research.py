@@ -25,6 +25,76 @@ def pdf_bytes(title: str) -> bytes:
     return data
 
 
+def test_preparing_comparison_does_not_block_event_loop(monkeypatch):
+    import asyncio
+    import threading
+    from app import research
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_fulltext(*_args, **_kwargs):
+        started.set()
+        assert release.wait(5)
+        raise ValueError("stop after preparation")
+
+    monkeypatch.setattr(research, "fulltext_papers", slow_fulltext)
+
+    async def exercise():
+        task = asyncio.create_task(research.execute_compare("owner", ["a", "b"]))
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(started.wait, 2), timeout=3)
+            # This timer could not fire while the event loop ran the blocking
+            # PDF preparation itself.
+            await asyncio.wait_for(asyncio.sleep(0.02), timeout=0.5)
+        finally:
+            release.set()
+        try:
+            await task
+        except ValueError as exc:
+            assert str(exc) == "stop after preparation"
+        else:
+            raise AssertionError("expected the preparation sentinel")
+
+    asyncio.run(exercise())
+
+
+def test_comparison_rejects_result_if_paper_is_reparsed_during_generation(monkeypatch, tmp_path):
+    from uuid import uuid4
+    from app.models import Paper, ResearchArtifact
+    from app.papers import process_paper
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+
+    async def fake_run(_name, context):
+        paper_id = context["papers"][0]["paper_id"]
+        with SessionLocal() as db:
+            paper = db.get(Paper, paper_id)
+            owner, path, token = paper.owner_id, paper.local_file_path, str(uuid4())
+            paper.status, paper.parse_token = "uploaded", token
+            db.commit()
+        process_paper(paper_id, owner, path, True, token)
+        return {"papers": [], "dimensions": [], "controversies": [{
+            "claim": "Old result", "paper_ids": [paper_id], "stance": "INSUFFICIENT",
+            "reason": "Old source", "evidence_refs": []}]}
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            ids = [client.post("/api/papers", files={"file":
+                (f"paper-{n}.pdf", pdf_bytes(f"Reparse Comparison {n}"), "application/pdf")}).json()["id"]
+                for n in (1, 2)]
+            result = client.post("/api/research/compare", json={"paper_ids": ids})
+            assert result.status_code == 409
+            assert "发生变化" in result.json()["detail"]
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(
+                    User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+                assert db.scalar(select(ResearchArtifact).where(
+                    ResearchArtifact.owner_id == owner, ResearchArtifact.kind == "paper_compare")) is None
+        finally:
+            clean(client)
+
+
 def test_comparison_rejects_pdf_without_readable_sections(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     document = pymupdf.open()
@@ -172,6 +242,95 @@ def test_design_repeated_click_reuses_version_and_history_is_scoped(monkeypatch)
             scoped = client.get("/api/research/design/versions", params={"goal": "First test idea"}).json()
             assert len(scoped) == 2
             assert {item["payload"]["goal"] for item in scoped} == {"First test idea"}
+        finally:
+            clean(client)
+
+
+def test_simultaneous_designs_do_not_overwrite_each_other(monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from app import research
+
+    async def exercise(owner):
+        entered = 0
+        both_started = asyncio.Event()
+
+        async def delayed_run(_name, context):
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), 3)
+            return research.quick_design(context["goal"], "")
+
+        monkeypatch.setattr(research, "run_task", delayed_run)
+        request = research.DesignRequest(goal="Concurrent design", regenerate=True)
+        return await asyncio.gather(research.execute_design(owner, request),
+                                    research.execute_design(owner, request), return_exceptions=True)
+
+    with TestClient(app) as client:
+        try:
+            client.get("/api/workspace")
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(
+                    User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+            results = asyncio.run(exercise(owner))
+            assert sum(isinstance(item, dict) for item in results) == 1
+            assert sum(isinstance(item, HTTPException) and item.status_code == 409 for item in results) == 1
+            versions = client.get("/api/research/design/versions").json()
+            assert len(versions) == 1 and versions[0]["number"] == 1
+            assert client.get("/api/workspace").json()["design_version_id"] == versions[0]["artifact_id"]
+        finally:
+            clean(client)
+
+
+def test_design_failure_rolls_back_workspace_and_artifact(monkeypatch):
+    from app import research
+    from app.models import DesignVersion
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+
+    async def fake_run(_name, context):
+        return research.quick_design(context["goal"], "")
+
+    def fail_version_flush(session, _flush_context, _instances):
+        if any(isinstance(item, DesignVersion) for item in session.new):
+            raise RuntimeError("simulated version failure after artifact flush")
+
+    monkeypatch.setattr(research, "run_task", fake_run)
+    event.listen(Session, "before_flush", fail_version_flush)
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            try:
+                before = client.get("/api/workspace").json()
+                assert client.post("/api/research/design", json={"goal": "Atomic save test"}).status_code == 500
+                after = client.get("/api/workspace").json()
+                assert after["design_version_id"] == before["design_version_id"]
+                assert after["design_idea"] == before["design_idea"]
+                assert client.get("/api/research/artifacts", params={"kind": "experiment_design"}).json() == []
+                assert client.get("/api/research/design/versions").json() == []
+            finally:
+                clean(client)
+    finally:
+        event.remove(Session, "before_flush", fail_version_flush)
+
+
+def test_restore_design_from_different_idea_updates_workspace(monkeypatch):
+    from app import research
+
+    async def fake_run(_name, context):
+        return research.quick_design(context["goal"], "")
+
+    monkeypatch.setattr(research, "run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            first = client.post("/api/research/design", json={"goal": "Original idea"}).json()
+            client.post("/api/research/design", json={"goal": "Different idea"})
+            response = client.post(f"/api/research/design/versions/{first['version']['version_id']}/restore")
+            assert response.status_code == 200
+            workspace = client.get("/api/workspace").json()
+            assert workspace["design_idea"] == "Original idea"
+            assert workspace["design_version_id"] == first["id"]
         finally:
             clean(client)
 

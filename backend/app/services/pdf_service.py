@@ -292,10 +292,12 @@ def render_page_png(path: str | Path, page_number: int, max_dimension: int = 150
         return page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False).tobytes("png")
 
 
-def extract_embedded_images(path: str | Path) -> list[dict]:
+def extract_embedded_images(path: str | Path, *, generation: str | None = None) -> list[dict]:
     """Extract raster assets; vector Figure panels remain available through page rendering."""
     source = Path(path)
     folder = source.parent / "images"
+    if generation:
+        folder = folder / generation
     results = []
     with fitz.open(source) as document:
         for page_number, page in enumerate(document, 1):
@@ -312,7 +314,7 @@ def extract_embedded_images(path: str | Path) -> list[dict]:
                 extension = image.get("ext", "bin").lower()
                 if extension not in {"png", "jpg", "jpeg", "jpx", "tiff", "bmp"}:
                     extension = "bin"
-                folder.mkdir(exist_ok=True)
+                folder.mkdir(parents=True, exist_ok=True)
                 target = folder / f"page-{page_number}-xref-{xref}.{extension}"
                 target.write_bytes(image["image"])
                 results.append({"page_number": page_number, "xref": xref, "path": str(target),

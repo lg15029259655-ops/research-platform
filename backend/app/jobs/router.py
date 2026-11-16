@@ -40,7 +40,7 @@ def job_status(job_id: str, owner: str = Owner):
 
 
 @router.delete("/{job_id}")
-def cancel_job(job_id: str, owner: str = Owner):
+async def cancel_job(job_id: str, owner: str = Owner):
     if not store.request_cancel(job_id, owner):
         raise HTTPException(404, "任务不存在或已结束")
     worker.cancel(job_id)

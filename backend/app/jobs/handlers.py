@@ -5,7 +5,7 @@
 
 from fastapi import HTTPException
 
-from ..research import DesignRequest, execute_compare, execute_design, execute_novelty, execute_xray
+from ..research import DesignRequest, execute_compare, execute_design, execute_design_insight, execute_novelty, execute_xray
 from ..services.research_ai import StructuredAIError
 from ..services.mindmap_service import execute_mindmap
 from ..services.experiment_service import execute_experiment
@@ -88,6 +88,14 @@ async def _run_experiment(ctx: worker.JobContext) -> dict:
         return await execute_experiment(ctx.owner, goal, constraints, emit=ctx.emit)
     except HTTPException as exc:
         raise worker.JobFailed(str(exc.detail), code="invalid_state") from exc
+async def _run_design_insight(ctx: worker.JobContext) -> dict:
+    try:
+        return await execute_design_insight(ctx.owner, str(ctx.params.get("artifact_id", "")), ctx.kind,
+                                            str(ctx.params.get("node_id", "")), emit=ctx.emit)
+    except HTTPException as exc:
+        raise worker.JobFailed(str(exc.detail), code="invalid_state") from exc
+    except StructuredAIError as exc:
+        raise worker.JobFailed(str(exc), code="ai_failed") from exc
 
 
 def register_all() -> None:
@@ -97,3 +105,5 @@ def register_all() -> None:
     worker.register("design", _run_design)
     worker.register("mindmap", _run_mindmap)
     worker.register("experiment", _run_experiment)
+    worker.register("design_review", _run_design_insight)
+    worker.register("design_outcomes", _run_design_insight)

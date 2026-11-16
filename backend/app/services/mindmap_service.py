@@ -39,8 +39,15 @@ def _slug(text: str, fallback: str) -> str:
 
 def parse_revision(paper: Paper, units: list[ReadingUnit]) -> str:
     """导图缓存版本：PDF 内容 + 单元结构变了才重算（改阅读进度不会触发）。"""
-    seed = f"{paper.sha256}|{len(units)}|{units[0].id if units else ''}"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256()
+    for value in [paper.sha256, paper.title or "", *(
+        json.dumps([unit.id, unit.position, unit.kind, unit.heading, unit.page_start,
+                    unit.page_end, unit.source_text], ensure_ascii=False)
+        for unit in units
+    )]:
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
 
 
 def _node(node_id: str, label: str, kind: str, units: list[ReadingUnit], *,
@@ -166,16 +173,20 @@ def _existing_artifact(owner: str, paper_id: str, revision: str) -> dict | None:
 
 async def execute_mindmap(owner: str, paper_id: str, *, emit=None, timeout: float | None = None) -> dict:
     from ..research import save_artifact  # 延迟导入，避免 research <-> mindmap 循环依赖
+    from ..papers import paper_source_matches
 
     with SessionLocal() as db:
         paper = db.scalar(select(Paper).where(Paper.id == paper_id, Paper.owner_id == owner))
         if paper is None:
             raise LookupError("论文不存在")
+        if paper.status != "parsed" or not paper_source_matches(paper):
+            raise ValueError("论文正在解析或 PDF 与阅读内容不一致，请先完成识别")
         units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id)
                            .order_by(ReadingUnit.position)).all()
         if not units:
             raise ValueError("这篇论文还没有可用的阅读单元，请先完成解析")
         revision = parse_revision(paper, units)
+        expected_revision = (paper.content_revision, paper.sha256)
         skeleton = build_skeleton(paper, units)
 
     cached = _existing_artifact(owner, paper_id, revision)
@@ -212,4 +223,5 @@ async def execute_mindmap(owner: str, paper_id: str, *, emit=None, timeout: floa
                    "finding": "发现", "limitation": "局限/讨论", "extension": "延伸"},
         "annotation_count": len(annotations),
     }
-    return save_artifact(owner, "paper_mindmap", [paper_id], payload)
+    return save_artifact(owner, "paper_mindmap", [paper_id], payload,
+                         expected_revisions={paper_id: expected_revision})

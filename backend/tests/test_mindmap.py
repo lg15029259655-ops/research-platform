@@ -78,6 +78,15 @@ def test_parse_revision_changes_with_structure():
     assert mindmap_service.parse_revision(paper, base) == mindmap_service.parse_revision(paper, base)
     longer = base + [unit("p1:1", "METHODS", "Methods")]
     assert mindmap_service.parse_revision(paper, base) != mindmap_service.parse_revision(paper, longer)
+    before = mindmap_service.parse_revision(paper, base)
+    base[0].source_text = "newly recognized content"
+    assert mindmap_service.parse_revision(paper, base) != before
+    before = mindmap_service.parse_revision(paper, base)
+    base[0].heading = "Updated abstract heading"
+    assert mindmap_service.parse_revision(paper, base) != before
+    before = mindmap_service.parse_revision(paper, base)
+    paper.title = "Updated paper title"
+    assert mindmap_service.parse_revision(paper, base) != before
 
 
 def _wait(client, job_id: str, timeout: float = 6.0) -> dict:
@@ -140,3 +149,32 @@ def test_mindmap_falls_back_to_skeleton_when_ai_fails(client, monkeypatch):
     assert done["status"] == "done"
     assert done["result"]["payload"]["annotation_count"] == 0
     assert done["result"]["payload"]["root"]["children"], "AI 失败时仍应返回确定性骨架"
+
+
+def test_mindmap_result_is_rejected_if_paper_changes_during_generation(client, monkeypatch):
+    from uuid import uuid4
+    from sqlalchemy import select
+    from app.db import SessionLocal
+    from app.models import ResearchArtifact
+    from app.papers import process_paper
+
+    paper = client.post("/api/papers", files={"file":
+        ("paper.pdf", make_pdf("Changing Study"), "application/pdf")}).json()
+
+    async def reparse_while_generating(_name, _context, **_kwargs):
+        with SessionLocal() as db:
+            record = db.get(Paper, paper["id"])
+            owner, path, token = record.owner_id, record.local_file_path, str(uuid4())
+            record.status, record.parse_token = "uploaded", token
+            db.commit()
+        process_paper(paper["id"], owner, path, True, token)
+        return {"annotations": []}
+
+    monkeypatch.setattr("app.services.research_ai.run_task_events", reparse_while_generating)
+    job = client.post("/api/jobs", json={"kind": "mindmap", "params": {"paper_id": paper["id"]}}).json()
+    result = _wait(client, job["id"])
+    assert result["status"] == "failed"
+    assert "发生变化" in result["error"]["message"]
+    with SessionLocal() as db:
+        assert db.scalar(select(ResearchArtifact).where(ResearchArtifact.kind == "paper_mindmap",
+            ResearchArtifact.paper_ids_json == f'["{paper["id"]}"]')) is None

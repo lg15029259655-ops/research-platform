@@ -1,11 +1,15 @@
 // An empty value uses the site's own origin, allowing Nginx to route /api to FastAPI.
 export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) { super(message); this.name = "ApiError"; }
+}
+
 export async function apiJson<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, { credentials: "include", ...options });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(describeError(body, response.status));
+    throw new ApiError(describeError(body, response.status), response.status);
   }
   return response.json() as Promise<T>;
 }

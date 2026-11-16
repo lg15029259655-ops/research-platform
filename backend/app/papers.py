@@ -1,10 +1,11 @@
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from uuid import uuid4
 import shutil
 import logging
+import threading
 from difflib import SequenceMatcher
 import pymupdf
 
@@ -12,7 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from .db import SessionLocal
@@ -31,6 +32,12 @@ RULES = Path(__file__).parent / "prompts" / "reading_rules.md"
 logger = logging.getLogger(__name__)
 ACTIONS = {"START", "NEXT", "NAVIGATE", "FIGURE", "WHY_DESIGN", "EVIDENCE", "QUESTION"}
 Owner = Depends(current_owner)
+PARSE_STAGES = {"uploaded", "reading", "structure", "figures", "manifest", "images"}
+PARSE_LEASE = timedelta(minutes=30)
+
+
+class ParseSuperseded(Exception):
+    """A newer attempt owns this paper; this attempt must not write results."""
 
 
 async def _stream_model_events(messages, *, vision: bool = False):
@@ -65,6 +72,15 @@ def pdf_is_readable(path: str) -> bool:
         return False
 
 
+def paper_source_matches(paper: Paper) -> bool:
+    """Whether saved reading units can be associated with the current PDF."""
+    if paper.source_sha256:
+        return paper.source_sha256 == paper.sha256
+    # Older records may predate the source fingerprint. A failed replacement
+    # cannot establish which file produced those units, so require a reparse.
+    return not (paper.parse_warning or "").startswith("重新解析失败")
+
+
 def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
     data = {"id": paper.id, "title": paper.title, "original_filename": paper.original_filename,
             "current_unit_id": paper.current_unit_id, "status": paper.status,
@@ -77,14 +93,16 @@ def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
             "abstract": paper.abstract, "citation_count": paper.citation_count,
             "oa_pdf_url": paper.oa_pdf_url, "domain": paper.domain,
             "study_type": paper.study_type, "template": paper.template,
-            "full_text_available": paper.status == "parsed"}
+            "full_text_available": paper.status == "parsed" and paper_source_matches(paper),
+            "source_matches": paper_source_matches(paper)}
     if units is not None:
         try:
             with pymupdf.open(paper.local_file_path) as document:
                 data["page_count"] = document.page_count if not document.needs_pass else None
         except Exception:
             data["page_count"] = None
-        data["file_available"] = data["page_count"] is not None and data["page_count"] > 0
+        data["file_available"] = (data["page_count"] is not None and data["page_count"] > 0
+                                  and paper_source_matches(paper))
         data["units"] = [{"id": unit.id, "position": unit.position, "kind": unit.kind,
                           "heading": unit.heading, "page_start": unit.page_start,
                           "page_end": unit.page_end,
@@ -100,22 +118,51 @@ def paper_data(paper: Paper, units: list[ReadingUnit] | None = None) -> dict:
     return data
 
 
-def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool = False) -> None:
+def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool = False,
+                  token: str | None = None) -> None:
     def set_stage(stage: str) -> None:
         with SessionLocal() as db:
-            paper = owned_paper(db, paper_id, owner)
-            paper.status = stage
+            claimed = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.parse_token == token,
+            ).values(status=stage, parse_heartbeat=datetime.now(timezone.utc)))
+            if claimed.rowcount != 1:
+                raise ParseSuperseded()
             db.commit()
 
+    stop_heartbeat = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop_heartbeat.wait(15):
+            try:
+                with SessionLocal() as db:
+                    result = db.execute(update(Paper).where(
+                        Paper.id == paper_id, Paper.owner_id == owner,
+                        Paper.parse_token == token, Paper.status.in_(PARSE_STAGES),
+                    ).values(parse_heartbeat=datetime.now(timezone.utc)))
+                    db.commit()
+                    if result.rowcount != 1:
+                        return
+            except Exception:
+                logger.exception("Could not refresh PDF parse heartbeat")
+
+    heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+    heartbeat_thread.start()
     try:
         parsed = parse_pdf(path, on_stage=set_stage)
         set_stage("images")
         try:
-            embedded_images = extract_embedded_images(path)
+            embedded_images = extract_embedded_images(path, generation=token)
         except Exception as exc:
             logger.warning("Embedded image extraction failed: %s", type(exc).__name__)
             embedded_images = []
         with SessionLocal() as db:
+            # Acquire the write lock and fence superseded attempts in the same
+            # transaction as replacement of the reading units and artifacts.
+            claim = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.parse_token == token,
+            ).values(parse_heartbeat=datetime.now(timezone.utc)))
+            if claim.rowcount != 1:
+                raise ParseSuperseded()
             paper = owned_paper(db, paper_id, owner)
             # Existing local papers also have a previously identified title;
             # check replacement PDFs against it before users reuse old notes.
@@ -153,37 +200,56 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
                                   page_number=item["page_number"], xref=item["xref"],
                                   local_file_path=item["path"], width=item["width"], height=item["height"]))
             paper.status = "parsed"
+            paper.source_sha256 = paper.sha256
+            paper.content_revision = str(uuid4())
+            paper.parse_token = None
+            paper.parse_heartbeat = None
             db.commit()
-        from .jobs.precompute import schedule_for_paper
-        schedule_for_paper(paper_id, owner)
+    except ParseSuperseded:
+        logger.info("PDF parse superseded for paper %s", paper_id)
+        return
     except Exception as exc:
         logger.warning("PDF parse failed: %s", type(exc).__name__)
-        if replace_existing:
-            with SessionLocal() as db:
-                paper = owned_paper(db, paper_id, owner)
-                paper.status = "parsed"
-                paper.parse_warning = "重新解析失败，已保留上一次阅读记录。请检查 PDF 文件。"
-                db.commit()
-        else:
-            set_stage("failed")
+        with SessionLocal() as db:
+            values = {"status": "parsed" if replace_existing else "failed",
+                      "parse_token": None, "parse_heartbeat": None}
+            if replace_existing:
+                values["parse_warning"] = "重新解析失败，已保留上一次阅读记录。请检查 PDF 文件。"
+            db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.parse_token == token,
+            ).values(**values))
+            db.commit()
+        return
+    finally:
+        stop_heartbeat.set()
+
+    # Precomputation is optional and happens after the parsed data commits.
+    # Its failure must never turn a successfully parsed paper into a failure.
+    try:
+        from .jobs.precompute import schedule_for_paper
+        schedule_for_paper(paper_id, owner)
+    except Exception:
+        logger.exception("Post-parse precomputation scheduling failed for paper %s", paper_id)
 
 
 @router.post("")
 async def upload_paper(background_tasks: BackgroundTasks, file: UploadFile = File(...),
                        deferred: bool = False, owner: str = Owner):
     paper_id = str(uuid4())
+    token = str(uuid4())
     original, path, size, digest = await save_pdf(file, owner, paper_id)
     with SessionLocal() as db:
         paper = Paper(id=paper_id, owner_id=owner, title="正在解析论文",
                       original_filename=original, stored_filename=Path(path).name,
                       local_file_path=path, mime_type="application/pdf", file_size_bytes=size,
-                      sha256=digest, status="uploaded")
+                      sha256=digest, status="uploaded", parse_token=token,
+                      parse_heartbeat=datetime.now(timezone.utc))
         db.add(paper)
         db.commit()
     if deferred:
-        background_tasks.add_task(process_paper, paper_id, owner, path)
+        background_tasks.add_task(process_paper, paper_id, owner, path, False, token)
         return {"id": paper_id, "status": "uploaded"}
-    await run_in_threadpool(process_paper, paper_id, owner, path)
+    await run_in_threadpool(process_paper, paper_id, owner, path, False, token)
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         if paper.status == "failed":
@@ -202,38 +268,50 @@ async def attach_pdf(paper_id: str, background_tasks: BackgroundTasks,
                              (paper.parse_warning or "").startswith("重新解析失败")))
         if paper.status not in {"metadata_only", "failed"} and not replace_existing:
             raise HTTPException(409, "这篇论文已有 PDF")
+        previous_status, previous_path = paper.status, paper.local_file_path
+        previous_source = paper.source_sha256 or (
+            None if (paper.parse_warning or "").startswith("重新解析失败") else paper.sha256 or None)
     original, path, size, digest = await save_pdf(file, owner, paper_id)
+    token = str(uuid4())
     with SessionLocal() as db:
-        paper = owned_paper(db, paper_id, owner)
-        old_path = paper.local_file_path
-        if not replace_existing:
-            db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
-            db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
-            paper.current_unit_id = None
-        paper.original_filename = original
-        paper.stored_filename = Path(path).name
-        paper.local_file_path = path
-        paper.mime_type = "application/pdf"
-        paper.file_size_bytes = size
-        paper.sha256 = digest
-        paper.status = "uploaded"
+        claimed = db.execute(update(Paper).where(
+            Paper.id == paper_id, Paper.owner_id == owner,
+            Paper.status == previous_status, Paper.local_file_path == previous_path,
+        ).values(original_filename=original, stored_filename=Path(path).name,
+                 local_file_path=path, mime_type="application/pdf",
+                 file_size_bytes=size, sha256=digest, status="uploaded", parse_token=token,
+                 parse_heartbeat=datetime.now(timezone.utc), source_sha256=previous_source))
+        if claimed.rowcount != 1:
+            db.rollback()
+            Path(path).unlink(missing_ok=True)  # Only this request's newly saved file.
+            raise HTTPException(409, "论文状态已变化，请刷新后重试")
+        # Legacy failed records can still contain reading units. Do not delete
+        # them until the replacement has been parsed and can be committed.
+        replace_existing = replace_existing or db.scalar(
+            select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id).limit(1)
+        ) is not None
         db.commit()
-    if not replace_existing and old_path and old_path != path and Path(old_path).resolve().parent == (file_service.upload_dir() / owner / paper_id).resolve():
-        Path(old_path).unlink(missing_ok=True)
-    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing)
+    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing, token)
     return {"id": paper_id, "status": "uploaded"}
 
 
 @router.post("/{paper_id}/reparse")
 def reparse_paper(paper_id: str, background_tasks: BackgroundTasks, owner: str = Owner):
+    token = str(uuid4())
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed" or not paper.local_file_path or not Path(paper.local_file_path).is_file():
             raise HTTPException(422, "当前 PDF 无法重新解析")
         path = paper.local_file_path
-        paper.status = "uploaded"
+        claimed = db.execute(update(Paper).where(
+            Paper.id == paper_id, Paper.owner_id == owner,
+            Paper.status == "parsed", Paper.local_file_path == path,
+        ).values(status="uploaded", parse_token=token, parse_heartbeat=datetime.now(timezone.utc)))
+        if claimed.rowcount != 1:
+            db.rollback()
+            raise HTTPException(409, "论文状态已变化，请刷新后重试")
         db.commit()
-    background_tasks.add_task(process_paper, paper_id, owner, path, True)
+    background_tasks.add_task(process_paper, paper_id, owner, path, True, token)
     return {"id": paper_id, "status": "uploaded"}
 
 
@@ -259,10 +337,33 @@ def get_paper(paper_id: str, owner: str = Owner):
 
 
 @router.get("/{paper_id}/status")
-def paper_status(paper_id: str, owner: str = Owner):
+def paper_status(paper_id: str, background_tasks: BackgroundTasks, owner: str = Owner):
     """Lightweight parse progress; do not reopen PDFs or load history per poll."""
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
+        cutoff = datetime.now(timezone.utc) - PARSE_LEASE
+        # Old records without a token are deliberately not taken over: an
+        # older server may still be working on them without a heartbeat.
+        heartbeat_at = paper.parse_heartbeat
+        if heartbeat_at and heartbeat_at.tzinfo is None:
+            heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+        if (paper.status in PARSE_STAGES and paper.parse_token and heartbeat_at
+                and heartbeat_at < cutoff):
+            token = str(uuid4())
+            previous_token = paper.parse_token
+            claim = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner,
+                Paper.status.in_(PARSE_STAGES), Paper.parse_token == previous_token,
+                Paper.parse_heartbeat < cutoff,
+            ).values(status="uploaded", parse_token=token, parse_heartbeat=datetime.now(timezone.utc))
+                .execution_options(synchronize_session=False))
+            if claim.rowcount == 1:
+                path = paper.local_file_path
+                replace_existing = db.scalar(select(ReadingUnit.id).where(
+                    ReadingUnit.paper_id == paper_id).limit(1)) is not None
+                db.commit()
+                background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing, token)
+                return {"id": paper_id, "status": "uploaded", "warning": paper.parse_warning}
         return {"id": paper.id, "status": paper.status, "warning": paper.parse_warning}
 
 
@@ -272,6 +373,8 @@ def get_file(paper_id: str, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
+        if not paper_source_matches(paper):
+            raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         path = paper.local_file_path
         if not path or not Path(path).is_file():
             raise HTTPException(404, "PDF 文件不存在，请重新上传")
@@ -284,6 +387,8 @@ def page_thumbnail(paper_id: str, page_number: int, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
+        if not paper_source_matches(paper):
+            raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         path = paper.local_file_path
     try:
         image = render_page_png(path, page_number, max_dimension=760)
@@ -299,6 +404,8 @@ def search_paper(paper_id: str, q: str, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
+        if not paper_source_matches(paper):
+            raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         path = paper.local_file_path
     query = q.strip().lower()
     if len(query) < 2:
@@ -424,6 +531,8 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(409, "论文正在解析或尚未解析完成，请稍后再试")
+        if not paper_source_matches(paper):
+            raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         try:
             model_config(False)
         except AIConfigurationError as exc:
@@ -435,6 +544,7 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
         if request.action == "FIGURE" and unit.kind != "FIGURE":
             raise HTTPException(422, "未识别到 Figure 图注，无法可靠讲解图像")
         path = paper.local_file_path
+        content_revision, source_hash = paper.content_revision, paper.sha256
         history = []
         if unit.kind != "TITLE" and request.action in {"QUESTION", "FIGURE", "WHY_DESIGN", "EVIDENCE"}:
             history = db.scalars(select(Message).where(
@@ -527,15 +637,23 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
             if not answer.strip():
                 raise RuntimeError("模型没有返回可用文字")
             with SessionLocal() as db:
-                paper = owned_paper(db, paper_id, owner)
+                values = {"last_read_at": datetime.now(timezone.utc)}
+                if request.action in {"START", "NEXT", "NAVIGATE"}:
+                    values["current_unit_id"] = selected_id
+                claim = db.execute(update(Paper).where(
+                    Paper.id == paper_id, Paper.owner_id == owner, Paper.status == "parsed",
+                    Paper.content_revision == content_revision, Paper.sha256 == source_hash,
+                ).values(**values))
+                if claim.rowcount != 1:
+                    db.rollback()
+                    yield frame({"type": "reset"})
+                    yield frame({"type": "error", "message": "论文内容在讲解过程中发生变化，请重新打开论文后再试"})
+                    return
                 db.add(Message(id=str(uuid4()), paper_id=paper_id, role="user", content=user_visible_request,
                                action=request.action, reading_unit_id=selected_id))
                 db.add(Message(id=str(uuid4()), paper_id=paper_id, role="assistant", content=answer,
                                action=request.action, reading_unit_id=selected_id,
                                visual_verified=verified))
-                if request.action in {"START", "NEXT", "NAVIGATE"}:
-                    paper.current_unit_id = selected_id
-                paper.last_read_at = datetime.now(timezone.utc)
                 db.commit()
             yield frame({'type': 'done', 'current_unit_id': selected_id if request.action in {'START', 'NEXT', 'NAVIGATE'} else None, 'visual_verified': verified})
         except Exception as exc:

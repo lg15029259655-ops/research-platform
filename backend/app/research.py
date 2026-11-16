@@ -10,14 +10,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .auth import current_owner
 from .db import SessionLocal
-from .models import Paper, PaperImage, ReadingUnit, ResearchArtifact, DesignVersion, DiscoveryCache
+from .models import Paper, ReadingUnit, ResearchArtifact, ResearchWorkspace, DesignVersion, DiscoveryCache
 from .workspace import get_or_create
-from .papers import owned_paper, paper_data, pdf_is_readable, process_paper
+from .papers import owned_paper, paper_data, paper_source_matches, pdf_is_readable, process_paper
 from .services.openalex_service import (
     DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, lineage_for_work, search_works,
 )
@@ -135,11 +136,21 @@ def route_research(title: str, abstract: str = "", field: str = "") -> dict[str,
     return {"domain": domain, "study_type": study_type, "template": template}
 
 
-def save_artifact(owner: str, kind: str, paper_ids: list[str], payload: dict) -> dict:
+def save_artifact(owner: str, kind: str, paper_ids: list[str], payload: dict, *,
+                  expected_revisions: dict[str, tuple[str | None, str]] | None = None) -> dict:
     artifact = ResearchArtifact(id=str(uuid4()), owner_id=owner, kind=kind,
                                 paper_ids_json=json.dumps(paper_ids),
                                 payload_json=json.dumps(payload, ensure_ascii=False))
     with SessionLocal() as db:
+        # Claim a SQLite write lock before checking revisions and keep it until
+        # the artifact commits, so a reparse cannot slip between check/save.
+        for paper_id, (revision, source_hash) in (expected_revisions or {}).items():
+            result = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.status == "parsed",
+                Paper.content_revision == revision, Paper.sha256 == source_hash,
+            ).values(updated_at=Paper.updated_at))
+            if result.rowcount != 1:
+                raise HTTPException(409, "论文内容在生成过程中发生变化，请重新生成结果")
         db.add(artifact)
         workspace = get_or_create(db, owner)
         if kind == "paper_compare":
@@ -266,28 +277,36 @@ async def import_open_pdf(request: ImportRequest, background_tasks: BackgroundTa
         return paper_data_item
     if paper_data_item["status"] not in {"metadata_only", "failed"}:
         raise HTTPException(409, "PDF 已在处理中，请稍后打开论文库")
+    with SessionLocal() as db:
+        paper = owned_paper(db, paper_id, owner)
+        previous_status, previous_path = paper.status, paper.local_file_path
+        previous_source = paper.source_sha256 or (
+            None if (paper.parse_warning or "").startswith("重新解析失败") else paper.sha256 or None)
+        if previous_status not in {"metadata_only", "failed"}:
+            raise HTTPException(409, "PDF 已在处理中，请稍后打开论文库")
     try:
         path, size, digest = await fetch_pdf(work["oa_pdf_url"], owner, paper_id)
     except RemotePDFError as exc:
         logger.warning("Open PDF retrieval failed: %s", type(exc).__name__)
         raise HTTPException(422, str(exc)) from exc
+    token = str(uuid4())
     with SessionLocal() as db:
-        paper = owned_paper(db, paper_id, owner)
-        old_path = paper.local_file_path
-        db.query(ReadingUnit).filter(ReadingUnit.paper_id == paper_id).delete()
-        db.query(PaperImage).filter(PaperImage.paper_id == paper_id).delete()
-        paper.current_unit_id = None
-        paper.original_filename = f"{request.openalex_id}.pdf"
-        paper.stored_filename = Path(path).name
-        paper.local_file_path = path
-        paper.mime_type = "application/pdf"
-        paper.file_size_bytes = size
-        paper.sha256 = digest
-        paper.status = "uploaded"
+        claimed = db.execute(update(Paper).where(
+            Paper.id == paper_id, Paper.owner_id == owner,
+            Paper.status == previous_status, Paper.local_file_path == previous_path,
+        ).values(original_filename=f"{request.openalex_id}.pdf", stored_filename=Path(path).name,
+                 local_file_path=path, mime_type="application/pdf",
+                 file_size_bytes=size, sha256=digest, status="uploaded", parse_token=token,
+                 parse_heartbeat=datetime.now(timezone.utc), source_sha256=previous_source))
+        if claimed.rowcount != 1:
+            db.rollback()
+            Path(path).unlink(missing_ok=True)
+            raise HTTPException(409, "论文状态已变化，请刷新后重试")
+        replace_existing = db.scalar(
+            select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id).limit(1)
+        ) is not None
         db.commit()
-    if old_path and old_path != path and Path(old_path).resolve().parent == Path(path).resolve().parent:
-        Path(old_path).unlink(missing_ok=True)
-    background_tasks.add_task(process_paper, paper_id, owner, path)
+    background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing, token)
     return {"id": paper_id, "status": "uploaded"}
 
 
@@ -305,6 +324,8 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
             paper_id = paper.id
             if paper.status != "parsed":
                 raise HTTPException(422, "这项分析需要全文，请先上传对应 PDF")
+            if not paper_source_matches(paper):
+                raise HTTPException(422, "PDF 与保存的阅读内容不一致，请先重新识别或上传原文件")
             if not pdf_is_readable(paper.local_file_path):
                 label = paper.original_filename.strip() or paper.title.strip() or "这篇论文"
                 raise HTTPException(422, f"《{label}》的 PDF 文件不可用，请先重新上传并核对原文")
@@ -355,14 +376,16 @@ def fulltext_papers(owner: str, ids: list[str], *, compact: bool = False) -> lis
                         "text": text[offset:offset + 1100]})
             papers.append({"paper_id": paper.id, "title": paper.title,
                            "domain": paper.domain or route_research(paper.title)["domain"],
-                           "evidence_scope": "PDF提取的全文片段", "sections": excerpts})
+                           "evidence_scope": "PDF提取的全文片段", "sections": excerpts,
+                           "_revision": (paper.content_revision, paper.sha256)})
     return papers
 
 
 async def execute_xray(owner: str, paper_id: str, *, emit=None, timeout: float | None = None) -> dict:
     if emit is not None:
         await emit("stage", {"stage": "reading", "label": "读取论文单元"})
-    context = fulltext_papers(owner, [paper_id])[0]
+    context = (await run_in_threadpool(fulltext_papers, owner, [paper_id]))[0]
+    expected = {paper_id: context.pop("_revision")}
     with SessionLocal() as db:
         existing = db.scalar(select(ResearchArtifact).where(
             ResearchArtifact.owner_id == owner,
@@ -382,7 +405,7 @@ async def execute_xray(owner: str, paper_id: str, *, emit=None, timeout: float |
         ids = set(db.scalars(select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id)).all())
     for stage in payload["stages"]:
         stage["unit_ids"] = [item for item in stage["unit_ids"] if item in ids]
-    return save_artifact(owner, "paper_summary", [paper_id], payload)
+    return save_artifact(owner, "paper_summary", [paper_id], payload, expected_revisions=expected)
 
 
 @router.post("/xray/{paper_id}")
@@ -399,7 +422,8 @@ async def paper_xray(paper_id: str, owner: str = Owner):
 async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeout: float | None = None) -> dict:
     if emit is not None:
         await emit("stage", {"stage": "preparing", "label": "读取论文片段"})
-    papers = fulltext_papers(owner, paper_ids, compact=True)
+    papers = await run_in_threadpool(fulltext_papers, owner, paper_ids, compact=True)
+    expected = {paper["paper_id"]: paper.pop("_revision") for paper in papers}
     if emit is not None:
         await emit("stage", {"stage": "comparing", "label": "比较研究问题与结果"})
     payload = await _run_task("paper_compare", {"papers": papers}, emit, timeout=timeout)
@@ -505,7 +529,7 @@ async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeou
             claim["stance"] = "INSUFFICIENT"
             claim["reason"] += " 当前没有来自至少两篇论文的可核对结果原文，不能列为结果不一致。"
         claim["evidence_refs"] = (direct_refs if claim["stance"] != "INSUFFICIENT" else verified_refs)[:6]
-    return save_artifact(owner, "paper_compare", paper_ids, payload)
+    return save_artifact(owner, "paper_compare", paper_ids, payload, expected_revisions=expected)
 
 
 @router.post("/compare")
@@ -567,7 +591,8 @@ async def execute_novelty(owner: str, query: str, *, emit=None, timeout: float |
     by_id = {item["openalex_id"]: item for item in works}
     with SessionLocal() as db:
         owned_pdf = {paper.openalex_id for paper in db.scalars(select(Paper).where(
-            Paper.owner_id == owner, Paper.status == "parsed", Paper.openalex_id.is_not(None))).all()}
+            Paper.owner_id == owner, Paper.status == "parsed", Paper.openalex_id.is_not(None))).all()
+            if paper_source_matches(paper)}
     for item in payload["similar_papers"]:
         source = by_id[item["openalex_id"]]
         item["abstract"] = source["abstract"][:1000]
@@ -614,8 +639,10 @@ def quick_design(goal: str, constraints: str) -> dict:
 
 
 def design_changes(before: dict | None, after: dict) -> dict:
-    old = {item["id"]: item for item in (before or {}).get("nodes", []) if "id" in item}
-    new = {item["id"]: item for item in after["nodes"]}
+    # Legacy versions did not store step arrays; an absent list and an empty
+    # one mean the same thing and must not appear as a user's edit.
+    old = {item["id"]: {**item, "steps": item.get("steps", [])} for item in (before or {}).get("nodes", []) if "id" in item}
+    new = {item["id"]: {**item, "steps": item.get("steps", [])} for item in after["nodes"]}
     return {"added": [new[key]["label"] for key in new.keys() - old.keys()],
             "removed": [old[key]["label"] for key in old.keys() - new.keys()],
             "modified": [new[key]["label"] for key in new.keys() & old.keys() if new[key] != old[key]]}
@@ -655,6 +682,22 @@ def version_data(version: DesignVersion, artifact: ResearchArtifact) -> dict:
             "payload": json.loads(artifact.payload_json), "created_at": version.created_at.isoformat()}
 
 
+def preserve_step_illustrations(previous: dict, revised: dict) -> None:
+    """Keep manual icons only when a step is unambiguously the same named step."""
+    old_nodes = {node.get("id"): node for node in previous.get("nodes", [])}
+    for node in revised.get("nodes", []):
+        old_steps = old_nodes.get(node.get("id"), {}).get("steps") or []
+        new_steps = node.get("steps") or []
+        for step in new_steps:
+            name = step.get("name", "").strip()
+            if not name:
+                continue
+            before = [item for item in old_steps if item.get("name", "").strip() == name]
+            after = [item for item in new_steps if item.get("name", "").strip() == name]
+            if len(before) == len(after) == 1 and before[0].get("icon_category"):
+                step["icon_category"] = before[0]["icon_category"]
+
+
 async def execute_design(owner: str, request: DesignRequest, *, emit=None,
                          timeout: float | None = None, fallback: bool = True) -> dict:
     actions = {"generate": "生成研究设计", "node": "局部优化节点", "causality": "加强因果识别", "cost": "降低成本",
@@ -680,14 +723,18 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
     research_context = {}
     with SessionLocal() as db:
         workspace = get_or_create(db, owner)
+        workspace_id = workspace.id
+        initial_idea = workspace.design_idea
+        initial_design_id = workspace.design_version_id
         if workspace.design_idea.strip() == request.goal.strip():
             selected = json.loads(workspace.selected_paper_ids_json)
             papers = db.scalars(select(Paper).where(Paper.owner_id == owner, Paper.id.in_(selected))).all() if selected else []
             research_context = {
                 "research_gap": workspace.research_gap[:1500],
                 "synthesis_context": json.loads(workspace.gap_context_json),
+                "synthesis_id": workspace.synthesis_id,
                 "selected_papers": [{"paper_id": item.id, "title": item.title,
-                    "full_text_available": item.status == "parsed"} for item in papers],
+                    "full_text_available": item.status == "parsed" and paper_source_matches(item)} for item in papers],
                 "evidence_note": "此处是前序综合输出和论文状态，不等于已独立核验的直接实验事实。",
             }
     if emit is not None:
@@ -711,33 +758,130 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
     # 用户看到的是「生成设计后新颖性扫描结果消失」。这里强制回填用户原话，让三者始终同源。
     payload["goal"] = request.goal
     payload["input_constraints"] = request.constraints.strip()
+    payload["research_origin"] = (request.current_design or {}).get("research_origin") or research_context
     node_ids = {node["id"] for node in payload["nodes"]}
     payload["edges"] = [edge for edge in payload["edges"]
                         if edge["source"] in node_ids and edge["target"] in node_ids]
     if request.action == "node":
         payload = limit_node_revision(request.current_design or {}, payload, request.node_id or "")
+    if request.action != "generate" and request.current_design:
+        preserve_step_illustrations(request.current_design, payload)
+    artifact_id = str(uuid4())
     with SessionLocal() as db:
-        workspace = get_or_create(db, owner)
+        # Commit the workspace pointer, artifact and version as one change.
+        # The conditional update also serializes simultaneous completions and
+        # refuses to overwrite a workspace the user changed during generation.
+        claim = db.execute(update(ResearchWorkspace).where(
+            ResearchWorkspace.id == workspace_id, ResearchWorkspace.owner_id == owner,
+            ResearchWorkspace.design_idea == initial_idea,
+            ResearchWorkspace.design_version_id == initial_design_id,
+        ).values(design_idea=request.goal, design_version_id=artifact_id))
+        if claim.rowcount != 1:
+            raise HTTPException(409, "研究想法或当前方案已变化，请基于最新内容重新生成")
         active_parent = db.scalar(select(DesignVersion).where(
             DesignVersion.owner_id == owner,
-            DesignVersion.workspace_id == workspace.id,
-            DesignVersion.artifact_id == workspace.design_version_id)) if workspace.design_version_id else None
+            DesignVersion.workspace_id == workspace_id,
+            DesignVersion.artifact_id == initial_design_id)) if initial_design_id else None
         previous = db.scalar(select(DesignVersion).where(
-            DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace.id
+            DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace_id
         ).order_by(DesignVersion.version_number.desc()))
         parent_id = active_parent.id if active_parent else None
         next_number = previous.version_number + 1 if previous else 1
-        workspace_id = workspace.id
-    artifact = save_artifact(owner, "experiment_design", [], payload)
-    with SessionLocal() as db:
+        artifact = ResearchArtifact(id=artifact_id, owner_id=owner, kind="experiment_design",
+            paper_ids_json=json.dumps([]), payload_json=json.dumps(payload, ensure_ascii=False))
         version = DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace_id,
-            artifact_id=artifact["id"], version_number=next_number,
+            artifact_id=artifact_id, version_number=next_number,
             parent_version_id=parent_id, action=request.action,
             changed_nodes_json=json.dumps(design_changes(request.current_design, payload), ensure_ascii=False))
+        db.add(artifact)
+        db.flush()  # The version's artifact foreign key must exist first.
         db.add(version)
         db.commit()
-        artifact["version"] = version_data(version, db.get(ResearchArtifact, artifact["id"]))
-    return artifact
+        return {"id": artifact.id, "kind": artifact.kind, "paper_ids": [], "payload": payload,
+                "created_at": artifact.created_at.isoformat(), "version": version_data(version, artifact)}
+
+
+async def execute_design_insight(owner: str, artifact_id: str, kind: str, node_id: str = "", *, emit=None) -> dict:
+    """Review or explore one saved active design without changing it."""
+    if kind not in {"design_review", "design_outcomes"}:
+        raise HTTPException(422, "不支持的设计分析")
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        artifact = db.get(ResearchArtifact, artifact_id)
+        if not artifact or artifact.owner_id != owner or artifact.kind != "experiment_design":
+            raise HTTPException(404, "研究方案不存在")
+        if workspace.design_version_id != artifact_id:
+            raise HTTPException(409, "当前方案已变化，请重新分析")
+        design = json.loads(artifact.payload_json)
+        if kind == "design_outcomes" and not any(node.get("id") == node_id for node in design.get("nodes", [])):
+            raise HTTPException(422, "请选择当前方案中的步骤")
+    if emit:
+        await emit("stage", {"stage": "reviewing", "label": "检查方案逻辑" if kind == "design_review" else "推演可能结果"})
+    try:
+        result = await _run_task(kind, {"design": design, "node_id": node_id}, emit, timeout=50)
+    except TimeoutError as exc:
+        raise HTTPException(504, "本次分析等待超时，请稍后重试或缩小方案范围") from exc
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        if workspace.design_version_id != artifact_id:
+            raise HTTPException(409, "分析期间方案已变化，请重新分析")
+    if kind == "design_review":
+        valid_ids = {node.get("id") for node in design.get("nodes", [])}
+        for issue in result.get("issues", []):
+            if issue.get("node_id") not in valid_ids:
+                issue["node_id"] = ""
+    return {"artifact_id": artifact_id, "node_id": node_id, **result}
+
+
+class ManualDesignRequest(BaseModel):
+    artifact_id: str
+    design: dict
+
+
+@router.post("/design/manual")
+def save_manual_design(request: ManualDesignRequest, owner: str = Owner):
+    try:
+        payload = Design.model_validate(request.design).model_dump()
+    except ValidationError as exc:
+        raise HTTPException(422, "方案格式无效，请检查步骤内容") from exc
+    nodes = payload["nodes"]
+    ids = [node["id"] for node in nodes]
+    if not nodes or len(nodes) > 50 or len(set(ids)) != len(ids) or any(not node["label"].strip() for node in nodes):
+        raise HTTPException(422, "请保留 1 到 50 个名称有效且编号不同的步骤")
+    if any(edge["source"] not in ids or edge["target"] not in ids for edge in payload["edges"]):
+        raise HTTPException(422, "步骤连接引用了不存在的节点")
+    new_id = str(uuid4())
+    with SessionLocal() as db:
+        workspace = get_or_create(db, owner)
+        old = db.get(ResearchArtifact, request.artifact_id)
+        if not old or old.owner_id != owner or old.kind != "experiment_design":
+            raise HTTPException(404, "研究方案不存在")
+        original = json.loads(old.payload_json)
+        if payload["goal"].strip() != original.get("goal", "").strip():
+            raise HTTPException(422, "手动修改步骤时不能更改研究目标")
+        payload["goal"] = original["goal"]
+        payload["input_constraints"] = original.get("input_constraints", "")
+        payload["research_origin"] = original.get("research_origin", {})
+        payload["change_summary"] = "手动调整实验步骤；请重新检查方案与文献依据。"
+        claim = db.execute(update(ResearchWorkspace).where(
+            ResearchWorkspace.id == workspace.id, ResearchWorkspace.owner_id == owner,
+            ResearchWorkspace.design_version_id == request.artifact_id,
+        ).values(design_version_id=new_id).execution_options(synchronize_session=False))
+        if claim.rowcount != 1:
+            raise HTTPException(409, "当前方案已变化，请刷新后重新编辑")
+        parent = db.scalar(select(DesignVersion).where(DesignVersion.owner_id == owner,
+            DesignVersion.workspace_id == workspace.id, DesignVersion.artifact_id == request.artifact_id))
+        previous = db.scalar(select(DesignVersion).where(DesignVersion.owner_id == owner,
+            DesignVersion.workspace_id == workspace.id).order_by(DesignVersion.version_number.desc()))
+        artifact = ResearchArtifact(id=new_id, owner_id=owner, kind="experiment_design",
+            paper_ids_json="[]", payload_json=json.dumps(payload, ensure_ascii=False))
+        version = DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace.id,
+            artifact_id=new_id, version_number=(previous.version_number + 1 if previous else 1),
+            parent_version_id=parent.id if parent else None, action="manual",
+            changed_nodes_json=json.dumps(design_changes(original, payload), ensure_ascii=False))
+        db.add(artifact); db.flush(); db.add(version); db.commit()
+        return {"id": artifact.id, "kind": artifact.kind, "paper_ids": [], "payload": payload,
+                "created_at": artifact.created_at.isoformat(), "version": version_data(version, artifact)}
 
 
 @router.post("/design")
@@ -781,6 +925,10 @@ def restore_design_version(version_id: str, owner: str = Owner):
         if version.workspace_id != workspace.id:
             raise HTTPException(404, "设计版本不存在")
         artifact = db.get(ResearchArtifact, version.artifact_id)
+        restored_goal = json.loads(artifact.payload_json).get("goal", "").strip()
+        if restored_goal != workspace.design_idea.strip():
+            workspace.design_idea = restored_goal
+            workspace.novelty_id = None
         workspace.design_version_id = artifact.id
         db.commit()
         return version_data(version, artifact)

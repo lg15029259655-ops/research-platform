@@ -193,7 +193,7 @@ def test_missing_pdf_can_be_reattached_without_erasing_history(monkeypatch, tmp_
             assert failed["status"] == "parsed" and failed["file_available"] is False
             assert failed["messages"][0]["content"] == "Previous explanation"
             assert "重新解析失败" in failed["warning"]
-            assert client.get(f"/api/papers/{paper['id']}/search", params={"q": "study"}).status_code == 422
+            assert client.get(f"/api/papers/{paper['id']}/search", params={"q": "study"}).status_code == 409
             assert client.post("/api/research/compare", json={"paper_ids": [paper["id"], other_paper["id"]]}).status_code == 422
             replacement = client.post(f"/api/papers/{paper['id']}/attach", files={"file":
                 ("replacement.pdf", make_pdf("Unrelated oncology investigation"), "application/pdf")})
@@ -236,6 +236,36 @@ def test_chat_waits_for_reparse_to_finish(monkeypatch, tmp_path):
                         db.commit()
 
 
+def test_streamed_chat_is_not_saved_if_paper_changes_mid_answer(monkeypatch, tmp_path):
+    from uuid import uuid4
+    from app.papers import process_paper
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))
+    with TestClient(app) as client:
+        paper = upload(client, "Changing Chat Study")
+        owner = owner_of(client)
+        with SessionLocal() as db:
+            path = db.get(Paper, paper["id"]).local_file_path
+
+        async def changing_stream(_messages, *, vision=False, **_kwargs):
+            yield {"type": "content", "content": "Old partial answer"}
+            token = str(uuid4())
+            with SessionLocal() as db:
+                record = db.get(Paper, paper["id"])
+                record.status, record.parse_token = "uploaded", token
+                db.commit()
+            process_paper(paper["id"], owner, path, True, token)
+            yield {"type": "content", "content": " from old content"}
+
+        monkeypatch.setattr("app.services.bailian_service.stream_events", changing_stream)
+        response = client.post(f"/api/papers/{paper['id']}/chat", json={"action": "START"})
+        assert response.status_code == 200
+        assert '"type": "reset"' in response.text
+        assert '"type": "error"' in response.text and "发生变化" in response.text
+        assert '"type": "done"' not in response.text
+        detail = client.get(f"/api/papers/{paper['id']}").json()
+        assert detail["messages"] == [] and detail["current_unit_id"] is None
 def test_pdf_search_stops_after_thirty_matches(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     with TestClient(app) as client:
@@ -541,6 +571,215 @@ def test_reparse_preserves_history_and_marks_results_stale(monkeypatch, tmp_path
                     if user:
                         db.delete(user)
                         db.commit()
+
+
+def test_precompute_failure_does_not_invalidate_successful_parse(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+
+    def fail_precompute(*_args):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr("app.jobs.precompute.schedule_for_paper", fail_precompute)
+    with TestClient(app) as client:
+        paper = upload(client, "Precompute Failure Study")
+        assert paper["status"] == "parsed" and paper["units"]
+        response = client.post(f"/api/papers/{paper['id']}/reparse")
+        assert response.status_code == 200
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["status"] == "parsed" and after["units"]
+        assert not (after["warning"] or "").startswith("重新解析失败")
+
+
+def test_failed_record_keeps_previous_units_when_replacement_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Previously Read Study")
+        with SessionLocal() as db:
+            db.get(Paper, paper["id"]).status = "failed"
+            db.commit()
+        response = client.post(f"/api/papers/{paper['id']}/attach", files={"file":
+            ("broken.pdf", b"%PDF-broken", "application/pdf")})
+        assert response.status_code == 200
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["status"] == "parsed"
+        assert after["units"] == paper["units"]
+        assert "重新解析失败" in after["warning"]
+
+
+def test_failed_replacement_never_pairs_old_units_with_new_pdf(monkeypatch, tmp_path):
+    import asyncio
+    from fastapi import HTTPException
+    from app import papers as papers_module
+    from app.research import fulltext_papers
+    from app.services.mindmap_service import execute_mindmap
+    import pytest
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Original Study")
+        owner = owner_of(client)
+        with SessionLocal() as db:
+            # Simulate a missing original without deleting any file.
+            record = db.get(Paper, paper["id"])
+            record.local_file_path = str(tmp_path / "missing.pdf")
+            db.commit()
+        original_parse = papers_module.parse_pdf
+
+        def fail_parse(*_args, **_kwargs):
+            raise ValueError("simulated parsing failure")
+
+        monkeypatch.setattr(papers_module, "parse_pdf", fail_parse)
+        response = client.post(f"/api/papers/{paper['id']}/attach", files={"file":
+            ("replacement.pdf", make_pdf("Different Study"), "application/pdf")})
+        assert response.status_code == 200
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["units"] == paper["units"]
+        assert after["source_matches"] is False and after["file_available"] is False
+        assert after["full_text_available"] is False
+        assert client.get(f"/api/papers/{paper['id']}/file").status_code == 409
+        assert client.get(f"/api/papers/{paper['id']}/search", params={"q": "study"}).status_code == 409
+        assert client.post(f"/api/papers/{paper['id']}/chat", json={"action": "START"}).status_code == 409
+        with pytest.raises(HTTPException) as error:
+            fulltext_papers(owner, [paper["id"]])
+        assert error.value.status_code == 422
+        with pytest.raises(ValueError, match="不一致"):
+            asyncio.run(execute_mindmap(owner, paper["id"]))
+        monkeypatch.setattr(papers_module, "parse_pdf", original_parse)
+        assert client.post(f"/api/papers/{paper['id']}/reparse").status_code == 200
+        restored = client.get(f"/api/papers/{paper['id']}").json()
+        assert restored["source_matches"] is True and restored["file_available"] is True
+        assert client.get(f"/api/papers/{paper['id']}/file").status_code == 200
+
+
+def test_failed_reparse_of_same_file_retains_source_match(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Same Source Study")
+
+        def fail_parse(*_args, **_kwargs):
+            raise ValueError("simulated parsing failure")
+
+        monkeypatch.setattr("app.papers.parse_pdf", fail_parse)
+        assert client.post(f"/api/papers/{paper['id']}/reparse").status_code == 200
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["source_matches"] is True and after["file_available"] is True
+        assert after["units"] == paper["units"]
+        assert client.get(f"/api/papers/{paper['id']}/file").status_code == 200
+
+
+def test_simultaneous_attachments_only_start_one_parse(monkeypatch, tmp_path):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app import papers as papers_module
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Concurrent Attachment Study")
+        with SessionLocal() as db:
+            db.get(Paper, paper["id"]).status = "failed"
+            db.commit()
+        original_save = papers_module.save_pdf
+        barrier = Barrier(2)
+
+        async def synchronized_save(*args):
+            result = await original_save(*args)
+            await asyncio.to_thread(barrier.wait, 5)
+            return result
+
+        monkeypatch.setattr(papers_module, "save_pdf", synchronized_save)
+
+        def attach(title):
+            return client.post(f"/api/papers/{paper['id']}/attach", files={"file":
+                ("paper.pdf", make_pdf(title), "application/pdf")})
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(attach, ["Replacement One", "Replacement Two"]))
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["status"] == "parsed" and after["units"]
+
+
+def test_stale_parse_recovers_and_preserves_history(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Recovered Study")
+        with SessionLocal() as db:
+            record = db.get(Paper, paper["id"])
+            record.status = "reading"
+            record.parse_token = "old-attempt"
+            record.parse_heartbeat = datetime.now(timezone.utc) - timedelta(hours=1)
+            db.add(Message(id="21111111-1111-4111-8111-111111111111", paper_id=paper["id"],
+                           role="assistant", content="Keep this note", reading_unit_id=paper["units"][0]["id"]))
+            db.commit()
+        response = client.get(f"/api/papers/{paper['id']}/status")
+        assert response.status_code == 200 and response.json()["status"] == "uploaded"
+        after = client.get(f"/api/papers/{paper['id']}").json()
+        assert after["status"] == "parsed" and after["units"]
+        assert after["messages"][0]["content"] == "Keep this note"
+        assert after["messages"][0]["reading_unit_id"] is None
+
+
+def test_live_or_legacy_parse_is_not_restarted(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from app import papers as papers_module
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Live Parse Study")
+        monkeypatch.setattr(papers_module, "process_paper", lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected restart")))
+        for token, age in [("live-attempt", timedelta(seconds=10)), (None, timedelta(days=1))]:
+            with SessionLocal() as db:
+                record = db.get(Paper, paper["id"])
+                record.status = "reading"
+                record.parse_token = token
+                record.parse_heartbeat = datetime.now(timezone.utc) - age
+                db.commit()
+            assert client.get(f"/api/papers/{paper['id']}/status").json()["status"] == "reading"
+
+
+def test_superseded_parse_cannot_overwrite_new_attempt(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+    from threading import Event, Thread
+    from app import papers as papers_module
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Fence Study")
+        owner = owner_of(client)
+        with SessionLocal() as db:
+            record = db.get(Paper, paper["id"])
+            path = record.local_file_path
+            record.status, record.parse_token = "reading", "old-attempt"
+            record.parse_heartbeat = datetime.now(timezone.utc)
+            db.commit()
+        started, release = Event(), Event()
+        original_extract = papers_module.extract_embedded_images
+
+        def delayed_extract(path, *, generation):
+            started.set()
+            assert release.wait(5)
+            return original_extract(path, generation=generation)
+
+        monkeypatch.setattr(papers_module, "extract_embedded_images", delayed_extract)
+        thread = Thread(target=papers_module.process_paper,
+                        args=(paper["id"], owner, path, True, "old-attempt"))
+        thread.start()
+        try:
+            assert started.wait(5)
+            with SessionLocal() as db:
+                record = db.get(Paper, paper["id"])
+                record.status, record.parse_token = "uploaded", "new-attempt"
+                record.title = "New attempt owns this record"
+                db.commit()
+        finally:
+            release.set()
+            thread.join(5)
+        assert not thread.is_alive()
+        with SessionLocal() as db:
+            record = db.get(Paper, paper["id"])
+            assert record.parse_token == "new-attempt"
+            assert record.title == "New attempt owns this record"
+            assert record.status == "uploaded"
 
 
 def test_figures_after_references_are_not_main_results(tmp_path):

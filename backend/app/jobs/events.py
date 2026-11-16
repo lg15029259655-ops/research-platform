@@ -31,5 +31,11 @@ def publish(job_id: str, event: str, data) -> None:
         try:
             queue.put_nowait({"event": event, "data": data})
         except asyncio.QueueFull:
-            # 慢消费者丢弃最新事件即可；客户端还有轮询兜底。
-            continue
+            # Never lose the terminal signal behind a backlog of progress.
+            if event not in {"result", "error"}:
+                continue
+            try:
+                queue.get_nowait()
+                queue.put_nowait({"event": event, "data": data})
+            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                continue
