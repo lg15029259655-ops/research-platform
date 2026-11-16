@@ -27,7 +27,7 @@ import {
   kindColor,
   kindLabel,
   layoutMindmap,
-  truncateLabel,
+  MINDMAP_LINE_HEIGHT,
   type MindLayout,
   type MindMapPayload,
   type MindNode,
@@ -493,8 +493,18 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
                       strokeDasharray={showBadge ? "4 3" : undefined}
                     />
                     <circle cx={-item.width / 2 + 12} cy={0} r={3.5} fill={accent} />
-                    <text x={-item.width / 2 + 24} y={4.5}>
-                      {truncateLabel(item.node.label, item.width - 62)}
+                    {/* 多行文本：不再单行截断成"…"，行数由布局按折行结果算好，
+                        整块文字在节点框内垂直居中。 */}
+                    <text x={-item.width / 2 + 24}>
+                      {item.lines.map((line, index) => (
+                        <tspan
+                          key={index}
+                          x={-item.width / 2 + 24}
+                          y={(-(item.lines.length - 1) * MINDMAP_LINE_HEIGHT) / 2 + index * MINDMAP_LINE_HEIGHT + 4.5}
+                        >
+                          {line}
+                        </tspan>
+                      ))}
                     </text>
                     {showBadge && (
                       <g className="mm-badge">
