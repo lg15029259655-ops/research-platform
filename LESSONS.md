@@ -366,3 +366,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 
 - Teammate workflow expected individual icon files that were not included; existing biological category sheets can supply six corresponding categories as fallbacks. Other categories still show placeholders.
 - Resolved the design prompt conflict by preserving the current biological scope and adding the workflow task. Experiment workflow tests (12) and TypeScript checks passed; visual and live model verification remain pending.
+
+
+## 2026-11-16 — Fill workflow illustration gaps
+
+- Generated a six-panel sheet for five previously uncovered workflow categories and mapped each to its panel. Existing independent icon files retain priority.
+- The sheet supplies conceptual illustrations; classification accuracy and actual browser presentation remain subject to verification.
