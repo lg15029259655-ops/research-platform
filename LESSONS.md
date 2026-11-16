@@ -372,3 +372,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 
 - Generated a six-panel sheet for five previously uncovered workflow categories and mapped each to its panel. Existing independent icon files retain priority.
 - The sheet supplies conceptual illustrations; classification accuracy and actual browser presentation remain subject to verification.
+
+## 2026-11-16 — Match local preview origin to the backend
+
+- Starting the preview on port 3001 with a backend on 8001 while leaving FRONTEND_ORIGIN at its 3000 default blocked browser sessions and POST requests. Health checks alone did not reveal this.
+- Restarted the preview backend with FRONTEND_ORIGIN=http://127.0.0.1:3001. Verified the session CORS header, POST preflight, and that a missing-file POST reaches validation (422), not origin rejection. A real PDF upload and parsing remain unverified.
+- For alternate-port previews, set both NEXT_PUBLIC_API_URL and FRONTEND_ORIGIN, and check a browser-origin request before handing over the URL.
