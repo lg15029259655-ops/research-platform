@@ -360,3 +360,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - A read-only sample of saved design titles exposed gaps in real wording, including public clinical dataset mining and metabolic tracing. Extend method matching and test those examples, plus common organoid, immunohistochemistry, viral, gene-silencing and sequencing terminology, using existing category images when appropriate.
 - Priority matters: wet-lab metabolic tracing should not be inferred as data analysis merely because a title also mentions pathway analysis; sequencing data analysis should not be shown as an instrument experiment.
 - Boundaries: sampled designs are not representative of every field and ambiguous wording can still be misclassified; no percentage coverage claim is supported.
+
+
+## 2026-11-16 — Merge teammate workflow with existing artwork
+
+- Teammate workflow expected individual icon files that were not included; existing biological category sheets can supply six corresponding categories as fallbacks. Other categories still show placeholders.
+- Resolved the design prompt conflict by preserving the current biological scope and adding the workflow task. Experiment workflow tests (12) and TypeScript checks passed; visual and live model verification remain pending.

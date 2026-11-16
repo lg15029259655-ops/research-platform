@@ -14,6 +14,7 @@ import type { SimilarPaper } from "@/components/NoveltySpace";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
 import DesignStepEditor from "@/components/DesignStepEditor";
 import type { Step } from "@/components/DesignFlow";
+import ExperimentWorkflowMap, { type ExperimentWorkflow } from "@/components/experiment/ExperimentWorkflowMap";
 import "../research.css";
 import "../studio.css";
 import "@/components/experiment-route.css";
@@ -30,6 +31,9 @@ type Design = { goal: string; change_summary: string; constraints: string[]; nod
 type Artifact<T> = { id: string; payload: T; created_at: string };
 type DesignVersion = { version_id: string; number: number; action: string; artifact_id: string;
   payload: Design; changes: { added: string[]; removed: string[]; modified: string[] } };
+// 任务客户端里的 JobKind 联合还没包含 experiment（契约已定，由任务层维护）；
+// 这里只做类型绕过，不修改 lib/jobs.ts。
+const EXPERIMENT_JOB_KIND = "experiment" as unknown as Parameters<typeof submitJob>[0];
 const actions = [["causality", "加强因果"], ["cost", "降低成本"], ["simplify", "简化方案"], ["mechanism", "增加机制"], ["application", "增强应用意义"]];
 const actionLabels: Record<string, string> = {generate: "生成方案", manual: "手动编辑", node: "局部修改", causality: "加强因果",
   cost: "降低成本", simplify: "简化方案", mechanism: "增加机制", application: "增强应用"};
@@ -41,13 +45,20 @@ export default function DesignPage() {
   const [novelty, setNovelty] = useState<Novelty | null>(null);
   const [noveltyReady, setNoveltyReady] = useState(false);
   const [design, setDesign] = useState<Design | null>(null);
-  const [tab, setTab] = useState<"novelty" | "canvas">("novelty");
+  const [tab, setTab] = useState<"novelty" | "canvas" | "workflow">("novelty");
   const [busy, setBusy] = useState(false);
   // 新颖性/设计都是慢调用，统一走后台任务；阶段与进度由 JobProgress 呈现。
   const [jobStage, setJobStage] = useState("");
   const [jobProgress, setJobProgress] = useState<JobProgressData | null>(null);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
   const activeJobAbort = useRef<AbortController | null>(null);
+  // 实验流程导图是独立任务：不阻塞新颖性/沙盘，所以单独一套 busy/进度状态。
+  const [workflow, setWorkflow] = useState<ExperimentWorkflow | null>(null);
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [workflowStage, setWorkflowStage] = useState("");
+  const [workflowProgress, setWorkflowProgress] = useState<JobProgressData | null>(null);
+  const [workflowStartedAt, setWorkflowStartedAt] = useState<number | null>(null);
+  const workflowAbort = useRef<AbortController | null>(null);
   const [error, setError] = useState("");
   const [versions, setVersions] = useState<DesignVersion[]>([]);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
@@ -57,10 +68,12 @@ export default function DesignPage() {
   const { workspace, refresh } = useWorkspace();
   // 记录已经按 artifact_id 精确补查过的指针，避免 effect 因 versions 变化反复发请求。
   const versionLookups = useRef<Set<string>>(new Set());
-  const workspaceTabs = tabGroup(["novelty", "canvas"] as const, tab, setTab);
+  const workspaceTabs = tabGroup(["novelty", "canvas", "workflow"] as const, tab, setTab);
   const sameDesignInput = design?.goal.trim() === idea.trim() && (design.input_constraints || "") === constraints.trim();
   const shownNovelty = novelty?.query.trim() === idea.trim() ? novelty : null;
   const shownDesign = design?.goal.trim() === idea.trim() ? design : null;
+  // 旧流程挂在旧想法上是最容易误导的失效方式：目标一变就不再展示。
+  const shownWorkflow = workflow && workflow.goal.trim() === idea.trim() ? workflow : null;
   useEffect(() => {
     const fromUrl = new URLSearchParams(window.location.search).get("idea");
     if (fromUrl) setIdea(fromUrl);
@@ -101,8 +114,14 @@ export default function DesignPage() {
   useEffect(() => {
     if (tab === "novelty" && !shownNovelty && shownDesign && noveltyReady && !busy && !error) setTab("canvas");
   }, [shownNovelty, shownDesign, tab, noveltyReady, busy, error]);
+  // workspace 里的设计目标变了 → 旧流程已经不对应当前方案，直接清掉（参考 novelty 的同源校验）。
+  useEffect(() => {
+    if (!workflow) return;
+    const workspaceGoal = (workspace?.design_idea || "").trim();
+    if (workspaceGoal && workspaceGoal !== workflow.goal.trim()) setWorkflow(null);
+  }, [workspace?.design_idea, workflow]);
   // 离开页面时取消后台任务：用户不会再回来看的任务不该继续占用模型配额。
-  useEffect(() => () => { activeJobAbort.current?.abort(); }, []);
+  useEffect(() => () => { activeJobAbort.current?.abort(); workflowAbort.current?.abort(); }, []);
   async function scan(force = false) {
     if (!force && novelty?.query.trim() === idea.trim()) { setTab("novelty"); return; }
     const previous = novelty;
@@ -171,6 +190,36 @@ export default function DesignPage() {
       }
     }
   }
+  /** 生成/重试实验流程导图。失败只影响这一个分区，不影响沙盘与新颖性。 */
+  async function generateWorkflow(force = false) {
+    if (!force && workflow && workflow.goal.trim() === idea.trim()) { setTab("workflow"); return; }
+    workflowAbort.current?.abort();
+    const controller = new AbortController();
+    workflowAbort.current = controller;
+    setWorkflow(null); setTab("workflow");
+    setWorkflowBusy(true); setError("");
+    setWorkflowStage("正在提交实验流程任务"); setWorkflowStartedAt(Date.now()); setWorkflowProgress(null);
+    try {
+      const job = await submitJob("experiment", { goal: idea.trim(), constraints });
+      const snapshot = await watchJob(job.id, {
+        onStage: (_stage, label) => setWorkflowStage(label),
+        onProgress: (progress) => setWorkflowProgress(progress),
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (snapshot.status !== "done") throw new Error(snapshot.error?.message || "实验流程生成失败，请重试");
+      const artifact = snapshot.result as Artifact<ExperimentWorkflow> | null;
+      if (!artifact?.payload) throw new Error("实验流程没有返回可用结果");
+      setWorkflow(artifact.payload); setTab("workflow");
+    } catch (e) {
+      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "实验流程生成失败");
+    } finally {
+      if (workflowAbort.current === controller) {
+        workflowAbort.current = null; setWorkflowBusy(false);
+        setWorkflowStartedAt(null); setWorkflowProgress(null); setWorkflowStage("");
+      }
+    }
+  }
+
   async function restoreVersion(version: DesignVersion) {
     setBusy(true); setError("");
     try { const restored = await apiJson<DesignVersion>(`/api/research/design/versions/${version.version_id}/restore`, {method: "POST"});
@@ -228,12 +277,43 @@ export default function DesignPage() {
     {error && <div className="researchError" role="alert">{error}</div>}
     {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续。 */}
     <JobProgress variant="fixed" title="正在处理研究设计" stageLabel={jobStage} progress={jobProgress} startedAt={jobStartedAt} onCancel={() => activeJobAbort.current?.abort()} />
-    {(shownNovelty || shownDesign) && <div className="resultBar"><strong>工作区</strong><div className="tabBar" {...workspaceTabs.list} aria-label="工作区视图"><button {...workspaceTabs.item("novelty")}>新颖性扫描</button><button {...workspaceTabs.item("canvas")}>设计沙盘</button></div></div>}
+    {(shownNovelty || shownDesign || shownWorkflow || !!idea.trim()) && <div className="resultBar"><strong>工作区</strong><div className="tabBar" {...workspaceTabs.list} aria-label="工作区视图"><button {...workspaceTabs.item("novelty")}>新颖性扫描</button><button {...workspaceTabs.item("canvas")}>设计沙盘</button><button {...workspaceTabs.item("workflow")}>实验流程</button></div></div>}
     {/* D10：某个 tab 无数据时给出空态，不留白。 */}
     {tab === "novelty" && !shownNovelty && !!idea.trim() && !busy && <div className="miniNotice">当前想法「{idea.trim()}」尚无检索结果。请点击「检索相似研究」；若检索失败，请稍后重试。</div>}
     {tab === "canvas" && !shownDesign && !!idea.trim() && !busy && <div className="miniNotice">当前想法「{idea.trim()}」尚无设计草稿。点击上方「生成研究设计」即可创建。</div>}
     {tab === "novelty" && shownNovelty && <section className="sectionBox"><h2>{shownNovelty.search_only ? "相关文献星系" : "新颖性扫描"} {!shownNovelty.search_only && <small>整体相似：{shownNovelty.similarity_level}</small>}</h2>{shownNovelty.search_only && <p className="miniNotice">{shownNovelty.search_message} 单一轨道仅表示检索结果，不代表已完成相似程度判断。{!shownNovelty.similar_papers.length && "请调整关键词后重试。"}</p>}<NoveltySpace novelty={shownNovelty} busy={busy} onView={viewWork} onAdd={addWork} />{shownNovelty.search_only && <button type="button" disabled={busy} onClick={() => scan(true)}>重试模型分析</button>}<button className="primaryButton stepForward" disabled={busy} aria-busy={busy} onClick={() => generate()}>{sameDesignInput ? "打开已有方案 →" : "基于这个想法生成方案 →"}</button></section>}
     {tab === "canvas" && shownDesign && <><div className="versionBar"><strong>方案版本 <span>V{displayVersion}</span></strong><div>{scopedVersions.length > 1 && scopedVersions.map((item, index) => <button className={item.version_id === currentVersion ? "active" : ""} key={item.version_id} disabled={busy} aria-busy={busy} onClick={() => restoreVersion(item)}>V{index + 1} · {actionLabels[item.action] || item.action}</button>)}</div>{priorVersion && <button onClick={() => restoreVersion(priorVersion)} disabled={busy} aria-busy={busy}>撤回上一版本</button>}<button onClick={() => generate("generate", undefined, "", true)} disabled={busy} aria-busy={busy}>重新生成方案</button></div><div className="designGrid"><section className="sectionBox designSidebar"><div className="designSideHeader"><span>方案概览</span><h2>设计调整</h2><p title={shownDesign.goal}>{shownDesign.goal}</p></div><div className="designSummary"><b>本版思路</b><p>{shownDesign.change_summary || "当前为方案草稿。"}</p><details><summary>阅读完整说明</summary><p>{shownDesign.change_summary || "当前为方案草稿。"}</p></details></div><div className="designActions"><b>调整方向</b><div className="actionRow">{actions.map(([action, label]) => <button key={action} disabled={busy} aria-busy={busy} onClick={() => generate(action)}>{label}</button>)}</div></div><details className="designDetails"><summary>本次修改 <small>{activeVersion ? activeVersion.changes.added.length + activeVersion.changes.removed.length + activeVersion.changes.modified.length : 0} 项</small></summary><div className="versionChanges">{activeVersion ? <>{activeVersion.changes.added.map((item) => <button key={`a${item}`} onClick={() => openChange(item, "新增")}>＋ {item} ↗</button>)}{activeVersion.changes.removed.map((item) => <button key={`r${item}`} onClick={() => openChange(item, "移除")}>－ {item} ↗</button>)}{activeVersion.changes.modified.map((item) => <button key={`m${item}`} onClick={() => openChange(item, "修改")}>◌ {item} ↗</button>)}</> : "初始方案"}</div></details><details className="designDetails"><summary>对照与评价 <small>{shownDesign.controls.length + shownDesign.readouts.length} 项</small></summary><h4>对照</h4><ul>{shownDesign.controls.map((item, i) => <li key={i}>{item}</li>)}</ul><h4>评价指标</h4><ul>{shownDesign.readouts.map((item, i) => <li key={i}>{item}</li>)}</ul></details><details className="designDetails"><summary>关键假设 <small>{shownDesign.assumptions.length} 项</small></summary><ul>{shownDesign.assumptions.map((item, i) => <li key={i}>{item}</li>)}</ul></details></section><section><DesignFlow design={shownDesign} artifactId={activeVersion?.artifact_id || ""} onSelectNode={setSelectedNode} busy={busy} onExpandNode={(id) => generate("node", id, "为此阶段补充具体实验或分析步骤，逐项说明目的、方法、对照和检测指标；未知信息明确待确定，并保留其他阶段。" )} onAddStep={async (id, step) => { const node = shownDesign.nodes.find(item => item.id === id); if (!node) throw new Error("当前步骤已变化"); await saveStageSteps(id, [...(node.steps || []), step]); }} onRemoveStep={async (id, index) => { const node = shownDesign.nodes.find(item => item.id === id); if (!node) throw new Error("当前步骤已变化"); await saveStageSteps(id, (node.steps || []).filter((_, i) => i !== index)); }} /><p className="miniNotice">具体参数需预实验、功效分析或领域专家核对。</p></section></div>{nodeDetail && <EvidenceDrawer title={nodeDetail.label} eyebrow="研究设计节点" onClose={() => setSelectedNode(null)}><p>{nodeDetail.detail}</p><div className="nodeRelations"><strong>连接逻辑</strong>{shownDesign.edges.filter((edge) => edge.source === nodeDetail.id || edge.target === nodeDetail.id).map((edge, index) => <p key={index}>{edge.label || `${shownDesign.nodes.find((item) => item.id === edge.source)?.label || edge.source} → ${shownDesign.nodes.find((item) => item.id === edge.target)?.label || edge.target}`}</p>)}</div><dl><dt>节点类型</dt><dd>{nodeDetail.type}</dd><dt>版本</dt><dd>V{displayVersion}</dd></dl><label className="fieldLabel">希望怎样修改这个节点？</label><textarea className="largeTextarea" value={nodeInstruction} onChange={(e) => setNodeInstruction(e.target.value)} placeholder="例如：改用成本更低的数据来源，并保持评估目标不变" /><button className="drawerAction" disabled={busy || !nodeInstruction.trim()} aria-busy={busy} onClick={() => generate("node", nodeDetail.id, nodeInstruction)}>AI 优化此节点 →</button></EvidenceDrawer>}{selectedChange && <EvidenceDrawer title={selectedChange.label} eyebrow={`版本差异 · ${selectedChange.kind}`} onClose={() => setSelectedChange(null)}><p>这条记录属于 V{displayVersion} 的版本变化。当前方案中没有同名节点；可切换历史版本查看当时的完整结构。</p></EvidenceDrawer>}</>}
     {tab === "canvas" && shownDesign && activeVersion && <><details className="di-origin"><summary>本版本的研究起点与依据</summary>{shownDesign.research_origin?.research_gap ? <><p><b>研究空白：</b>{shownDesign.research_origin.research_gap}</p><ul>{shownDesign.research_origin.selected_papers?.map(paper => <li key={paper.paper_id}>{paper.title}</li>)}</ul><p>以上为生成时带入的综合线索，需回到文献核对；尚未逐条绑定到方案节点。</p></> : <p>本版本未记录可用的文献综合依据。研究问题可能由用户输入，或来自旧版方案；请自行补充并核对依据。</p>}</details><DesignStepEditor artifactId={activeVersion.artifact_id} design={shownDesign} onSaved={(payload, version) => { setDesign(payload); setVersions(items => [version, ...items]); setCurrentVersion(version.version_id); void refresh(); }} /></>}
+    {tab === "workflow" && (
+      <section className="sectionBox">
+        <div className="ew-tabHead">
+          <div>
+            <h2>实验流程导图</h2>
+            <p>按研究阶段拆解具体实验；每个阶段和实验左侧都是图标位，图片未放置时显示虚线占位框。</p>
+          </div>
+          <button
+            type="button"
+            className="primaryButton"
+            disabled={workflowBusy || idea.trim().length < 5}
+            aria-busy={workflowBusy}
+            onClick={() => void generateWorkflow()}
+          >
+            {workflowBusy ? "正在生成…" : shownWorkflow ? "重新生成实验流程导图" : "生成实验流程导图"}
+          </button>
+        </div>
+        <JobProgress
+          title="正在生成实验流程"
+          stageLabel={workflowStage}
+          progress={workflowProgress}
+          startedAt={workflowStartedAt}
+          onCancel={() => workflowAbort.current?.abort()}
+        />
+        <ExperimentWorkflowMap
+          workflow={shownWorkflow}
+          pending={workflowBusy}
+          onRetry={() => void generateWorkflow(true)}
+        />
+      </section>
+    )}
   </main></>;
 }

@@ -7,7 +7,7 @@
  */
 import { API, ApiError, apiJson } from "@/lib/api";
 
-export type JobKind = "xray" | "compare" | "novelty" | "design" | "mindmap" | "design_review" | "design_outcomes";
+export type JobKind = "xray" | "compare" | "novelty" | "design" | "mindmap" | "experiment" | "design_review" | "design_outcomes";
 
 export type JobProgress = { done: number; total: number };
 
