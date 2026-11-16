@@ -447,3 +447,26 @@ body { background: var(--c-bg); color: var(--c-text); }
   .libraryToggle, .drawerHead button{ width: 44px; height: 44px; }
   .removePaper { min-width: 44px; }
 }
+
+/* Literature observatory: tiers are qualitative, not measured distances. */
+.planetariumWrap { height: 580px; border: 1px solid #294354; border-radius: 16px; background: radial-gradient(ellipse at 50% 46%, #19384a 0%, #102a3c 37%, #0b1d2c 100%); box-shadow: 0 16px 38px #142f3d1c; }
+.planetariumWrap::before { content: none; }
+.planetariumHeading { top: 22px; left: 24px; width: min(330px, 38%); padding: 0; background: transparent; border: 0; }
+.planetariumHeading span { color: #81baaf; font-size: 10px; letter-spacing: .14em; }
+.planetariumHeading strong { margin-top: 8px; color: #e2efef; font-size: 14px; line-height: 1.6; font-weight: 550; }
+.planetariumMotion { top: 22px; right: 24px; padding: 8px 13px; border: 1px solid #54717b; border-radius: 999px; background: #132f3fdd; color: #d4e9e7; }
+.planetariumMotion:hover { background: #244a58; }
+.planetariumLegend { right: 24px; bottom: 22px; gap: 16px; padding: 10px 13px; border: 1px solid #365364; border-radius: 9px; background: #102939eb; }
+.planetariumLegend span { color: #c4d6d9; }
+.planetariumLegend b { color: #f0f7f5; }
+.planetariumLegend i[data-tier="0"], .planetariumTierLabel i[data-tier="0"] { background: #7be2d0; }
+.planetariumLegend i[data-tier="1"], .planetariumTierLabel i[data-tier="1"] { background: #80bfff; }
+.planetariumLegend i[data-tier="2"], .planetariumTierLabel i[data-tier="2"] { background: #d8b48c; }
+.planetariumHover { left: 24px; bottom: 22px; border-left: 3px solid #7be2d0; background: #eaf4f1; box-shadow: 0 8px 24px #0004; }
+@media(max-width:700px) {
+  .planetariumWrap { height: 470px; }
+  .planetariumHeading { top: 16px; left: 16px; width: calc(100% - 120px); }
+  .planetariumMotion { top: 16px; right: 16px; bottom: auto; }
+  .planetariumLegend { left: 12px; right: 12px; bottom: 12px; justify-content: space-around; gap: 6px; }
+  .planetariumHover { left: 12px; bottom: 64px; width: calc(100% - 24px); }
+}

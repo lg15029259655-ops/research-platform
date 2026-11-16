@@ -395,3 +395,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - The saved STAB2 design had three distinct stage titles all reduced to the generic cell category. Added title-specific mapping for expression profiling, gene perturbation and immune-cell interaction; tests use the actual stage names. Generic wording still falls back to the prior category. Images are conceptual, not experimental results.
 - Three novelty tiers had different plane tilts and corresponding sphere positions, producing inconsistent perspective. All tiers and spheres now share one plane, with an orthographic camera and responsive fit; removed a decorative core ring that could be mistaken for another orbit.
 - Six category tests and TypeScript pass; image asset returned HTTP 200. Automated browser visual acceptance is unavailable in this session, so interactive orbit appearance and responsive layout remain to be checked visually.
+
+## 2026-11-16 — Literature orbit visual refinement
+
+- User found the orbital view too plain after the geometry correction. Reviewed open-source 3D Force-Directed Graph and Ozymandros/solar-system for hover/click detail and restrained orbit presentation; implemented a dark observatory palette, differentiated tier colors and soft node halos, preserving qualitative tier meaning and the list-based detail path. No external code copied.
+- TypeScript and all 8 frontend tests passed; the local design route returned HTTP 200. Visual and responsive acceptance in a browser remains pending because browser automation is unavailable.
+- The earlier frontend-relative path error recurred on a CSS write: despite the existing lesson, the workdir was not checked at command composition time. The failed write created no file; corrected to src/app/studio.css and verified the diff. Before further writes, inspect workdir and use a path relative to that exact directory.

@@ -12,15 +12,14 @@ type Novelty = { query: string; similar_papers: SimilarPaper[]; similarity_level
   novel_angles: string[]; evidence_scope: string; search_only?: boolean };
 type Planet = { paper: SimilarPaper; position: [number, number, number]; color: string; size: number };
 
-/* 三维材质读不到 CSS 变量，这里的三档色与 tokens.css 的 --c-tier-high / mid / low 同值，
-   图例色点走 CSS 的那一份，改这里必须同步改 tokens.css，否则图例与球体又会不同色。 */
-const levels = [["高", "高度相似", "#0A5AC2"], ["中", "部分相似", "#2F80ED"], ["低", "差异较大", "#5B7089"]] as const;
+/* 3D 球体与下方图例使用同一套分层颜色；变更时需同步 studio.css。 */
+const levels = [["高", "高度相似", "#7BE2D0"], ["中", "部分相似", "#80BFFF"], ["低", "差异较大", "#D8B48C"]] as const;
 
 function FitOrbitCamera() {
   const { camera, size } = useThree();
   useEffect(() => {
     const orthographic = camera as OrthographicCamera;
-    orthographic.zoom = Math.min(55, size.width / 8, size.height / 5.5);
+    orthographic.zoom = Math.min(70, size.width / 8.4, size.height / 5.8);
     orthographic.updateProjectionMatrix();
   }, [camera, size.width, size.height]);
   return null;
@@ -38,18 +37,18 @@ function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly, selec
     if (playing && coreRef.current) coreRef.current.rotation.y += Math.min(delta, .05) * .16;
   });
   return <>
-    <ambientLight intensity={1.65} /><directionalLight position={[5, 8, 7]} intensity={2.2} color="#ffffff" /><pointLight position={[-4, 3, 1]} intensity={3} color="#CFE4FF" />
+    <ambientLight intensity={1.2} /><directionalLight position={[5, 8, 7]} intensity={2} color="#e3f7ff" /><pointLight position={[-4, 3, 1]} intensity={2} color="#8CDACC" />
     <group ref={orbitRef}>
       <group ref={coreRef}>
-        <mesh><sphereGeometry args={[.62, 48, 32]} /><meshPhysicalMaterial color="#0A5AC2" metalness={.04} roughness={.52} clearcoat={.1} clearcoatRoughness={.8} /></mesh>
-        <mesh><sphereGeometry args={[.74, 28, 18]} /><meshBasicMaterial color="#4DA1FF" transparent opacity={.045} depthWrite={false} /></mesh>
+        <mesh><sphereGeometry args={[.62, 48, 32]} /><meshPhysicalMaterial color="#b1e6d9" emissive="#245954" emissiveIntensity={0.3} metalness={.16} roughness={.4} clearcoat={.25} /></mesh>
+        <mesh><sphereGeometry args={[.74, 28, 18]} /><meshBasicMaterial color="#86DCCB" transparent opacity={.075} depthWrite={false} /></mesh>
       </group>
-      {searchOnly ? <mesh rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[2.42, .012, 5, 160]} /><meshBasicMaterial color="#5B7089" transparent opacity={.56} /></mesh> : levels.map(([level, , color], i) => <mesh key={level} rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[[1.55, 2.42, 3.26][i], .012, 5, 160]} /><meshBasicMaterial color={color} transparent opacity={.56} /></mesh>)}
+      {searchOnly ? <mesh rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[2.42, .012, 5, 160]} /><meshBasicMaterial color="#98B2C2" transparent opacity={.46} /></mesh> : levels.map(([level, , color], i) => <mesh key={level} rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[[1.55, 2.42, 3.26][i], .012, 5, 160]} /><meshBasicMaterial color={color} transparent opacity={.56} /></mesh>)}
       {planets.map(({ paper, position, color, size }) => <group key={paper.openalex_id} position={position}>
         <mesh onPointerOver={(event) => { event.stopPropagation(); setHovered(paper.openalex_id); onHover(paper); document.body.style.cursor = "pointer"; }} onPointerOut={() => { setHovered(null); onHover(null); document.body.style.cursor = ""; }} onClick={(event) => { event.stopPropagation(); onSelect(paper); }}>
           <sphereGeometry args={[selectedId === paper.openalex_id ? size * 1.35 : size, 32, 24]} /><meshPhysicalMaterial color={color} metalness={.03} roughness={.56} clearcoat={.08} clearcoatRoughness={.8} transparent opacity={selectedId && selectedId !== paper.openalex_id ? .32 : 1} />
         </mesh>
-        {hovered === paper.openalex_id && <mesh><sphereGeometry args={[size * 1.4, 18, 12]} /><meshBasicMaterial color={color} transparent opacity={.11} depthWrite={false} /></mesh>}
+        <mesh><sphereGeometry args={[size * (hovered === paper.openalex_id ? 2.1 : 1.55), 18, 12]} /><meshBasicMaterial color={color} transparent opacity={hovered === paper.openalex_id ? .18 : .08} depthWrite={false} /></mesh>
       </group>)}
     </group>
     <OrbitControls enablePan={false} enableZoom minZoom={15} maxZoom={100} enableDamping dampingFactor={.07} rotateSpeed={.7} onStart={() => setInteracting(true)} onEnd={() => setInteracting(false)} />
@@ -75,21 +74,21 @@ export default function NoveltySpace({ novelty, busy, onView, onAdd }: {
   const [playing, setPlaying] = useState(() => !(typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches));
   const planets = useMemo(() => novelty.search_only ? novelty.similar_papers.map((paper, index): Planet => {
     const angle = 2 * Math.PI * index / Math.max(novelty.similar_papers.length, 1) - .4;
-    return {paper, color: "#5B7089", size: .16,
+    return {paper, color: "#D8B48C", size: .14,
       position: [Math.cos(angle) * 2.42, 0, Math.sin(angle) * 2.42]};
   }) : levels.flatMap(([level, , color], tier) => {
     const group = novelty.similar_papers.filter((paper) => paper.similarity_level === level);
     const radius = [1.55, 2.42, 3.26][tier];
     return group.map((paper, index): Planet => {
       const angle = 2 * Math.PI * index / Math.max(group.length, 1) + tier * .38 - .4;
-      return { paper, color, size: tier === 0 ? .18 : .15,
+      return { paper, color, size: .13,
         position: [Math.cos(angle) * radius, 0, Math.sin(angle) * radius] };
     });
   }), [novelty.similar_papers, novelty.search_only]);
-  return <div><div className="evidenceMapIntro"><strong>相似研究星系</strong><span>拖动旋转 · 滚轮缩放 · 点击行星查看文献</span></div>
+  return <div><div className="evidenceMapIntro"><strong>相似研究星系</strong><span>每颗光点代表一篇文献 · 拖动查看 · 点击阅读</span></div>
     <div className="planetariumWrap" role="group" aria-label={novelty.search_only ? "相关文献三维展示，相似程度待核验" : "周围文献的三维相似性分层图"}>
       <div className="planetariumCanvas"><Planetarium planets={planets} onSelect={setSelected} onHover={setHovered} playing={playing} searchOnly={!!novelty.search_only} selectedId={selected?.openalex_id || null} /></div>
-      <div className="planetariumHeading"><span>YOUR RESEARCH IDEA</span><strong title={novelty.query}>{novelty.query}</strong></div>
+      <div className="planetariumHeading"><span>RESEARCH IDEA / 研究起点</span><strong title={novelty.query}>{novelty.query}</strong></div>
       <button className="planetariumMotion" type="button" onClick={() => setPlaying((value) => !value)}>{playing ? "暂停运动" : "继续运动"} {playing ? "Ⅱ" : "▶"}</button>
       {hovered && <div className="planetariumHover"><span>{novelty.search_only ? "相似程度待核验" : hovered.similarity_level === "高" ? "高度相似" : hovered.similarity_level === "中" ? "部分相似" : "差异较大"}</span><strong>{hovered.title}</strong><small>{hovered.year || "年份未知"} · 点击查看文献</small></div>}
       <div className="planetariumLegend">{novelty.search_only ? <span><i data-tier={2} />检索结果 · 待核验<b>{novelty.similar_papers.length}</b></span> : levels.map(([level, title], tier) => <span key={level}><i data-tier={tier} />{title}<b>{novelty.similar_papers.filter((paper) => paper.similarity_level === level).length}</b></span>)}</div>
