@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import type { Group } from "three";
+import type { Group, OrthographicCamera } from "three";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
 
 export type SimilarPaper = { openalex_id: string; title: string; similarity_level: string;
@@ -15,6 +15,16 @@ type Planet = { paper: SimilarPaper; position: [number, number, number]; color: 
 /* 三维材质读不到 CSS 变量，这里的三档色与 tokens.css 的 --c-tier-high / mid / low 同值，
    图例色点走 CSS 的那一份，改这里必须同步改 tokens.css，否则图例与球体又会不同色。 */
 const levels = [["高", "高度相似", "#0A5AC2"], ["中", "部分相似", "#2F80ED"], ["低", "差异较大", "#5B7089"]] as const;
+
+function FitOrbitCamera() {
+  const { camera, size } = useThree();
+  useEffect(() => {
+    const orthographic = camera as OrthographicCamera;
+    orthographic.zoom = Math.min(55, size.width / 8, size.height / 5.5);
+    orthographic.updateProjectionMatrix();
+  }, [camera, size.width, size.height]);
+  return null;
+}
 
 function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly, selectedId }: {
   planets: Planet[]; onSelect: (paper: SimilarPaper) => void; onHover: (paper: SimilarPaper | null) => void; playing: boolean; searchOnly: boolean; selectedId: string | null;
@@ -32,10 +42,9 @@ function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly, selec
     <group ref={orbitRef}>
       <group ref={coreRef}>
         <mesh><sphereGeometry args={[.62, 48, 32]} /><meshPhysicalMaterial color="#0A5AC2" metalness={.04} roughness={.52} clearcoat={.1} clearcoatRoughness={.8} /></mesh>
-        <mesh rotation={[.3, .1, .18]}><torusGeometry args={[.81, .009, 6, 96]} /><meshBasicMaterial color="#4DA1FF" transparent opacity={.65} /></mesh>
         <mesh><sphereGeometry args={[.74, 28, 18]} /><meshBasicMaterial color="#4DA1FF" transparent opacity={.045} depthWrite={false} /></mesh>
       </group>
-      {searchOnly ? <mesh rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[2.42, .012, 5, 160]} /><meshBasicMaterial color="#5B7089" transparent opacity={.56} /></mesh> : levels.map(([level, , color], i) => <mesh key={level} rotation={[Math.PI / 2 - [.06, .19, -.13][i], 0, 0]}><torusGeometry args={[[1.55, 2.42, 3.26][i], .012, 5, 160]} /><meshBasicMaterial color={color} transparent opacity={.56} /></mesh>)}
+      {searchOnly ? <mesh rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[2.42, .012, 5, 160]} /><meshBasicMaterial color="#5B7089" transparent opacity={.56} /></mesh> : levels.map(([level, , color], i) => <mesh key={level} rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[[1.55, 2.42, 3.26][i], .012, 5, 160]} /><meshBasicMaterial color={color} transparent opacity={.56} /></mesh>)}
       {planets.map(({ paper, position, color, size }) => <group key={paper.openalex_id} position={position}>
         <mesh onPointerOver={(event) => { event.stopPropagation(); setHovered(paper.openalex_id); onHover(paper); document.body.style.cursor = "pointer"; }} onPointerOut={() => { setHovered(null); onHover(null); document.body.style.cursor = ""; }} onClick={(event) => { event.stopPropagation(); onSelect(paper); }}>
           <sphereGeometry args={[selectedId === paper.openalex_id ? size * 1.35 : size, 32, 24]} /><meshPhysicalMaterial color={color} metalness={.03} roughness={.56} clearcoat={.08} clearcoatRoughness={.8} transparent opacity={selectedId && selectedId !== paper.openalex_id ? .32 : 1} />
@@ -43,14 +52,15 @@ function PlanetaryScene({ planets, onSelect, onHover, playing, searchOnly, selec
         {hovered === paper.openalex_id && <mesh><sphereGeometry args={[size * 1.4, 18, 12]} /><meshBasicMaterial color={color} transparent opacity={.11} depthWrite={false} /></mesh>}
       </group>)}
     </group>
-    <OrbitControls enablePan={false} enableZoom minDistance={6.5} maxDistance={14} enableDamping dampingFactor={.07} rotateSpeed={.7} onStart={() => setInteracting(true)} onEnd={() => setInteracting(false)} />
+    <OrbitControls enablePan={false} enableZoom minZoom={15} maxZoom={100} enableDamping dampingFactor={.07} rotateSpeed={.7} onStart={() => setInteracting(true)} onEnd={() => setInteracting(false)} />
   </>;
 }
 
 function Planetarium({ planets, onSelect, onHover, playing, searchOnly, selectedId }: {
   planets: Planet[]; onSelect: (paper: SimilarPaper) => void; onHover: (paper: SimilarPaper | null) => void; playing: boolean; searchOnly: boolean; selectedId: string | null;
 }) {
-  return <Canvas camera={{ position: [0, 4.2, 7.4], fov: 38 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: "high-performance" }} frameloop={playing ? "always" : "demand"}>
+  return <Canvas orthographic camera={{ position: [0, 6, 10], zoom: 55, near: 0.1, far: 100 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: "high-performance" }} frameloop={playing ? "always" : "demand"}>
+    <FitOrbitCamera />
     <PlanetaryScene planets={planets} onSelect={onSelect} onHover={onHover} playing={playing} searchOnly={searchOnly} selectedId={selectedId} />
   </Canvas>;
 }
@@ -70,11 +80,10 @@ export default function NoveltySpace({ novelty, busy, onView, onAdd }: {
   }) : levels.flatMap(([level, , color], tier) => {
     const group = novelty.similar_papers.filter((paper) => paper.similarity_level === level);
     const radius = [1.55, 2.42, 3.26][tier];
-    const incline = [.06, .19, -.13][tier];
     return group.map((paper, index): Planet => {
       const angle = 2 * Math.PI * index / Math.max(group.length, 1) + tier * .38 - .4;
       return { paper, color, size: tier === 0 ? .18 : .15,
-        position: [Math.cos(angle) * radius, Math.sin(angle) * radius * Math.sin(incline), Math.sin(angle) * radius * Math.cos(incline)] };
+        position: [Math.cos(angle) * radius, 0, Math.sin(angle) * radius] };
     });
   }), [novelty.similar_papers, novelty.search_only]);
   return <div><div className="evidenceMapIntro"><strong>相似研究星系</strong><span>拖动旋转 · 滚轮缩放 · 点击行星查看文献</span></div>

@@ -389,3 +389,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 
 - The design sandbox and workflow diagram used separate categorization systems, so newly added method-specific artwork appeared only in the latter. Both now apply the same explicit-name method mapping, falling back to their existing broader classifications for ambiguous names.
 - Added ELISA, IHC, cell proliferation and immunofluorescence artwork and reused existing sequencing, vesicle, histology, microbiology and metabolic sheets. Five category tests and TypeScript passed; local page and new image returned HTTP 200. Browser visual acceptance and broad real-world coverage remain unverified.
+
+## 2026-11-16 — Stage illustration duplication and orbital perspective
+
+- The saved STAB2 design had three distinct stage titles all reduced to the generic cell category. Added title-specific mapping for expression profiling, gene perturbation and immune-cell interaction; tests use the actual stage names. Generic wording still falls back to the prior category. Images are conceptual, not experimental results.
+- Three novelty tiers had different plane tilts and corresponding sphere positions, producing inconsistent perspective. All tiers and spheres now share one plane, with an orthographic camera and responsive fit; removed a decorative core ring that could be mistaken for another orbit.
+- Six category tests and TypeScript pass; image asset returned HTTP 200. Automated browser visual acceptance is unavailable in this session, so interactive orbit appearance and responsive layout remain to be checked visually.

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import DesignInsights from "./DesignInsights";
 import ExperimentIcon from "./experiment/ExperimentIcon";
-import { specificMethodCategory } from "@/lib/experiment-categories";
+import { specificMethodCategory, stageIllustrationCategory } from "@/lib/experiment-categories";
 import { effectiveCategory, type ExperimentCategory } from "./experimentCategory";
 import "./experiment-route.css";
 
@@ -11,8 +11,8 @@ export type Step = { name: string; purpose?: string; method?: string; controls?:
 type Node = { id: string; label: string; type: string; detail: string; steps?: Step[] };
 type Edge = { source: string; target: string; label: string };
 type Design = { goal?: string; nodes: Node[]; edges: Edge[] };
-function StageIcon({ kind, name }: { kind: ExperimentCategory; name: string }) {
-  const method = specificMethodCategory(name);
+function StageIcon({ kind, name, stage = false }: { kind: ExperimentCategory; name: string; stage?: boolean }) {
+  const method = (stage && stageIllustrationCategory(name)) || specificMethodCategory(name);
   if (method) return <span className="er-symbol"><ExperimentIcon key={method} category={method} size={58} /></span>;
   return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
 }
@@ -56,7 +56,7 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
       return <div className="er-stage-group" key={node.id} id={`er-node-${node.id}`}>
         <article className={`er-stage${open ? " is-active" : ""}`}>
           <button type="button" className="er-stage-main" aria-expanded={open} onClick={() => select(node.id)}>
-            <span className="er-index">{String(index + 1).padStart(2,"0")}</span><StageIcon name={node.label} kind={effectiveCategory(node.label, null, design.goal)} /><span className="er-stage-copy"><span className="er-number">研究环节{incoming.length > 1 ? ` · ${incoming.length} 条关联` : ""}</span><strong>{node.label}</strong><span className="er-stage-meta">{previews.length ? `${previews.length} 项实验 / 分析` : "查看环节说明"}</span></span><span className="er-toggle">{open ? "收起 −" : "展开 +"}</span>
+            <span className="er-index">{String(index + 1).padStart(2,"0")}</span><StageIcon stage name={node.label} kind={effectiveCategory(node.label, null, design.goal)} /><span className="er-stage-copy"><span className="er-number">研究环节{incoming.length > 1 ? ` · ${incoming.length} 条关联` : ""}</span><strong>{node.label}</strong><span className="er-stage-meta">{previews.length ? `${previews.length} 项实验 / 分析` : "查看环节说明"}</span></span><span className="er-toggle">{open ? "收起 −" : "展开 +"}</span>
           </button>
           {!open && previews.length > 0 && <div className="er-preview" aria-label={`${node.label}包含的实验`}>{previews.map((item,i) => <button type="button" key={i} className="er-preview-item" onClick={() => select(node.id)}><StageIcon name={item.name} kind={effectiveCategory(item.name, item.icon_category, design.goal)} /><span>{item.name}</span></button>)}</div>}
           {open && <section className="er-detail" aria-label={`${node.label}的实验详情`}>

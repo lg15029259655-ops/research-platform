@@ -119,6 +119,9 @@ export const METHOD_CATEGORIES: ExperimentCategory[] = [
   { id: "pcr_assay", name: "PCR 检测", short: "PCR", includes: ["PCR", "qPCR", "RT-PCR"], keywords: [], priority: "P1" },
   { id: "transwell_assay", name: "Transwell 实验", short: "迁移", includes: ["Transwell", "迁移侵袭"], keywords: [], priority: "P1" },
   { id: "flow_cytometry", name: "流式细胞术", short: "流式", includes: ["flow cytometry", "流式细胞术"], keywords: [], priority: "P1" },
+  { id: "gene_perturbation", name: "基因扰动研究", short: "基因扰动", includes: ["基因敲低", "基因缺失"], keywords: [], priority: "P1" },
+  { id: "immune_interaction", name: "免疫细胞相互作用", short: "细胞互作", includes: ["细胞间调控", "免疫细胞互作"], keywords: [], priority: "P1" },
+  { id: "expression_analysis", name: "表达谱分析", short: "表达分析", includes: ["表达谱分析", "表达定位分析"], keywords: [], priority: "P1" },
   { id: "sequencing_lab", name: "测序实验", short: "测序", includes: ["测序建库", "RNA测序"], keywords: [], priority: "P1" },
   { id: "vesicle_lab", name: "细胞外囊泡", short: "囊泡", includes: ["外泌体", "细胞外囊泡"], keywords: [], priority: "P1" },
   { id: "histology_lab", name: "组织病理", short: "病理", includes: ["HE染色", "组织病理"], keywords: [], priority: "P1" },
@@ -129,6 +132,15 @@ export const METHOD_CATEGORIES: ExperimentCategory[] = [
   { id: "cell_proliferation", name: "细胞增殖检测", short: "增殖", includes: ["CCK-8", "EdU"], keywords: [], priority: "P1" },
   { id: "immunofluorescence", name: "免疫荧光", short: "免疫荧光", includes: ["免疫荧光", "immunofluorescence"], keywords: [], priority: "P1" },
 ];
+// Stage illustrations describe the stage title itself, never inferred from the stage number.
+export function stageIllustrationCategory(text: string | null | undefined): string | null {
+  const value = (text || "").toLowerCase();
+  if (/细胞.{0,20}(?:对|与).{0,20}细胞.{0,15}(?:调控|互作|相互作用|功能)|细胞间(?:互作|通讯|调控)|immune cell (?:interaction|communication)/.test(value)) return "immune_interaction";
+  if (/(?:缺失|敲低|敲除|沉默|过表达).{0,20}(?:影响|表型|作用|通路)|gene (?:knockdown|knockout)/.test(value)) return "gene_perturbation";
+  if (/表达谱.{0,15}(?:分析|定位)|表达.{0,8}定位.{0,8}分析|expression profil/.test(value)) return "expression_analysis";
+  return null;
+}
+
 export function specificMethodCategory(text: string | null | undefined): string | null {
   const value = (text || "").toLowerCase();
   if (/测序数据.{0,8}(分析|处理)|(?:rna.?seq|sequencing).{0,12}(?:data|analysis)/.test(value)) return null;
