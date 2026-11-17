@@ -116,7 +116,7 @@ def seed_new_workspace(db, owner, workspace=None):
             workspace.design_version_id = design.id
         db.flush()
         db.add(DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace.id, artifact_id=design.id,
-                             version_number=1, action="example", changed_nodes_json="{}"))
+                             version_number=1, action="example", changed_nodes_json='{"added": [], "removed": [], "modified": []}'))
         db.flush()
     except Exception:
         for folder in created_folders:
