@@ -53,7 +53,8 @@ def _resolve_owner(token: str) -> tuple[str, str | None]:
 
 
 async def anonymous_session(request: Request, call_next):
-    if request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
+    if (request.method == "OPTIONS" or not request.url.path.startswith("/api/")
+            or request.url.path in {"/api/health", "/api/ai/status"}):
         return await call_next(request)
     origin = request.headers.get("origin")
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and origin and origin != os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000"):
