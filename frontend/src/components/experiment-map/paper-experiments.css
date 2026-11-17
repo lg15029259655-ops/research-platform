@@ -1,0 +1,52 @@
+.pe-panel { padding: 4px 2px 24px; color: var(--c-text); }
+.pe-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 10px; }
+.pe-kicker { font-size: 11px; letter-spacing: .14em; color: var(--c-primary); font-weight: 700; }
+.pe-head h2 { font-size: 24px; margin: 6px 0 4px; letter-spacing: -.02em; }
+.pe-summary { font-size: 13px; line-height: 1.7; color: var(--c-text-mid); max-width: 720px; margin: 0; }
+.pe-meta { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 74px; padding: 10px 12px; border: 1px solid var(--c-line); border-radius: var(--r-2); background: var(--c-primary-weak); }
+.pe-meta strong { font-size: 22px; color: var(--c-primary); line-height: 1; }
+.pe-meta span { font-size: 11px; color: var(--c-text-soft); margin-top: 4px; }
+.pe-notice { margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--c-warn); border-radius: var(--r-2); background: var(--c-warn-bg); color: var(--c-warn); font-size: 12px; line-height: 1.6; }
+
+.pe-flow { list-style: none; margin: 0; padding: 6px 0 0; }
+.pe-step { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 12px; }
+.pe-rail { position: relative; display: flex; flex-direction: column; align-items: center; }
+.pe-order { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--c-primary); color: var(--c-on-primary); font-size: 11px; font-weight: 700; letter-spacing: .02em; }
+.pe-line { flex: 1; width: 2px; margin: 4px 0; background: var(--c-line-strong); border-radius: 2px; }
+.pe-card { margin-bottom: 14px; padding: 14px 16px; border: 1px solid var(--c-line); border-radius: var(--r-2); background: var(--c-surface); box-shadow: var(--sh-1); }
+.pe-step.is-inferred .pe-card { border-style: dashed; background: var(--c-surface-2); }
+.pe-card-head { display: flex; align-items: flex-start; gap: 12px; }
+.pe-icon { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; background: var(--c-primary-weak); }
+.pe-titleBlock { min-width: 0; flex: 1; }
+.pe-category { font-size: 11px; color: var(--c-text-soft); }
+.pe-titleBlock h3 { margin: 2px 0 0; font-size: 15px; line-height: 1.45; color: var(--c-primary); }
+.pe-badge { flex: none; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--c-warn); background: var(--c-warn-bg); color: var(--c-warn); font-size: 10px; }
+.pe-methods { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0 56px; }
+.pe-methods span { padding: 4px 9px; border-radius: 999px; background: var(--c-surface-2); border: 1px solid var(--c-line); font-size: 11px; color: var(--c-text-mid); }
+.pe-result { margin: 10px 0 0 56px; font-size: 12.5px; line-height: 1.65; color: var(--c-text-mid); }
+.pe-result b { margin-right: 8px; color: var(--c-text-soft); font-weight: 600; }
+.pe-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 0 56px; }
+.pe-evidenceLabel { font-size: 11px; color: var(--c-text-soft); margin-right: 2px; }
+.pe-page { padding: 3px 9px; border: 1px solid var(--c-primary-line); border-radius: 999px; background: var(--c-primary-weak); color: var(--c-primary); font-size: 11px; cursor: pointer; }
+.pe-page:hover { border-color: var(--c-primary); }
+.pe-depends { margin: 8px 0 0 56px; font-size: 11px; color: var(--c-text-soft); }
+.pe-footnote { margin: 6px 0 0; font-size: 11px; line-height: 1.7; color: var(--c-text-soft); }
+.pe-state { padding: 28px 18px; border: 1px dashed var(--c-line-strong); border-radius: var(--r-2); background: var(--c-surface-2); }
+.pe-state strong { display: block; font-size: 15px; color: var(--c-primary); margin-bottom: 6px; }
+.pe-state p { margin: 0; font-size: 12.5px; line-height: 1.7; color: var(--c-text-mid); }
+
+@media (max-width: 720px) {
+  .pe-step { grid-template-columns: 34px minmax(0, 1fr); gap: 10px; }
+  .pe-methods, .pe-result, .pe-evidence, .pe-depends { margin-left: 0; }
+  .pe-meta { display: none; }
+}
+
+/* ---------- 实验导图：按实验循环配色，避免整页同一种蓝 ---------- */
+.pe-step { --pe-accent: var(--c-primary); }
+.pe-order { background: var(--pe-accent, var(--c-primary)); }
+.pe-line { background: linear-gradient(180deg, var(--pe-accent, var(--c-primary)) 0%, var(--c-line-strong) 100%); opacity: .45; }
+.pe-card { border-left: 4px solid var(--pe-accent, var(--c-primary)); transition: transform .16s ease, box-shadow .16s ease; }
+.pe-card:hover { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(10, 90, 194, .10); }
+.pe-icon { background: color-mix(in srgb, var(--pe-accent, var(--c-primary)) 10%, var(--c-surface)); }
+.pe-category { color: var(--pe-accent, var(--c-primary)); opacity: .8; }
+.pe-page { border-color: color-mix(in srgb, var(--pe-accent, var(--c-primary)) 35%, transparent); color: var(--pe-accent, var(--c-primary)); }

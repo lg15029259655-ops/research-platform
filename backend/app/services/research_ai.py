@@ -216,6 +216,30 @@ class ExperimentWorkflow(BaseModel):
     stages: list[WorkflowStep]
 
 
+class PaperExperimentEvidence(BaseModel):
+    unit_id: str
+    page: int | None = None
+    snippet: str = ""
+
+
+class PaperExperimentItem(BaseModel):
+    """论文里实际做过的一个实验；depends_on 指向本列表里的其它实验 id。"""
+    id: str
+    order: int
+    title: str
+    category: ExperimentCategoryId
+    methods: list[str] = Field(default_factory=list)
+    result: str = ""
+    evidence: list[PaperExperimentEvidence] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+    inferred: bool = False
+
+
+class PaperExperiments(BaseModel):
+    summary: str = ""
+    experiments: list[PaperExperimentItem] = Field(default_factory=list)
+
+
 # 自引用模型需要在类定义后显式 rebuild，否则 Pydantic 拿不到 WorkflowStep 的最终结构。
 WorkflowStep.model_rebuild()
 ExperimentWorkflow.model_rebuild()
@@ -231,6 +255,7 @@ SCHEMAS: dict[str, type[BaseModel]] = {
     "design_outcomes": DesignOutcomes,
     "mindmap_annotate": MindAnnotations,
     "experiment_workflow": ExperimentWorkflow,
+    "paper_experiments_extract": PaperExperiments,
 }
 
 SHAPES: dict[str, dict[str, Any]] = {
@@ -262,6 +287,11 @@ SHAPES: dict[str, dict[str, Any]] = {
                     "detail": "一句话说明（≤60字）",
                     "children": [{"id": "S1-1", "title": "具体实验名（≤24字）", "category": "分类 id",
                                   "detail": "一句话说明（≤60字）", "children": []}]}]},
+    "paper_experiments_extract": {"summary": "一句话概括实验流程",
+        "experiments": [{"id": "E1", "order": 1, "title": "细胞培养与转染", "category": "cell_experiment",
+                         "methods": ["siRNA 转染"], "result": "敲低后增殖下降",
+                         "evidence": [{"unit_id": "输入中的单元ID", "page": 3, "snippet": "原文片段"}],
+                         "depends_on": [], "inferred": False}]},
 }
 
 TASKS = {
@@ -274,6 +304,7 @@ TASKS = {
     "experiment_design": "围绕生物科学研究提出可检验的研究设计，根据问题选择适用的细胞、动物、临床或计算方法，不假设每项研究都需要动物模型或实验组。将方案整理为少量有逻辑连接的研究阶段；对适用阶段在 steps 中写具体实验或分析、目的、操作思路、对照和检测指标，未知项目写待确定，不要仅给抽象标题。若提供 research_context，先保持其中的研究对象、疾病、论文范围和证据边界；它是前序综合，不等于独立核验的事实。若问题指向特定疾病或人群，不得擅自换成其他疾病的细胞系、动物模型或人群；未给出具体模型时应写模型选择标准及待验证条件，不要自造具体名称。nodes 表示研究阶段；edges 引用现有节点 id。说明关键对照、评估指标、假设及限制。change_summary 说明相较现有方案的具体变化；初次生成则写初稿。若 request 为降低成本，必须真正替换、合并或删减至少一个高成本节点，并在 change_summary 中指出替代方案与代价，不要仅增加新的检测和对照。若 request 为局部优化节点，保持现有节点 id，仅修改 node_id 指定节点及确有必要的下游节点；保留其他节点。未经输入资料支持，不要凭空设定具体细胞系、样本量、效应阈值、成本价格或统计显著性门槛；尤其不要编造节省百分比。确需举例时标为待预实验或功效分析确定。",
     "experiment_workflow": "为研究目标编排实验流程导图。stages 为 3–6 个阶段，每阶段 2–5 个具体实验（children），树深最多两层，叶子 children 必须为空。阶段顺序按领域合理裁剪：生物医学按 数据分析 → 细胞实验 → 动物实验 → 分子实验/临床样本 → 结论 的顺序（与该目标无关的阶段不要硬凑）；工程/材料/社科/计算机分别使用 engineering_test、materials_prep、survey_statistics、modeling_algorithm 分类，不要套用细胞或动物阶段。category 只能取输入 categories 里的 11 个 id 之一，不要自造。title 要具体、能看出做什么实验（如“差异表达与富集分析”而不是“实验一”），不超过 24 个汉字；detail 用一句话说明这一步的目的或读点，不超过 60 个汉字。禁止编造样本量、浓度、剂量、p 值、周期、温度等任何具体数值或试剂/细胞系名称；未给出的条件写成待确定。只返回一个合法 JSON 对象，不要 Markdown。",
     "mindmap_annotate": "为输入的论文骨架节点写中文标注。只能使用输入中真实存在的 node_id 与 unit_ids，不得输出骨架之外的节点；每个 node_id 最多一条 annotation，不要重复。label 不超过 24 个汉字，写具体内容（研究对象、方法、关键结果或局限），不要写“本章介绍了……”这类空话。kind 只能取 question、method、evidence、finding、limitation、extension 之一。没有证据支撑的节点不要输出；不得编造数字、样本量、百分比、统计显著性、细胞系或模型名称。annotations 可以为空数组。",
+    "paper_experiments_extract": "从论文的方法、结果与图表片段中提取作者实际做过的实验，组成有先后关系的实验链。experiments 按 order 从 1 递增；title 用具体实验名（如“细胞培养与转染”“裸鼠皮下成瘤”），不超过 24 个汉字；category 只能取输入 categories 里的 11 个 id 之一；methods 1–4 条、每条不超过 16 字；result 用一句话写该实验得到的结果（未报告就留空）；evidence 只能引用输入中真实存在的 unit_id，snippet 逐字复制原文片段（至少 12 字）；depends_on 只能引用本列表已有 id；同一实验不要重复列出。只写输入里出现过的内容，不得编造样本量、剂量、浓度、p 值或未出现的实验；没有结果证据的实验标 inferred=true。只返回一个合法 JSON 对象，不要 Markdown。",
 }
 
 
@@ -298,7 +329,8 @@ def parse_json(raw: str, schema: type[BaseModel]) -> dict[str, Any]:
 # 与 experiment_workflow 同属"只输出结构化骨架/检查项"的低风险任务，关思考可显著降低等待；
 # 若质量回归发现输出过粗，把它们从本集合移除即可（一行回退）。
 FAST_STRUCTURED_TASKS = frozenset({"paper_compare", "experiment_design", "evidence_extract",
-                                    "mindmap_annotate", "design_review", "design_outcomes", "experiment_workflow"})
+                                    "mindmap_annotate", "design_review", "design_outcomes", "experiment_workflow",
+                                    "paper_experiments_extract"})
 MAX_OUTPUT_CHARS = 80_000
 PROGRESS_MIN_CHARS = 400
 PROGRESS_MIN_SECONDS = 1.5

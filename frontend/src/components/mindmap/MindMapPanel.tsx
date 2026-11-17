@@ -28,16 +28,18 @@ import {
   kindLabel,
   layoutMindmap,
   MINDMAP_LINE_HEIGHT,
+  MINDMAP_PAGE_LINE_HEIGHT,
   type MindLayout,
   type MindMapPayload,
   type MindNode,
 } from "@/lib/mindmap";
+import EvidenceDrawer from "@/components/EvidenceDrawer";
 import "./mindmap.css";
 
 export type { MindMapPayload, MindNode };
 
 const PAD = 48;
-const ZOOM_MIN = 0.5;
+const ZOOM_MIN = 0.28; // 节点多时需要更小缩放才能一屏看全（手动缩放同样放宽）
 const ZOOM_MAX = 2;
 
 type Props = {
@@ -90,6 +92,8 @@ function download(blob: Blob, filename: string): void {
 export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detailNode, setDetailNode] = useState<MindNode | null>(null);
+  const [hoverBranch, setHoverBranch] = useState<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -129,6 +133,21 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
     observer.observe(element);
     return () => observer.disconnect();
   }, [layout !== null]);
+
+  const zoomBy = useCallback((factor: number) => {
+    const current = scaleRef.current;
+    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, current * factor));
+    if (Math.abs(next - current) < 0.001) return;
+    const centerX = viewport.width / 2;
+    const centerY = viewport.height / 2;
+    const origin = offsetRef.current;
+    setScale(next);
+    setOffset({
+      x: centerX - (centerX - origin.x) * (next / current),
+      y: centerY - (centerY - origin.y) * (next / current),
+    });
+    userAdjusted.current = true;
+  }, [viewport.height, viewport.width]);
 
   const fit = useCallback(() => {
     if (!layout || viewport.width < 40 || viewport.height < 40) return;
@@ -243,13 +262,45 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
     }
   }
 
+  /* 一级分支配色：同一分支的连线和节点用同一颜色，看结构比看文字更快。 */
+  const BRANCH_COLORS = ["#0A5AC2", "#0E7C86", "#7A5AF8", "#B26A00", "#2F80ED", "#5B7089"];
+  const branchColor = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!layout) return map;
+    const sections = layout.nodes.filter((item) => item.depth === 1).sort((a, b) => a.y - b.y);
+    sections.forEach((item, index) => map.set(item.id, BRANCH_COLORS[index % BRANCH_COLORS.length]));
+    for (const item of layout.nodes) {
+      if (item.depth >= 2 && item.parentId) map.set(item.id, map.get(item.parentId) || BRANCH_COLORS[0]);
+    }
+    return map;
+  }, [layout]);
+
+  /* 分支归属：hover 时只让当前分支保持不透明，其他分支淡化（Xmind「仅显示分支」的轻量版）。 */
+  const branchOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of layout?.nodes ?? []) {
+      if (item.depth === 0) continue;
+      if (item.depth === 1) map.set(item.id, item.id);
+      else if (item.parentId) map.set(item.id, map.get(item.parentId) || item.parentId);
+    }
+    return map;
+  }, [layout]);
+  const branchIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    // 编号必须跟论文阅读顺序一致；按 y 排序会因为左右分支交错而出现 03/04 乱序。
+    (mindmap?.root.children ?? []).forEach((child, index) => map.set(child.id, index + 1));
+    (layout?.nodes ?? []).filter((item) => item.depth === 1 && !map.has(item.id))
+      .forEach((item) => map.set(item.id, map.size + 1));
+    return map;
+  }, [mindmap, layout]);
+
   /* ---------- 节点交互 ---------- */
   function scheduleSelect(node: MindNode) {
     if (clickTimer.current !== null) window.clearTimeout(clickTimer.current);
     clickTimer.current = window.setTimeout(() => {
       clickTimer.current = null;
       setSelectedId(node.id);
-      if (node.unit_ids.length > 0) onJump(node.unit_ids[0]);
+      setDetailNode(node);
     }, 180);
   }
 
@@ -357,12 +408,17 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
     <header className="mm-head">
       <div className="mm-head-title">
         <span className="mm-kicker">MIND MAP</span>
-        <strong>论文思维导图</strong>
-        <small>点击节点回到原文 · 双击折叠分支</small>
+        <strong>论文行文导图</strong>
+        <small>点击节点看摘要 · 双击折叠分支</small>
       </div>
       <div className="mm-actions">
         <button type="button" className="mm-btn" onClick={expandAll} disabled={!mindmap}>展开全部</button>
         <button type="button" className="mm-btn" onClick={collapseAll} disabled={!mindmap}>折叠分支</button>
+        <div className="mm-zoom" role="group" aria-label="缩放">
+          <button type="button" onClick={() => zoomBy(1 / 1.2)} disabled={!mindmap} aria-label="缩小">−</button>
+          <span aria-live="polite">{Math.round(scale * 100)}%</span>
+          <button type="button" onClick={() => zoomBy(1.2)} disabled={!mindmap} aria-label="放大">+</button>
+        </div>
         <button type="button" className="mm-btn" onClick={fit} disabled={!mindmap}>适配画布</button>
         <button type="button" className="mm-btn" onClick={() => setFullscreen((value) => !value)} disabled={!mindmap}>
           {fullscreen ? "退出全屏" : "全屏"}
@@ -390,7 +446,7 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
         </div>
       )}
       <small>
-        导图由论文结构与原文单元整理；虚线节点为推断，需对照原文。点击节点可回到 PDF 对应页。
+        按「问题 → 背景 → 方法 → 发现 → 证据 → 局限 → 贡献」分析维度整理；节点可点击看摘要并回到 PDF 对应页。
       </small>
     </footer>
   );
@@ -438,8 +494,14 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
             height={paddedHeight}
             viewBox={`${layout.bounds.minX - PAD} ${layout.bounds.minY - PAD} ${paddedWidth} ${paddedHeight}`}
             role="img"
-            aria-label="论文思维导图"
+            aria-label="论文行文导图"
           >
+            <defs>
+              <linearGradient id="mmRootGradient" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#0A5AC2" />
+                <stop offset="100%" stopColor="#2F80ED" />
+              </linearGradient>
+            </defs>
             <rect
               x={layout.bounds.minX - PAD}
               y={layout.bounds.minY - PAD}
@@ -447,30 +509,43 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
               height={paddedHeight}
               fill="var(--c-surface)"
             />
+            <g className="mm-anim" key={`${mindmap.paper_id}:${mindmap.parse_revision}`}>
             <g className="mm-edges">
               {layout.edges.map((edge) => (
-                <path key={edge.id} d={edgePath(edge.from, edge.to)} />
+                <path
+                  key={edge.id}
+                  d={edgePath(edge.from, edge.to)}
+                  className="mm-edge-path"
+                  style={{
+                    animationDelay: `${edge.from.depth * 90}ms`,
+                    stroke: branchColor.get(edge.to.id) || "var(--c-line-strong)",
+                    strokeWidth: edge.from.depth === 0 ? 2.6 : 1.8,
+                    opacity: hoverBranch && branchOf.get(edge.to.id) !== hoverBranch ? 0.08 : edge.from.depth === 0 ? 0.85 : 0.65,
+                  }}
+                />
               ))}
             </g>
             <g className="mm-nodes">
-              {layout.nodes.map((item) => {
+              {layout.nodes.map((item, index) => {
                 const isRoot = item.depth === 0;
+                const isSection = item.depth === 1;
                 const isSelected = selectedId === item.id;
                 const isHover = hoverId === item.id;
-                const accent = isRoot ? "var(--c-primary)" : kindColor(item.node.kind);
+                const accent = isRoot ? "var(--c-primary)" : (branchColor.get(item.id) || kindColor(item.node.kind));
                 const showBadge = item.node.inferred;
                 return (
                   <g
                     key={item.id}
-                    className={`mm-node${isSelected ? " is-selected" : ""}${isHover ? " is-hover" : ""}${isRoot ? " is-root" : ""}`}
+                    className={`mm-node${isSelected ? " is-selected" : ""}${isHover ? " is-hover" : ""}${isRoot ? " is-root" : isSection ? " is-section" : " is-point"}`}
                     transform={`translate(${item.x} ${item.y})`}
+                    style={{ opacity: hoverBranch && item.depth > 0 && branchOf.get(item.id) !== hoverBranch ? 0.22 : 1, transition: "opacity 140ms ease" }}
                     role="button"
                     tabIndex={0}
                     aria-label={`${kindLabel(item.node.kind)}：${item.node.label}`}
                     onClick={() => scheduleSelect(item.node)}
                     onDoubleClick={() => { if (item.hasChildren) toggleCollapse(item.id); }}
-                    onMouseEnter={() => setHoverId(item.id)}
-                    onMouseLeave={() => setHoverId(null)}
+                    onMouseEnter={() => { setHoverId(item.id); setHoverBranch(branchOf.get(item.id) || null); }}
+                    onMouseLeave={() => { setHoverId(null); setHoverBranch(null); }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
                         event.preventDefault();
@@ -481,56 +556,129 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
                       }
                     }}
                   >
-                    <rect
-                      className="mm-node-bg"
-                      x={-item.width / 2}
-                      y={-item.height / 2}
-                      width={item.width}
-                      height={item.height}
-                      rx={10}
-                      ry={10}
-                      stroke={accent}
-                      strokeDasharray={showBadge ? "4 3" : undefined}
-                    />
-                    <circle cx={-item.width / 2 + 12} cy={0} r={3.5} fill={accent} />
-                    {/* 多行文本：不再单行截断成"…"，行数由布局按折行结果算好，
-                        整块文字在节点框内垂直居中。 */}
-                    <text x={-item.width / 2 + 24}>
-                      {item.lines.map((line, index) => (
-                        <tspan
-                          key={index}
-                          x={-item.width / 2 + 24}
-                          y={(-(item.lines.length - 1) * MINDMAP_LINE_HEIGHT) / 2 + index * MINDMAP_LINE_HEIGHT + 4.5}
-                        >
-                          {line}
-                        </tspan>
-                      ))}
-                    </text>
+                    <g
+                      className="mm-node-anim"
+                      style={{ animationDelay: `${Math.min(index * 34, 480)}ms` }}
+                    >
+                    {isRoot ? (
+                      <>
+                        <rect
+                          className="mm-node-bg"
+                          x={-item.width / 2}
+                          y={-item.height / 2}
+                          width={item.width}
+                          height={item.height}
+                          rx={18}
+                          ry={18}
+                          fill="url(#mmRootGradient)"
+                        />
+                        <text x={-item.width / 2 + 22}>
+                          {(() => {
+                            const top = -(item.lines.length * MINDMAP_LINE_HEIGHT) / 2;
+                            return item.lines.map((line, index) => (
+                              <tspan
+                                key={`t${index}`}
+                                className="mm-root-text"
+                                x={-item.width / 2 + 22}
+                                y={top + 14 + index * MINDMAP_LINE_HEIGHT}
+                              >
+                                {line}
+                              </tspan>
+                            ));
+                          })()}
+                        </text>
+                      </>
+                    ) : isSection ? (
+                      <>
+                        <rect
+                          className="mm-node-bg mm-section-bg"
+                          x={-item.width / 2}
+                          y={-item.height / 2}
+                          width={item.width}
+                          height={item.height}
+                          rx={item.height / 2}
+                          ry={item.height / 2}
+                          style={{ fill: accent }}
+                        />
+                        <text x={-item.width / 2 + 18}>
+                          {(() => {
+                            const top = -(item.lines.length * MINDMAP_LINE_HEIGHT) / 2;
+                            return item.lines.map((line, index) => (
+                              <tspan
+                                key={`t${index}`}
+                                className="mm-section-text"
+                                x={-item.width / 2 + 18}
+                                y={top + 14 + index * MINDMAP_LINE_HEIGHT}
+                              >
+                                {line}
+                              </tspan>
+                            ));
+                          })()}
+                        </text>
+                      </>
+                    ) : (
+                      <>
+                        <rect
+                          className="mm-node-bg mm-point-bg"
+                          x={-item.width / 2}
+                          y={-item.height / 2}
+                          width={item.width}
+                          height={item.height}
+                          rx={10}
+                          ry={10}
+                        />
+                        <rect
+                          className="mm-point-bar"
+                          x={-item.width / 2 + 1}
+                          y={-item.height / 2 + 9}
+                          width={3}
+                          height={Math.max(12, item.height - 18)}
+                          rx={1.5}
+                          fill={accent}
+                        />
+                        <text x={-item.width / 2 + 18}>
+                          {(() => {
+                            const titleHeight = item.lines.length * MINDMAP_LINE_HEIGHT;
+                            const pageHeight = item.pageLabel ? MINDMAP_PAGE_LINE_HEIGHT : 0;
+                            const top = -(titleHeight + pageHeight) / 2;
+                            return (
+                              <>
+                                {item.lines.map((line, index) => (
+                                  <tspan
+                                    key={`t${index}`}
+                                    className="mm-point-text"
+                                    x={-item.width / 2 + 18}
+                                    y={top + 13 + index * MINDMAP_LINE_HEIGHT}
+                                  >
+                                    {line}
+                                  </tspan>
+                                ))}
+                                {item.pageLabel && (
+                                  <tspan
+                                    className="mm-node-page"
+                                    x={-item.width / 2 + 18}
+                                    y={top + titleHeight + 10}
+                                  >
+                                    {item.pageLabel}
+                                  </tspan>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </text>
+                      </>
+                    )}
                     {showBadge && (
                       <g className="mm-badge">
-                        <rect x={item.width / 2 - 34} y={-9} width={26} height={16} rx={8} ry={8} />
-                        <text x={item.width / 2 - 21} y={3}>推断</text>
+                        <rect x={item.width / 2 - 34} y={-item.height / 2 + 6} width={26} height={16} rx={8} ry={8} />
+                        <text x={item.width / 2 - 21} y={-item.height / 2 + 18}>推断</text>
                       </g>
                     )}
-                    {item.hasChildren && (
-                      <g
-                        className="mm-toggle"
-                        transform={`translate(${item.side * (item.width / 2 + 13)} 0)`}
-                        role="button"
-                        aria-label={item.collapsed ? "展开分支" : "折叠分支"}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleCollapse(item.id);
-                        }}
-                        onDoubleClick={(event) => event.stopPropagation()}
-                      >
-                        <circle r={8} />
-                        <text y={3.5}>{item.collapsed ? "+" : "−"}</text>
-                      </g>
-                    )}
+                    </g>
                   </g>
                 );
               })}
+            </g>
             </g>
           </svg>
         </div>
@@ -541,11 +689,22 @@ export default function MindMapPanel({ mindmap, pending, onJump }: Props) {
   }
 
   return (
-    <section className={`mm-panel${fullscreen ? " is-fullscreen" : ""}`} aria-label="论文思维导图">
+    <section className={`mm-panel${fullscreen ? " is-fullscreen" : ""}`} aria-label="论文行文导图">
       {head}
       {pending && mindmap && <div className="mm-refresh">正在更新导图…</div>}
       {body}
       {legend}
+      {detailNode && (
+        <EvidenceDrawer
+          title={detailNode.label}
+          eyebrow={`${kindLabel(detailNode.kind)} · ${detailNode.page ? `PDF 第 ${detailNode.page} 页` : "页码未知"}`}
+          onClose={() => setDetailNode(null)}
+          action={detailNode.unit_ids.length > 0 ? { label: "在 PDF 中查看原文 →", onClick: () => { onJump(detailNode.unit_ids[0]); setDetailNode(null); } } : undefined}
+        >
+          <p>{detailNode.detail || "该节点没有额外摘要；可回到原文核对。"}</p>
+          {detailNode.inferred && <p className="miniNotice">这是 AI 推断节点，请以原文为准。</p>}
+        </EvidenceDrawer>
+      )}
     </section>
   );
 }
