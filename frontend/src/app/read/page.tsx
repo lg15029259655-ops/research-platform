@@ -129,7 +129,11 @@ export default function ReadPage() {
       if (!session.ok) throw new Error("无法建立匿名会话");
       setReady(true);
       await loadList();
-      const selected = new URLSearchParams(window.location.search).get("paper");
+      let selected = new URLSearchParams(window.location.search).get("paper");
+      if (!selected) {
+        const response = await fetch(`${API}/api/workspace`, { credentials: "include" });
+        if (response.ok) selected = (await response.json()).core_paper_id || null;
+      }
       if (selected) await loadPaper(selected);
     }
     initialize().catch((e) => setError(e.message));

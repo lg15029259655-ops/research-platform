@@ -38,7 +38,7 @@ def _copy_example_file(source, target):
         shutil.copy2(source, target)
 
 
-def seed_new_workspace(db, owner):
+def seed_new_workspace(db, owner, workspace=None):
     directory = os.getenv("DEMO_SEED_DIR", "").strip()
     if not directory:
         return
@@ -100,10 +100,16 @@ def seed_new_workspace(db, owner):
         comparison = by_kind["paper_compare"][0]
         design = by_kind["experiment_design"][0]
         goal = json.loads(design.payload_json)["goal"]
-        workspace = ResearchWorkspace(id=str(uuid4()), owner_id=owner, domain="biomed", study_type="unspecified",
-            selected_paper_ids_json=json.dumps([p.id for p in papers]), core_paper_id=papers[0].id,
-            synthesis_id=comparison.id, design_idea=goal, design_version_id=design.id)
-        db.add(workspace)
+        if workspace is None:
+            workspace = ResearchWorkspace(id=str(uuid4()), owner_id=owner)
+            db.add(workspace)
+        workspace.domain = "biomed"
+        workspace.study_type = "unspecified"
+        workspace.selected_paper_ids_json = json.dumps([p.id for p in papers])
+        workspace.core_paper_id = papers[0].id
+        workspace.synthesis_id = comparison.id
+        workspace.design_idea = goal
+        workspace.design_version_id = design.id
         db.flush()
         db.add(DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace.id, artifact_id=design.id,
                              version_number=1, action="example", changed_nodes_json="{}"))
