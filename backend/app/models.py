@@ -18,6 +18,11 @@ class User(Base):
     papers: Mapped[list["Paper"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
+class DemoSeedMarker(Base):
+    __tablename__ = "demo_seed_markers"
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+
+
 class Paper(Base):
     __tablename__ = "papers"
     __table_args__ = (Index("ix_papers_owner_last_read", "owner_id", "last_read_at"),)

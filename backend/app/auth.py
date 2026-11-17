@@ -3,6 +3,7 @@
 import hashlib
 import os
 import secrets
+import threading
 from uuid import uuid4
 
 from fastapi import Request
@@ -15,6 +16,7 @@ from .models import User
 
 COOKIE_NAME = "medread_session"
 COOKIE_AGE = 180 * 24 * 60 * 60
+_demo_lock = threading.Lock()
 
 
 def session_hash(token: str) -> str:
@@ -38,8 +40,14 @@ def _resolve_owner(token: str) -> tuple[str, str | None]:
             user = User(id=str(uuid4()), session_hash=session_hash(new_token))
             db.add(user)
             db.flush()
-            from .services.demo_service import seed_new_workspace
-            seed_new_workspace(db, user.id)
+            from .services.demo_service import ensure_demo
+            ensure_demo(db, user.id)
+            db.commit()
+    elif os.getenv("DEMO_SEED_DIR", "").strip():
+        # Multiple parallel page requests must not create duplicate examples.
+        from .services.demo_service import ensure_demo
+        with _demo_lock, SessionLocal() as db:
+            ensure_demo(db, user.id)
             db.commit()
     return user.id, new_token
 
