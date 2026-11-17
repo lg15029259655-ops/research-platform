@@ -1,6 +1,6 @@
 # MedRead 生物科学科研工作台
 
-Windows 本地运行的前后端分离项目：Next.js + TypeScript、FastAPI、SQLite、PyMuPDF、React-PDF、React Flow 和 react-force-graph。
+Windows 本地运行的前后端分离项目：Next.js + TypeScript、FastAPI、SQLite、PyMuPDF、React-PDF 和 Three.js。
 
 四个入口：**AI 科研发现、AI 深度精读、AI 文献综合、AI 科研设计**，聚焦生命科学与相关医学研究。后端签发 180 天持久匿名 HttpOnly Cookie，按用户隔离 PDF、聊天、阅读进度和结构化研究结果。仅有检索元数据的论文标记为 `metadata_only`，不会被当作全文。
 
@@ -42,21 +42,21 @@ Windows 本地运行的前后端分离项目：Next.js + TypeScript、FastAPI、
 ## 四模块流程
 
 - `/discover`：使用 OpenAlex 语义检索，先从最多 50 篇候选中筛选生命或健康科学主题，再分页展示；也可切换关键词检索。自动分类和候选数量均可能遗漏相关文献。支持加载更多和相似/参考文献图谱。可存入元数据；开放 PDF 可尝试自动获取，出版方返回网页或拒绝下载时改为手动上传。OpenAlex 匿名额度用尽时会显示明确提示。
-- `/read`：PDF 上传、逐单元精读、流式问答、Paper X-Ray 和带原始 PDF 页面缩略图的 Figure Storyboard。获得可解析的全文后，用户手动点击“开始精读”才调用 AI。
+- `/read`：PDF 上传、逐单元精读、流式问答、论文行文导图和实验导图。获得可解析的全文后，用户手动点击“开始精读”才调用 AI。
 - `/synthesis`：选择 2–5 篇已解析全文，生成结构化对比矩阵、证据争议和研究空白。摘要记录不能进入全文综合。
-- `/design`：根据 OpenAlex 检索元数据和可用摘要做高/中/低定性新颖性扫描；用 React Flow 展示可拖动的设计方案，可点击“降低成本”等按钮重新生成方案。
+- `/design`：根据 OpenAlex 检索元数据和可用摘要做高/中/低定性新颖性扫描；展示可展开的设计方案与实验流程图，可点击“降低成本”等按钮调整方案。
 
-精读页新增「思维导图」视图：章节骨架由解析结果确定性生成，AI 只补关键点并校验 `unit_id`，节点可点击回到 PDF 页码，支持导出 SVG/PNG。发现页的关系图改为三向 3D 谱系（上游引用 / 下游被引 / 旁系相关，带方向与年份轴）。
+精读页包含「行文导图」和「实验导图」：前者按研究问题、方法与证据等维度组织内容；后者从论文片段提取候选实验并提供原文线索。两者均需与原文核对，页码可能指向阅读单元的起始页。发现页的关系图改为三向 3D 谱系（上游引用 / 下游被引 / 旁系相关，带方向与年份轴）。
 
 结构化结果保存在 SQLite。Research Workspace 还会保存当前研究主题、领域、选中论文、核心论文、综合结果、研究空白、设计想法和版本引用。四个页面顶部的状态栏共用该上下文；发现页加入对比篮后，综合页自动带入已有全文的论文；研究空白可直接送入科研设计。
 
 发现页的 OpenAlex 搜索页和关系图谱使用 SQLite 缓存。相同查询优先读真实历史结果，显示抓取时间；主动点击“刷新结果”才重新请求。上游暂时失败时，如有缓存会标注过期并回退。缓存仅含公开检索元数据，不把摘要当作全文。
 
-视觉层包括 Paper X-Ray 研究主线、Figure Storyboard、可展开对比矩阵、三列 Evidence Map、Research Gap Path、定性 Novelty Space 和 React Flow 沙盘。节点详情尽可能附原文阅读单元、页码和证据片段；未能定位的来源会明确提示。沙盘支持五种整体修改、节点级修改、版本历史、结构差异和回退。
+视觉层包括论文行文与实验导图、可展开对比矩阵、Evidence Map、Research Gap Path、定性 Novelty Space 和可展开的设计路线。节点详情尽可能附原文阅读单元、页码和证据片段；未能定位的来源会明确提示。沙盘支持五种整体修改、节点级修改、版本历史、结构差异和回退。
 
 主要 API：`GET/PATCH /api/workspace`、`GET /api/research/discover`、`GET /api/research/graph/{work_id}`、`GET /api/research/lineage/{work_id}`、`POST /api/research/import`、`POST /api/research/import-pdf`、`POST /api/papers/{paper_id}/attach`、`POST /api/research/xray/{paper_id}`、`POST /api/research/compare`、`POST /api/research/novelty`、`POST /api/research/design`、`GET /api/research/design/versions`、`POST /api/research/design/versions/{version_id}/restore`、`GET /api/research/artifacts`。
 
-慢 AI 调用（精读例外，它本身就是流式）统一走异步任务：`POST /api/jobs`、`GET /api/jobs/{job_id}`、`GET /api/jobs/{job_id}/events`（SSE 阶段/进度/心跳）、`DELETE /api/jobs/{job_id}`（取消）。任务在进程内执行并落库，进程重启后可恢复；相同参数的进行中任务会复用，不重复计费。细节见 [docs/architecture-jobs.md](docs/architecture-jobs.md)。。
+慢 AI 调用（精读例外，它本身就是流式）统一走异步任务：`POST /api/jobs`、`GET /api/jobs/{job_id}`、`GET /api/jobs/{job_id}/events`（SSE 阶段/进度/心跳）、`DELETE /api/jobs/{job_id}`（取消）。任务在进程内执行并落库，进程重启后可恢复；相同参数的进行中任务会复用，不重复计费。细节见 [docs/architecture-jobs.md](docs/architecture-jobs.md)。
 
 ## 阅读流程
 

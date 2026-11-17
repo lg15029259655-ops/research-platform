@@ -8,7 +8,7 @@ import "./paper-experiments.css";
 /** 实验卡的强调色：按实验顺序循环取色，同一张图里形成节奏而不是一整片蓝。 */
 const CARD_ACCENTS = ["#0A5AC2", "#0E7C86", "#7A5AF8", "#B26A00", "#2F80ED", "#5B7089"];
 
-export type PaperExperimentEvidence = { unit_id: string; page: number | null; snippet: string };
+export type PaperExperimentEvidence = { unit_id: string; page: number | null; page_end?: number | null; snippet: string };
 
 export type PaperExperiment = {
   id: string;
@@ -126,7 +126,7 @@ export default function PaperExperimentsPanel({ payload, pending, onJump }: {
                         title={ref.snippet ? `章节起始页；线索：${ref.snippet}` : "回到章节起始页核对"}
                         onClick={() => onJump(ref.unit_id)}
                       >
-                        {ref.page ? `p.${ref.page}` : "原文"}
+                        {ref.page ? `p.${ref.page}${ref.page_end && ref.page_end > ref.page ? " 起" : ""}` : "原文"}
                       </button>
                     ))}
                   </div>

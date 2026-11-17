@@ -45,7 +45,7 @@ async def anonymous_session(request: Request, call_next):
     if request.method == "OPTIONS" or not request.url.path.startswith("/api/"):
         return await call_next(request)
     origin = request.headers.get("origin")
-    if request.method in {"POST", "DELETE"} and origin and origin != os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000"):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and origin and origin != os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000"):
         return JSONResponse({"detail": "请求来源无效"}, status_code=403)
 
     token = request.cookies.get(COOKIE_NAME, "")

@@ -170,6 +170,25 @@ def test_short_keywords_do_not_match_inside_unrelated_words():
     assert paper_experiment_service._match("The rat model was examined.")[1] == "动物模型构建"
 
 
+def test_long_methods_leave_room_for_results_and_invalid_duplicate_does_not_hide_valid():
+    from app.models import Paper, ReadingUnit
+    methods = ReadingUnit(id="methods", paper_id="p", position=0, kind="METHODS",
+                          heading="Methods", page_start=2, page_end=4, source_text="x" * 40000)
+    results = ReadingUnit(id="results", paper_id="p", position=1, kind="RESULTS",
+                          heading="Results", page_start=5, page_end=5,
+                          source_text="The experiment produced an observable effect.")
+    context = paper_experiment_service._ai_context(Paper(title="Study"), [methods, results])
+    assert any(chunk["unit_id"] == "results" for chunk in context["units"])
+    base = {"title": "检测", "category": "molecular_experiment", "result": "效果"}
+    payload = {"experiments": [
+        {**base, "evidence": [{"unit_id": "results", "snippet": "Not in the source material"}]},
+        {**base, "evidence": [{"unit_id": "results", "snippet": results.source_text}]},
+    ]}
+    accepted = paper_experiment_service._validate_ai(payload, [methods, results])
+    assert len(accepted) == 1
+    assert accepted[0]["evidence"][0]["page_end"] == 5
+
+
 def test_context_includes_later_methods_and_method_only_has_no_result():
     from app.models import Paper, ReadingUnit
     unit = ReadingUnit(id="long", paper_id="p", position=0, kind="METHODS", heading="Methods", page_start=3, page_end=5, source_text=("Background material " * 120) + "Western blot analysis was performed.")

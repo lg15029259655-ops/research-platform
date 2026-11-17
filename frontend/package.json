@@ -9,12 +9,10 @@
   "dependencies": {
     "@react-three/drei": "^10.7.9",
     "@react-three/fiber": "^9.8.1",
-    "@xyflow/react": "^12.12.0",
     "next": "^15.5.0",
     "pdfjs-dist": "6.3.289",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-force-graph-2d": "^1.29.2",
     "react-markdown": "^10.1.0",
     "react-pdf": "^11.0.0",
     "remark-gfm": "^4.0.1",

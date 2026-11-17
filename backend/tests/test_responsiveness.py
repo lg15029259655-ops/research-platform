@@ -1,9 +1,11 @@
 import asyncio
+import io
 import threading
 from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi.responses import JSONResponse
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -11,6 +13,33 @@ from app import auth
 from app.db import SessionLocal
 from app.main import app
 from app.models import Paper, PaperImage, User
+from app.services import file_service
+
+
+def test_upload_disk_write_does_not_block_event_loop(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_write(*_args):
+        entered.set()
+        release.wait(2)
+        return "test.pdf", "temporary", 5, "digest"
+
+    monkeypatch.setattr(file_service, "_write_pdf", slow_write)
+
+    async def run():
+        upload = UploadFile(file=io.BytesIO(b"%PDF-"), filename="test.pdf",
+                            headers={"content-type": "application/pdf"})
+        task = asyncio.create_task(file_service.save_pdf(upload, "owner", "paper"))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            await asyncio.wait_for(asyncio.sleep(0.01), timeout=0.5)
+            assert not task.done()
+        finally:
+            release.set()
+            await task
+
+    asyncio.run(run())
 
 
 def test_session_database_wait_does_not_block_event_loop(monkeypatch):
@@ -60,3 +89,13 @@ def test_paper_list_counts_images_and_preserves_owner_isolation():
         other = second.get("/api/papers").json()
         assert next(p for p in own if p["id"] == paper_id)["image_count"] == 2
         assert all(p["id"] != paper_id for p in other)
+
+
+def test_workspace_patch_rejects_foreign_origin(monkeypatch):
+    monkeypatch.setenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000")
+    with TestClient(app) as client:
+        client.get("/api/session")
+        response = client.patch("/api/workspace", headers={"Origin": "https://other.example"},
+                                json={"design_idea": "unauthorized change"})
+        assert response.status_code == 403
+        assert client.get("/api/workspace").json().get("design_idea") != "unauthorized change"

@@ -41,7 +41,7 @@ const faq = [
   { id: "account", question: "需要注册或登录吗？", answer: "不需要。系统建立匿名会话（GET /api/session）后即可使用。" },
   { id: "hallucination", question: "AI 会编造内容吗？", answer: "AI 基于已提供的文本/摘要生成，可能不准确，页面多处提示「请与原文核对」；检索阶段的相似度判断只依据摘要，未完成全文核验。" },
   { id: "search-mode", question: "和普通关键词搜索有什么区别？", answer: "提供「语义检索」与「关键词检索」两种模式：语义检索适合用研究问题提问，关键词检索适合精确题名。" },
-  { id: "upload", question: "必须先上传 PDF 吗？", answer: "检索与关系图谱无需 PDF；但逐页精读、Figure Storyboard、Paper X-Ray、多篇综合都需要先取得或上传全文 PDF。" },
+  { id: "upload", question: "必须先上传 PDF 吗？", answer: "检索与关系图谱无需 PDF；但逐页精读、行文导图、实验导图和多篇综合需要先取得或上传全文 PDF。" },
   { id: "verify", question: "AI 讲解能核对到原文吗？", answer: "精读按「阅读单元」推进，可回到 PDF 页码；当标注「未定位到具体原文位置」时，不能当作已核验的全文事实。" },
 ];
 

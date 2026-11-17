@@ -96,7 +96,8 @@ def _evidence(unit: ReadingUnit, snippet: str, label: str) -> dict:
     positions = [text.casefold().find(pattern) for pattern in patterns if text.casefold().find(pattern) >= 0]
     position = min(positions) if positions else 0
     start = max(0, position - 35)
-    return {"unit_id": unit.id, "page": unit.page_start, "snippet": text[start:start + 120]}
+    return {"unit_id": unit.id, "page": unit.page_start, "page_end": unit.page_end,
+            "snippet": text[start:start + 120]}
 
 
 
@@ -165,7 +166,6 @@ def _validate_ai(payload: dict, units: list[ReadingUnit]) -> list[dict]:
         category = str(item.get("category", "")).strip()
         if not title or category not in EXPERIMENT_CATEGORY_IDS or title in seen_titles:
             continue
-        seen_titles.add(title)
         evidence = []
         for ref in item.get("evidence", []) if isinstance(item.get("evidence"), list) else []:
             unit = by_id.get(str(ref.get("unit_id", "")))
@@ -175,11 +175,13 @@ def _validate_ai(payload: dict, units: list[ReadingUnit]) -> list[dict]:
             normalize = lambda value: re.sub(r"\s+", " ", value).strip().casefold()
             if len(normalize(snippet)) < 12 or normalize(snippet) not in normalize(unit.source_text or ""):
                 continue
-            evidence.append({"unit_id": unit.id, "page": unit.page_start, "snippet": snippet[:120]})
+            evidence.append({"unit_id": unit.id, "page": unit.page_start, "page_end": unit.page_end,
+                             "snippet": snippet[:120]})
             if len(evidence) >= MAX_EVIDENCE:
                 break
         if not evidence:
             continue
+        seen_titles.add(title)
         methods = [str(value)[:16] for value in (item.get("methods") or []) if str(value).strip()][:MAX_METHODS]
         evidence_kinds = {by_id[ref["unit_id"]].kind for ref in evidence}
         result = _clip(str(item.get("result", "")), MAX_RESULT) if evidence_kinds & {"RESULTS", "FIGURE", "TABLE"} else ""
@@ -212,18 +214,24 @@ def _existing_artifact(owner: str, paper_id: str, revision: str) -> dict | None:
 
 
 def _ai_context(paper: Paper, units: list[ReadingUnit]) -> dict:
+    # Reserve capacity for results and figures even when methods are long.
+    # A bounded sample is not the full paper; downstream must retain that caveat.
     excerpts = []
-    for unit in sorted(units, key=lambda item: item.position):
-        if unit.kind not in ("METHODS", "RESULTS", "FIGURE", "TABLE", "CONCLUSION"):
-            continue
-        text = re.sub(r"\s+", " ", unit.source_text or "").strip()
-        for start in range(0, len(text), 1600):
-            excerpts.append({"unit_id": unit.id, "kind": unit.kind,
-                             "page": unit.page_start, "text": text[start:start + 1600]})
-            if len(excerpts) >= 24:
+    ordered = sorted(units, key=lambda item: item.position)
+    for kinds in ({"METHODS"}, {"RESULTS", "FIGURE", "TABLE", "CONCLUSION"}):
+        bucket = []
+        for unit in ordered:
+            if unit.kind not in kinds:
+                continue
+            text = re.sub(r"\s+", " ", unit.source_text or "").strip()
+            for start in range(0, len(text), 1600):
+                bucket.append({"unit_id": unit.id, "kind": unit.kind,
+                               "page": unit.page_start, "text": text[start:start + 1600]})
+                if len(bucket) >= 12:
+                    break
+            if len(bucket) >= 12:
                 break
-        if len(excerpts) >= 24:
-            break
+        excerpts.extend(bucket)
     return {
         "paper_title": paper.title,
         "categories": [{"id": cid, "name": CATEGORY_NAMES[cid]} for cid in EXPERIMENT_CATEGORY_IDS],
@@ -246,7 +254,7 @@ async def execute_paper_experiments(owner: str, paper_id: str, *, emit=None,
                            .order_by(ReadingUnit.position)).all()
         if not units:
             raise ValueError("这篇论文还没有可用的阅读单元，请先完成解析")
-        revision = parse_revision(paper, units) + ":evidence-v3"
+        revision = parse_revision(paper, units) + ":evidence-v4"
         expected_revision = (paper.content_revision, paper.sha256)
         title = paper.title
         context = _ai_context(paper, units)
