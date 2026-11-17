@@ -1,14 +1,12 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { API } from "@/lib/api";
-import { useFocusTrap } from "@/lib/useFocusTrap";
 import "./home-studio.css";
 
 type Health = { status: string; database: string };
-const COMPETITION_URL = "https://agent.xjtu.edu.cn/aiic/index.htm";
 
 const modules = [
   { number: "01", href: "/discover", label: "文献发现", title: "找到值得读的论文", detail: "从研究问题出发，沿相似研究与引用关系追踪线索。", action: "探索文献" },
@@ -45,49 +43,19 @@ const faq = [
   { id: "verify", question: "AI 讲解能核对到原文吗？", answer: "精读按「阅读单元」推进，可回到 PDF 页码；当标注「未定位到具体原文位置」时，不能当作已核验的全文事实。" },
 ];
 
-/** 项目说明弹窗：独立组件，仅在 showIntro 为真时挂载，焦点陷阱才会在挂载时建立（D3 修复）。 */
-function IntroDialog({ onClose }: { onClose: () => void }) {
-  const rootRef = useRef<HTMLElement>(null);
-  const closeRef = useRef(onClose);
-  useEffect(() => { closeRef.current = onClose; });
-  useFocusTrap(rootRef, closeRef);
-  return <div className="home-intro-backdrop">
-    <section ref={rootRef} className="home-intro-dialog" role="dialog" aria-modal="true" aria-labelledby="home-intro-title" aria-describedby="home-intro-description" tabIndex={-1}>
-      <span className="home-intro-eyebrow">PROJECT NOTE / 项目说明</span>
-      <h2 id="home-intro-title">电信T.A杯 · 参赛作品展示</h2>
-      <p className="home-intro-competition">西安交通大学《电信T.A杯》“AI+教育”创新应用技能大赛</p>
-      <p id="home-intro-description">MedRead 是为本次大赛准备的作品展示页面，演示文献发现、PDF 精读、跨论文比较与研究设计。AI 生成内容可能不准确，请以论文原文核对；本站并非赛事或学校官方网站，也不提供医疗诊断建议。</p>
-      <div className="home-intro-links">
-        <a href={COMPETITION_URL} target="_blank" rel="noopener noreferrer">查看赛事官网 ↗</a>
-        <Link href="/read">跳过介绍，直接进入工作台 →</Link>
-      </div>
-      {/* data-autofocus 供 useFocusTrap 定位初始焦点（优先于首个可聚焦元素） */}
-      <button type="button" onClick={onClose} data-autofocus>了解，进入网站 <span aria-hidden="true">→</span></button>
-      <small>确认后，此浏览器将不再自动显示本说明。</small>
-    </section>
-  </div>;
-}
-
 export default function Home() {
   const router = useRouter();
   const [health, setHealth] = useState<Health | null>(null);
-  const [showIntro, setShowIntro] = useState(false);
   const [term, setTerm] = useState("");
   const [openFaq, setOpenFaq] = useState<string | null>(null);
 
   useEffect(() => {
-    try { setShowIntro(window.localStorage.getItem("medread-intro-acknowledged-v4") !== "1"); } catch { setShowIntro(true); }
     fetch(`${API}/api/health`)
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then(setHealth)
       .catch(() => setHealth(null));
   }, []);
   const connected = health?.status === "ok" && health.database === "ok";
-
-  function dismissIntro() {
-    try { window.localStorage.setItem("medread-intro-acknowledged-v4", "1"); } catch { /* Storage may be unavailable. */ }
-    setShowIntro(false);
-  }
 
   function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -97,7 +65,6 @@ export default function Home() {
   }
 
   return <main className="home-page" id="main">
-    {showIntro && <IntroDialog onClose={dismissIntro} />}
     <div className="home-container">
       {/* 分区 1 · header（brand chrome） */}
       <header className="home-header">

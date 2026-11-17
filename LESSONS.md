@@ -420,3 +420,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - The previous alternate-preview CORS fix was insufficient: two Next dev servers shared `.next` and overwrote the browser API endpoint. Separate build caches by local preview configuration, and check the actual compiled reading page endpoint. The audit build uses its own ignored cache.
 - Moved upload file writes/hashing off the event loop and tested a blocked write against loop progress. Added origin checks for PATCH/PUT and verified rejected workspace mutation. Preserved results/figure space in long-paper extraction and label multi-page source references as starting pages; matching a quote is not scientific validation.
 - Backend 128 tests, frontend 9 tests, TypeScript, production build, local preflight, a synthetic upload/parse and model/OpenAlex connectivity checks passed. The four page entry/empty states were checked in a browser; real-paper end-to-end AI quality, load tests, visual exports, production server and backup/recovery remain pending. Full detail: docs/release-readiness.md.
+
+## 2026-11-17 — Seed examples without sharing user sessions
+
+- Status: implemented locally; isolation verified with two independent test sessions, production validation pending.
+- Evidence: the requested public demonstration needs three editable example papers and results for every visitor; anonymous sessions isolate data by owner and local PDF paths are machine-specific.
+- Action: export only explicitly selected papers and results to a separate seed directory; generate new IDs, copy files into each owner directory, regenerate missing mind maps from parsed units, and initialize comparison/design pointers for new sessions only.
+- Verification and boundary: local tests checked per-owner PDF access and result pointers. Existing visitors are not overwritten; filesystem permissions and live public behavior require server verification. Generated maps without AI annotations are marked by annotation count.

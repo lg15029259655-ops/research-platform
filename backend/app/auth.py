@@ -37,6 +37,9 @@ def _resolve_owner(token: str) -> tuple[str, str | None]:
         with SessionLocal() as db:
             user = User(id=str(uuid4()), session_hash=session_hash(new_token))
             db.add(user)
+            db.flush()
+            from .services.demo_service import seed_new_workspace
+            seed_new_workspace(db, user.id)
             db.commit()
     return user.id, new_token
 
