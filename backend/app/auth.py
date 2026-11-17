@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 
 from .db import SessionLocal
-from .models import User
+from .models import DemoSeedMarker, User
 
 COOKIE_NAME = "medread_session"
 COOKIE_AGE = 180 * 24 * 60 * 60
@@ -29,9 +29,13 @@ def current_owner(request: Request) -> str:
 
 def _resolve_owner(token: str) -> tuple[str, str | None]:
     user = None
+    demo_enabled = bool(os.getenv("DEMO_SEED_DIR", "").strip())
+    demo_seeded = False
     if len(token) == 43:
         with SessionLocal() as db:
             user = db.scalar(select(User).where(User.session_hash == session_hash(token)))
+            if user is not None and demo_enabled:
+                demo_seeded = db.get(DemoSeedMarker, user.id) is not None
 
     new_token = None
     if user is None:
@@ -40,10 +44,11 @@ def _resolve_owner(token: str) -> tuple[str, str | None]:
             user = User(id=str(uuid4()), session_hash=session_hash(new_token))
             db.add(user)
             db.flush()
-            from .services.demo_service import ensure_demo
-            ensure_demo(db, user.id)
+            if demo_enabled:
+                from .services.demo_service import ensure_demo
+                ensure_demo(db, user.id)
             db.commit()
-    elif os.getenv("DEMO_SEED_DIR", "").strip():
+    elif demo_enabled and not demo_seeded:
         # Multiple parallel page requests must not create duplicate examples.
         from .services.demo_service import ensure_demo
         with _demo_lock, SessionLocal() as db:

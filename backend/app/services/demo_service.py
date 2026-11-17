@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+from sqlalchemy import func, select
+
 from ..config import upload_dir
 from ..models import DemoSeedMarker, DesignVersion, Message, Paper, PaperImage, ReadingUnit, ResearchArtifact, ResearchWorkspace
 from .mindmap_service import build_skeleton, parse_revision, skeleton_stats
@@ -38,12 +40,7 @@ def _copy_example_file(source, target):
         shutil.copy2(source, target)
 
 
-def seed_new_workspace(db, owner, workspace=None):
-    directory = os.getenv("DEMO_SEED_DIR", "").strip()
-    if not directory:
-        return
-    root = Path(directory)
-    seed = json.loads((root / "seed.json").read_text(encoding="utf-8"))
+def _seed_workspace(db, owner, workspace, root, seed):
     names = ("papers", "reading_units", "paper_images", "messages", "research_artifacts")
     mapping = {row["id"]: str(uuid4()) for name in names for row in seed[name]}
     destination = upload_dir() / owner
@@ -105,7 +102,9 @@ def seed_new_workspace(db, owner, workspace=None):
         if workspace is None:
             workspace = ResearchWorkspace(id=str(uuid4()), owner_id=owner)
             db.add(workspace)
-        if not workspace.synthesis_id:
+        if not (workspace.synthesis_id or workspace.query or workspace.core_paper_id
+                or json.loads(workspace.selected_paper_ids_json or "[]") or workspace.research_gap
+                or workspace.domain not in (None, "general") or workspace.study_type not in (None, "unspecified")):
             workspace.domain = "biomed"
             workspace.study_type = "unspecified"
             workspace.selected_paper_ids_json = json.dumps([p.id for p in papers])
@@ -115,8 +114,11 @@ def seed_new_workspace(db, owner, workspace=None):
             workspace.design_idea = goal
             workspace.design_version_id = design.id
         db.flush()
+        latest_number = db.scalar(select(func.max(DesignVersion.version_number)).where(
+            DesignVersion.workspace_id == workspace.id))
         db.add(DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace.id, artifact_id=design.id,
-                             version_number=1, action="example", changed_nodes_json='{"added": [], "removed": [], "modified": []}'))
+                             version_number=(latest_number or 0) + 1, action="example",
+                             changed_nodes_json='{"added": [], "removed": [], "modified": []}'))
         db.flush()
     except Exception:
         for folder in created_folders:
@@ -126,11 +128,11 @@ def seed_new_workspace(db, owner, workspace=None):
 
 def ensure_demo(db, owner):
     """Seed once; preserve older papers and any existing completed results."""
-    if not os.getenv("DEMO_SEED_DIR", "").strip() or db.get(DemoSeedMarker, owner):
+    directory = os.getenv("DEMO_SEED_DIR", "").strip()
+    if not directory or db.get(DemoSeedMarker, owner):
         return
-    from sqlalchemy import select
 
-    root = Path(os.environ["DEMO_SEED_DIR"])
+    root = Path(directory)
     seed = json.loads((root / "seed.json").read_text(encoding="utf-8"))
     titles = {item["title"] for item in seed["papers"]}
     existing_titles = set(db.scalars(select(Paper.title).where(Paper.owner_id == owner)).all())
@@ -138,6 +140,6 @@ def ensure_demo(db, owner):
         ResearchArtifact.owner_id == owner, ResearchArtifact.kind == "paper_compare"))
     if not (titles <= existing_titles and existing_comparison):
         workspace = db.scalar(select(ResearchWorkspace).where(ResearchWorkspace.owner_id == owner))
-        seed_new_workspace(db, owner, workspace)
+        _seed_workspace(db, owner, workspace, root, seed)
     db.add(DemoSeedMarker(owner_id=owner))
     db.flush()

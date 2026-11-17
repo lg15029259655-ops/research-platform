@@ -120,6 +120,7 @@ def requeue_after_shutdown(job_id: str) -> bool:
         job.stage = "queued"
         job.stage_label = "服务重启后等待恢复"
         job.started_at = None
+        job.progress_json = None
         db.commit()
         return True
 
@@ -204,12 +205,24 @@ def is_cancel_requested(job_id: str) -> bool:
 def resumable_ids() -> list[str]:
     """进程重启后需要重新入队的任务。"""
     with SessionLocal() as db:
-        rows = db.scalars(select(AiJob).where(AiJob.status.in_(("queued", "running")))).all()
+        rows = db.scalars(select(AiJob).where(
+            AiJob.status.in_(("queued", "running"))
+        ).order_by(AiJob.created_at, AiJob.id)).all()
         ids = []
         for job in rows:
+            if job.cancel_requested:
+                job.status = "canceled"
+                job.stage = "canceled"
+                job.stage_label = "已取消"
+                job.error_code = "canceled"
+                job.error_message = "任务已取消"
+                job.finished_at = datetime.now(timezone.utc)
+                continue
             job.status = "queued"
             job.stage = "queued"
             job.stage_label = "排队中"
+            job.started_at = None
+            job.progress_json = None
             ids.append(job.id)
         db.commit()
         return ids

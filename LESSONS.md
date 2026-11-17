@@ -427,3 +427,16 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the requested public demonstration needs three editable example papers and results for every visitor; anonymous sessions isolate data by owner and local PDF paths are machine-specific.
 - Action: export only explicitly selected papers and results to a separate seed directory; generate new IDs, copy files into each owner directory, regenerate missing mind maps from parsed units, and initialize comparison/design pointers for new sessions only.
 - Verification and boundary: local tests checked per-owner PDF access and result pointers. Existing visitors are not overwritten; filesystem permissions and live public behavior require server verification. Generated maps without AI annotations are marked by annotation count.
+
+## L-20261117-01 — Keep example initialization out of established sessions
+
+- Existing sessions took the initialization lock on every API request, and seeding a legacy workspace without a comparison could replace its active research selection. Check the persisted seed marker before locking, reuse the parsed seed within initialization, and only fill comparison defaults when the existing research context is empty.
+- Verify both new and existing visitors, including paper ownership and preservation of the legacy workspace. With a local 300 ms test lock and five requests per version, median paper-list latency fell from 312.4 ms to 5.0 ms. This measures the lock wait, with production throughput and model latency still unmeasured.
+- Status: verified locally with temporary storage and the existing three-paper example bundle.
+
+## L-20261117-02 — Exercise concurrent creation, restart and slow streams
+
+- A lookup followed by a plain insert can race when two requests create a workspace. Force both requests past the missing-row lookup and check that they return the same workspace. Use SQLite's owner uniqueness constraint to make creation repeatable.
+- Restart coverage needs persisted progress and cancellation. Restore submission order, clear prior progress and finish persisted cancellations before running handlers. Exercise SSE with a paused client and verify it stops pulling messages, closes its source and preserves the user-facing cancellation state.
+- The automated tests explicitly disable demo seeding unless a test configures its own fixtures. Run the documented frontend tests and type check, and review the diff after a Next.js build because a custom output path can rewrite the tracked TypeScript configuration.
+- Status: verified locally with 134 backend tests, 11 frontend tests, TypeScript, a production build and local deployment preflight. Server load and backup restoration still require target-environment checks.

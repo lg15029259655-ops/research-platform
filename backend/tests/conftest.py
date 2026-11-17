@@ -16,6 +16,7 @@ os.environ["MEDREAD_TEST_ROOT"] = str(_test_root)
 os.environ["DATABASE_URL"] = "sqlite:///" + (_test_root / "test.db").as_posix()
 os.environ["UPLOAD_DIR"] = str(_test_root / "uploads")
 os.environ["PRECOMPUTE_ON_PARSE"] = "0"
+os.environ["DEMO_SEED_DIR"] = ""
 
 
 def pytest_unconfigure(config):

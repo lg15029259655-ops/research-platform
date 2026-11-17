@@ -70,6 +70,10 @@ AI 讲解规则位于 `backend/app/prompts/reading_rules.md`，可替换为完�
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -m pytest -q
+Push-Location frontend
+pnpm test
+pnpm typecheck
+Pop-Location
 ```
 
 前端生产构建：先停止前端开发服务，进入 `frontend` 后执行 `pnpm build`。本地测试覆盖双用户 Cookie 隔离、180 天有效期、跨浏览器会话恢复、PDF 上传、Figure/Table/Results 兜底、目录跳转、图像输入、视觉降级、安全错误提示、四领域模板、元数据/全文边界、结构化输出校验和远程 PDF 地址限制。运行中的后端可用 `backend\.venv\Scripts\python.exe backend\scripts\smoke_local.py` 做安全的真实连接检查；该脚本只输出状态，不打印 API Key 或模型回答。

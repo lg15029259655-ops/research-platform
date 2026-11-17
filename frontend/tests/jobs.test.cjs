@@ -49,3 +49,24 @@ test("stops polling when the task no longer exists", async () => {
   await assert.rejects(promise, error);
   assert.equal(h.FakeEventSource.current.closed, true);
 });
+
+test("preserves cancellation received over SSE", async () => {
+  const h = harness(async () => { throw new Error("unexpected poll"); });
+  const result = h.watchJob("job");
+  h.FakeEventSource.current.emit("snapshot", { id: "job", kind: "compare", status: "running" });
+  h.FakeEventSource.current.emit("error", { code: "canceled", message: "任务已取消" });
+  assert.equal((await result).status, "canceled");
+  assert.equal(h.FakeEventSource.current.closed, true);
+});
+
+test("closes a failed event connection before polling", async () => {
+  let closedBeforePoll;
+  const h = harness(async () => {
+    closedBeforePoll = h.FakeEventSource.current.closed;
+    return { id: "job", kind: "compare", status: "done", result: { value: 42 } };
+  });
+  const result = h.watchJob("job");
+  h.FakeEventSource.current.emit("error");
+  assert.equal((await result).status, "done");
+  assert.equal(closedBeforePoll, true);
+});

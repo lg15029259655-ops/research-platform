@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
 
 from .auth import current_owner
 from .db import SessionLocal
@@ -29,12 +30,13 @@ def workspace_data(item: ResearchWorkspace) -> dict:
 
 
 def get_or_create(db, owner: str) -> ResearchWorkspace:
-    item = db.scalar(select(ResearchWorkspace).where(ResearchWorkspace.owner_id == owner))
+    by_owner = select(ResearchWorkspace).where(ResearchWorkspace.owner_id == owner)
+    item = db.scalar(by_owner)
     if item is None:
-        item = ResearchWorkspace(id=str(uuid4()), owner_id=owner)
-        db.add(item)
+        db.execute(insert(ResearchWorkspace).values(id=str(uuid4()), owner_id=owner)
+                   .on_conflict_do_nothing(index_elements=[ResearchWorkspace.owner_id]))
         db.commit()
-        db.refresh(item)
+        item = db.scalars(by_owner).one()
     return item
 
 

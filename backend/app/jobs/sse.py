@@ -4,12 +4,12 @@
 字节到达会让浏览器/代理都认为连接已死，用户也只看到白屏。这里把任意异步字符串
 流包装成"至少每 interval 秒有一个注释行"的流。
 
-实现用后台泵任务 + 队列，而不是 wait_for(agen.__anext__())：
-对 async generator 的 __anext__ 施加超时会在超时时取消它，可能直接关闭生成器。
+使用 asyncio.wait 保留等待中的读取。心跳超时不会取消生成器，慢客户端也不会积累无界队列。
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing
 
 
 def sse_event(event: str | None, data) -> str:
@@ -22,36 +22,27 @@ def sse_event(event: str | None, data) -> str:
         import json
 
         payload = json.dumps(data, ensure_ascii=False)
-    for line in payload.splitlines() or [""]:
+    for line in payload.split("\n"):
         lines.append(f"data: {line}")
     return "\n".join(lines) + "\n\n"
 
 
-async def with_heartbeat(source: AsyncIterator[str], interval: float = 15.0) -> AsyncIterator[str]:
+async def with_heartbeat(source: AsyncGenerator[str, None], interval: float = 15.0) -> AsyncIterator[str]:
     """在 source 的两次输出之间最多空等 interval 秒，空等时补一个注释心跳。"""
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-    async def pump() -> None:
-        try:
-            async for chunk in source:
-                await queue.put(chunk)
-        finally:
-            await queue.put(None)
-
-    task = asyncio.create_task(pump())
-    try:
+    async with aclosing(source):
         while True:
+            pending = asyncio.create_task(anext(source))
             try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=interval)
-            except asyncio.TimeoutError:
-                yield ": ping\n\n"
-                continue
-            if chunk is None:
-                break
+                while True:
+                    completed, _ = await asyncio.wait({pending}, timeout=interval)
+                    if completed:
+                        break
+                    yield ": ping\n\n"
+                chunk = pending.result()
+            except StopAsyncIteration:
+                return
+            finally:
+                if not pending.done():
+                    pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
             yield chunk
-    finally:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass

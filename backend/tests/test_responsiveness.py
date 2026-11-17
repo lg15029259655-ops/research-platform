@@ -1,6 +1,7 @@
 import asyncio
 import io
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -12,7 +13,7 @@ from sqlalchemy import select
 from app import auth
 from app.db import SessionLocal
 from app.main import app
-from app.models import Paper, PaperImage, User
+from app.models import DemoSeedMarker, Paper, PaperImage, ResearchWorkspace, User
 from app.services import file_service
 
 
@@ -89,6 +90,44 @@ def test_paper_list_counts_images_and_preserves_owner_isolation():
         other = second.get("/api/papers").json()
         assert next(p for p in own if p["id"] == paper_id)["image_count"] == 2
         assert all(p["id"] != paper_id for p in other)
+
+
+def test_seeded_visitor_does_not_wait_for_demo_setup(monkeypatch):
+    with TestClient(app) as client:
+        client.get("/api/session")
+        token = client.cookies[auth.COOKIE_NAME]
+        with SessionLocal() as db:
+            owner = db.scalar(select(User.id).where(User.session_hash == auth.session_hash(token)))
+            db.add(DemoSeedMarker(owner_id=owner))
+            db.commit()
+
+        monkeypatch.setenv("DEMO_SEED_DIR", "unused-in-fast-path")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with auth._demo_lock:
+                response = pool.submit(client.get, "/api/papers").result(timeout=3)
+                assert response.status_code == 200
+
+
+def test_concurrent_first_workspace_requests_share_one_row(monkeypatch):
+    with TestClient(app) as client:
+        client.get("/api/session")
+        barrier = threading.Barrier(2, timeout=3)
+        session_type = SessionLocal.class_
+        scalar = session_type.scalar
+
+        def synchronize_first_lookup(db, statement, *args, **kwargs):
+            result = scalar(db, statement, *args, **kwargs)
+            if result is None and statement.column_descriptions[0]["entity"] is ResearchWorkspace:
+                barrier.wait()
+            return result
+
+        monkeypatch.setattr(session_type, "scalar", synchronize_first_lookup)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            requests = [pool.submit(client.get, "/api/workspace") for _ in range(2)]
+            first, second = [pending.result(timeout=5) for pending in requests]
+
+        assert first.status_code == second.status_code == 200
+        assert first.json()["workspace_id"] == second.json()["workspace_id"]
 
 
 def test_workspace_patch_rejects_foreign_origin(monkeypatch):

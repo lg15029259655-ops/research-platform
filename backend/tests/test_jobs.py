@@ -1,12 +1,15 @@
 """异步任务层测试：提交、幂等去重、进度事件、取消、跨用户隔离。"""
 
 import asyncio
+import json
 import time
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.jobs import store, worker
+from app.jobs import sse, store, worker
 
 
 def test_novelty_job_preserves_search_error(monkeypatch):
@@ -40,6 +43,45 @@ def test_terminal_event_survives_full_subscriber_queue():
             events.unsubscribe("full-queue-test", queue)
 
     asyncio.run(exercise())
+
+
+def test_sse_heartbeat_preserves_pending_read_and_applies_backpressure():
+    async def exercise():
+        ready = asyncio.Event()
+        consumed = []
+        closed = asyncio.Event()
+
+        async def source():
+            try:
+                await ready.wait()
+                for index in range(3):
+                    consumed.append(index)
+                    yield str(index)
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+        stream = sse.with_heartbeat(source(), interval=0.01)
+        try:
+            assert await anext(stream) == ": ping\n\n"
+            ready.set()
+            assert await anext(stream) == "0"
+            await asyncio.sleep(0.02)
+            assert consumed == [0]
+            assert await anext(stream) == "1"
+            assert await anext(stream) == "2"
+            assert await anext(stream) == ": ping\n\n"
+        finally:
+            await stream.aclose()
+        assert closed.is_set()
+
+    asyncio.run(exercise())
+
+
+def test_sse_keeps_unicode_line_separator_inside_json():
+    payload = {"text": "第一行\u2028第二行"}
+    data = sse.sse_event("result", payload).split("\n")[1].removeprefix("data: ")
+    assert json.loads(data) == payload
 
 
 async def _echo_handler(ctx: worker.JobContext) -> dict:
@@ -237,6 +279,39 @@ def test_graceful_restart_requeues_unfinished_job():
         assert store.load(job["id"])["status"] == "queued"
         with TestClient(app, cookies={COOKIE_NAME: token}) as second:
             assert _wait(second, job["id"], timeout=5)["status"] == "done"
+    finally:
+        _cleanup()
+
+
+def test_restart_restores_queue_order_and_honors_persisted_cancellation():
+    from app.db import Base, SessionLocal, engine
+    from app.models import AiJob, User
+
+    Base.metadata.create_all(engine)
+    owner = str(uuid4())
+    newer, older, canceled = (str(uuid4()) for _ in range(3))
+    now = datetime.now(timezone.utc)
+    try:
+        with SessionLocal() as db:
+            db.add(User(id=owner, session_hash=owner))
+            db.flush()
+            for job_id, created, cancel_requested in (
+                (newer, now, False),
+                (older, now - timedelta(seconds=1), False),
+                (canceled, now - timedelta(seconds=2), True),
+            ):
+                db.add(AiJob(id=job_id, owner_id=owner, kind="test_echo", dedupe_key=job_id,
+                             status="running", created_at=created, started_at=created,
+                             progress_json='{"done": 1, "total": 2}', cancel_requested=cancel_requested))
+            db.commit()
+
+        assert [job_id for job_id in store.resumable_ids() if job_id in {newer, older, canceled}] == [older, newer]
+        assert store.load(older)["status"] == "queued"
+        assert store.load(older)["progress"] is None
+        snapshot = store.load(canceled)
+        assert snapshot["status"] == "canceled"
+        assert snapshot["error"]["code"] == "canceled"
+        assert snapshot["finished_at"]
     finally:
         _cleanup()
 

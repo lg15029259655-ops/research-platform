@@ -171,14 +171,17 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
       });
       source.addEventListener("error", (event) => {
         // 两种 error 要分开：业务错误事件带 data；传输层错误（network/chunked 断开）没有 data。
-        // 业务错误是终态，直接给出快照；传输层错误则交给轮询兜底（EventSource 自己也会重连）。
+        // 业务错误是终态；传输层错误关闭事件连接，交由轮询继续跟踪。
         const data = readEventData(event) as { code?: string; message?: string } | null;
         if (data) {
           const error = { code: data.code ?? "unknown", message: data.message ?? "任务失败，请重试" };
-          if (latest) { settle({ ...latest, status: "failed", error }); return; }
-          getJob(id).then((full) => settle({ ...full, status: "failed", error })).catch(fail);
+          const status = error.code === "canceled" ? "canceled" : "failed";
+          if (latest) { settle({ ...latest, status, error }); return; }
+          getJob(id).then((full) => settle({ ...full, status, error })).catch(fail);
           return;
         }
+        source?.close();
+        source = null;
         startPolling();
       });
       // SSE can stall silently after its initial snapshot. Periodic status
