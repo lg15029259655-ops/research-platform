@@ -31,6 +31,13 @@ def _row(model, data):
     return result
 
 
+def _copy_example_file(source, target):
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+
+
 def seed_new_workspace(db, owner):
     directory = os.getenv("DEMO_SEED_DIR", "").strip()
     if not directory:
@@ -47,7 +54,7 @@ def seed_new_workspace(db, owner):
             row = _row(Paper, _replace(original, mapping))
             row["owner_id"] = owner
             folder = destination / row["id"]
-            shutil.copytree(root / "files" / original["id"], folder)
+            shutil.copytree(root / "files" / original["id"], folder, copy_function=_copy_example_file)
             row["local_file_path"] = str(folder / row["stored_filename"])
             row["parse_token"] = None
             row["parse_heartbeat"] = None
