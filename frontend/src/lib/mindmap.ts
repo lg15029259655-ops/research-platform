@@ -93,10 +93,17 @@ export function normalizeLabel(label: string): string {
 
 const CJK = /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]/;
 
-/** 粗略文本宽度：CJK 约 13px/字，拉丁约 7px/字（字号 12.5px）。 */
+/** 粗略文本宽度：保守估算加粗节点文字的宽度，留出字体差异余量。 */
+function characterWidth(ch: string): number {
+  if (CJK.test(ch)) return 16;
+  if (/[MW@%]/.test(ch)) return 15;
+  if (/[A-Z]/.test(ch)) return 11;
+  return 9;
+}
+
 export function measureLabel(label: string): number {
   let width = 0;
-  for (const ch of label) width += CJK.test(ch) ? 13 : 7;
+  for (const ch of label) width += characterWidth(ch);
   return width;
 }
 
@@ -130,7 +137,7 @@ export function wrapLabel(label: string, maxWidth: number): string[] {
   let width = 0;
 
   for (const ch of chars) {
-    const charWidth = CJK.test(ch) ? 13 : 7;
+    const charWidth = characterWidth(ch);
     const wouldOverflow = line.length > 0 && width + charWidth > maxWidth;
     const overTarget = line.length > 0 && width >= target && !CLOSING_PUNCT.includes(ch) && ch.trim() !== "";
     if (wouldOverflow || overTarget) {

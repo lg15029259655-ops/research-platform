@@ -117,9 +117,11 @@ def test_ai_result_is_validated(client, monkeypatch):
     snapshot = _wait(client, job["id"])
     assert snapshot["status"] == "done"
     payload = snapshot["result"]["payload"]
-    assert payload["generated_by"] == "ai"
+    assert payload["generated_by"] == "ai_and_rules"
     titles = [item["title"] for item in payload["experiments"]]
-    assert titles == ["细胞培养与转染"]  # 非法分类及虚构引文被丢弃
+    assert "细胞培养与转染" in titles
+    assert "非法分类实验" not in titles
+    assert all("never in the paper" not in ref["snippet"] for item in payload["experiments"] for ref in item["evidence"])
     assert payload["experiments"][0]["inferred"] is True
     assert payload["experiments"][0]["depends_on"] == []
 
@@ -166,3 +168,14 @@ def test_short_keywords_do_not_match_inside_unrelated_words():
     assert paper_experiment_service._match("We used a separate approach.") is None
     assert paper_experiment_service._match("Rats were studied.")[1] == "动物模型构建"
     assert paper_experiment_service._match("The rat model was examined.")[1] == "动物模型构建"
+
+
+def test_context_includes_later_methods_and_method_only_has_no_result():
+    from app.models import Paper, ReadingUnit
+    unit = ReadingUnit(id="long", paper_id="p", position=0, kind="METHODS", heading="Methods", page_start=3, page_end=5, source_text=("Background material " * 120) + "Western blot analysis was performed.")
+    context = paper_experiment_service._ai_context(Paper(title="Study"), [unit])
+    assert any("Western blot" in chunk["text"] for chunk in context["units"])
+    candidates = paper_experiment_service.rules_experiments([unit])
+    assert any(item["title"] == "Western blot" for item in candidates)
+    payload = {"experiments": [{"title": "Western blot", "category": "molecular_experiment", "result": "Imagined effect", "evidence": [{"unit_id": "long", "snippet": "Western blot analysis was performed."}]}]}
+    assert paper_experiment_service._validate_ai(payload, [unit])[0]["result"] == ""

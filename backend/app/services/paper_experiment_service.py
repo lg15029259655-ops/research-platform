@@ -19,7 +19,7 @@ from .research_ai import EXPERIMENT_CATEGORY_IDS
 
 logger = logging.getLogger(__name__)
 
-MAX_EXPERIMENTS = 8
+MAX_EXPERIMENTS = 16
 MAX_METHODS = 4
 MAX_EVIDENCE = 3
 MAX_TITLE = 24
@@ -38,24 +38,22 @@ _KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("data_analysis", "差异表达分析", ("差异表达", "差异基因", "differential expression")),
     ("data_analysis", "富集分析", ("富集分析", "enrichment")),
     ("data_analysis", "数据库筛选", ("数据库", "geo", "tcga", "gtex", "public dataset")),
-    ("cell_experiment", "细胞培养与转染", ("细胞培养", "培养", "传代", "转染", "transfect", "cell culture")),
+    ("cell_experiment", "细胞培养", ("细胞培养", "cell culture", "cell lines were grown")),
+    ("cell_experiment", "细胞转染", ("转染", "transfect")),
     ("cell_experiment", "敲低/敲除", ("敲低", "敲除", "knockdown", "knockout", "sirna", "shrna", "crispr")),
     ("cell_experiment", "过表达", ("过表达", "overexpress")),
-    ("cell_experiment", "增殖/凋亡检测", ("增殖", "凋亡", "cck-8", "cck8", "apoptosis", "proliferation", "viability")),
-    ("cell_experiment", "迁移/侵袭实验", ("迁移", "侵袭", "transwell", "migration", "invasion")),
+    ("cell_experiment", "增殖/凋亡检测", ("增殖检测", "凋亡检测", "cck-8", "cck8", "apoptosis assay", "proliferation assay", "viability assay")),
+    ("cell_experiment", "迁移/侵袭实验", ("迁移实验", "侵袭实验", "transwell", "migration assay", "invasion assay")),
     ("cell_experiment", "共培养", ("共培养", "co-culture", "coculture")),
     ("cell_experiment", "流式细胞术", ("流式", "flow cytometry")),
     ("animal_experiment", "动物模型构建", ("动物模型", "小鼠", "大鼠", "裸鼠", "mouse", "mice", "rat", "rats", "xenograft")),
     ("animal_experiment", "给药处理", ("给药", "灌胃", "腹腔注射", "dosing", "administration")),
-    ("animal_experiment", "组织取材与切片", ("取材", "切片", "he 染色", "组织学", "histolog")),
+    ("animal_experiment", "组织病理分析", ("he 染色", "组织病理", "histopathologic analysis", "histological analysis", "hematoxylin and eosin")),
     ("animal_experiment", "活体成像", ("活体成像", "in vivo imaging", "bioluminescence")),
-    ("clinical_sample", "临床样本", ("患者", "病人", "临床样本", "组织芯片", "patient", "cohort", "tissue microarray")),
+    ("clinical_sample", "临床样本", ("临床样本", "患者样本", "组织芯片", "human liver tissue specimens", "patient samples", "tissue microarray")),
     ("imaging", "共聚焦成像", ("共聚焦", "confocal", "荧光成像")),
     ("imaging", "电镜", ("电镜", "electron microscop")),
-    ("materials_prep", "材料合成与表征", ("合成", "制备", "sem", "xrd", "表征", "synthesis", "characteriz")),
-    ("engineering_test", "仿真/样机测试", ("有限元", "仿真", "样机", "台架", "simulation", "prototype")),
-    ("modeling_algorithm", "模型训练与评估", ("模型训练", "基线", "消融", "基准", "泛化", "benchmark", "ablation", "neural network")),
-    ("survey_statistics", "问卷与统计", ("问卷", "量表", "回归", "调查", "survey", "questionnaire")),
+
 )
 
 _SENTENCE = re.compile(r"(?<=[。！？!?；;])|(?<=[.])\s+")
@@ -76,18 +74,30 @@ def _sentences(text: str | None) -> list[str]:
     return [part.strip() for part in _SENTENCE.split(cleaned) if part and part.strip()]
 
 
-def _match(text: str) -> tuple[str, str] | None:
+def _matches(text: str) -> list[tuple[str, str]]:
     lowered = text.casefold()
+    hits = []
     for category, label, patterns in _KEYWORDS:
         if any((re.search(r"(?<![a-z0-9])" + re.escape(pattern) + r"(?![a-z0-9])", lowered) is not None)
                if pattern.isascii() and pattern.isalnum() and len(pattern) <= 4
                else pattern in lowered for pattern in patterns):
-            return category, label
-    return None
+            hits.append((category, label))
+    return hits
 
 
-def _evidence(unit: ReadingUnit, snippet: str) -> dict:
-    return {"unit_id": unit.id, "page": unit.page_start, "snippet": _clean(snippet)[:120]}
+def _match(text: str) -> tuple[str, str] | None:
+    hits = _matches(text)
+    return hits[0] if hits else None
+
+
+def _evidence(unit: ReadingUnit, snippet: str, label: str) -> dict:
+    text = _clean(snippet)
+    patterns = next((patterns for _, name, patterns in _KEYWORDS if name == label), ())
+    positions = [text.casefold().find(pattern) for pattern in patterns if text.casefold().find(pattern) >= 0]
+    position = min(positions) if positions else 0
+    start = max(0, position - 35)
+    return {"unit_id": unit.id, "page": unit.page_start, "snippet": text[start:start + 120]}
+
 
 
 def rules_experiments(units: list[ReadingUnit]) -> list[dict]:
@@ -118,27 +128,15 @@ def rules_experiments(units: list[ReadingUnit]) -> list[dict]:
             if title not in existing["methods"] and len(existing["methods"]) < MAX_METHODS:
                 existing["methods"].append(title)
         if len(existing["evidence"]) < MAX_EVIDENCE:
-            existing["evidence"].append(_evidence(unit, sentence))
+            existing["evidence"].append(_evidence(unit, sentence, title))
         return existing
 
     for unit in ordered:
         kind = unit.kind
         if kind in ("METHODS",):
             for sentence in _sentences(unit.source_text):
-                hit = _match(sentence)
-                if hit:
-                    add(hit[0], hit[1], unit, sentence, result=False)
-        elif kind in ("RESULTS",):
-            for sentence in _sentences(unit.source_text):
-                hit = _match(sentence)
-                if hit:
-                    add(hit[0], hit[1], unit, sentence, result=True)
-        elif kind in ("FIGURE", "TABLE"):
-            caption = _sentences(unit.source_text)
-            text = caption[0] if caption else unit.heading
-            hit = _match(text)
-            if hit:
-                add(hit[0], hit[1], unit, text, result=False)
+                for category, label in _matches(sentence):
+                    add(category, label, unit, sentence, result=False)
 
     experiments = experiments[:MAX_EXPERIMENTS]
     for index, item in enumerate(experiments):
@@ -183,7 +181,8 @@ def _validate_ai(payload: dict, units: list[ReadingUnit]) -> list[dict]:
         if not evidence:
             continue
         methods = [str(value)[:16] for value in (item.get("methods") or []) if str(value).strip()][:MAX_METHODS]
-        result = _clip(str(item.get("result", "")), MAX_RESULT)
+        evidence_kinds = {by_id[ref["unit_id"]].kind for ref in evidence}
+        result = _clip(str(item.get("result", "")), MAX_RESULT) if evidence_kinds & {"RESULTS", "FIGURE", "TABLE"} else ""
         cleaned.append({
             "id": f"E{len(cleaned) + 1}", "order": len(cleaned) + 1, "title": title, "category": category,
             "methods": methods, "result": result, "evidence": evidence,
@@ -217,13 +216,13 @@ def _ai_context(paper: Paper, units: list[ReadingUnit]) -> dict:
     for unit in sorted(units, key=lambda item: item.position):
         if unit.kind not in ("METHODS", "RESULTS", "FIGURE", "TABLE", "CONCLUSION"):
             continue
-        excerpts.append({
-            "unit_id": unit.id,
-            "kind": unit.kind,
-            "page": unit.page_start,
-            "text": _clean(unit.source_text)[:900],
-        })
-        if len(excerpts) >= 18:
+        text = re.sub(r"\s+", " ", unit.source_text or "").strip()
+        for start in range(0, len(text), 1600):
+            excerpts.append({"unit_id": unit.id, "kind": unit.kind,
+                             "page": unit.page_start, "text": text[start:start + 1600]})
+            if len(excerpts) >= 24:
+                break
+        if len(excerpts) >= 24:
             break
     return {
         "paper_title": paper.title,
@@ -247,7 +246,7 @@ async def execute_paper_experiments(owner: str, paper_id: str, *, emit=None,
                            .order_by(ReadingUnit.position)).all()
         if not units:
             raise ValueError("这篇论文还没有可用的阅读单元，请先完成解析")
-        revision = parse_revision(paper, units) + ":evidence-v2"
+        revision = parse_revision(paper, units) + ":evidence-v3"
         expected_revision = (paper.content_revision, paper.sha256)
         title = paper.title
         context = _ai_context(paper, units)
@@ -277,8 +276,26 @@ async def execute_paper_experiments(owner: str, paper_id: str, *, emit=None,
     except Exception as exc:  # noqa: BLE001 - AI 不可用是常态：规则提取兜底
         logger.warning("Paper experiments AI failed, using rules: %s", type(exc).__name__)
 
-    if not experiments:
-        experiments = rules_experiments(units)
+    rule_candidates = rules_experiments(units)
+    if experiments:
+        ai_count = len(experiments)
+        represented = {hit for item in experiments
+                       for hit in _matches(" ".join([item["title"], *item["methods"]]))}
+        for candidate in rule_candidates:
+            if len(experiments) >= MAX_EXPERIMENTS:
+                break
+            key = (candidate["category"], candidate["title"])
+            if key in represented:
+                continue
+            candidate["id"] = f"E{len(experiments) + 1}"
+            candidate["order"] = len(experiments) + 1
+            experiments.append(candidate)
+            represented.add(key)
+            if len(experiments) >= MAX_EXPERIMENTS:
+                break
+        generated_by = "ai_and_rules" if len(experiments) > ai_count else "ai"
+    else:
+        experiments = rule_candidates
 
     if emit is not None:
         await emit("stage", {"stage": "validating", "label": "校验证据单元"})

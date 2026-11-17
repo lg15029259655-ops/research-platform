@@ -79,9 +79,9 @@ export default function PaperExperimentsPanel({ payload, pending, onJump }: {
         </div>
       </header>
 
-      {payload.generated_by === "rules" && (
+      {["rules", "ai_and_rules"].includes(payload.generated_by) && (
         <p className="pe-notice" role="note">
-          当前为规则提取（未完成模型解读）：候选实验由原文关键词匹配，可能遗漏或误配，请逐项对照原文。
+          当前为规则提取（未完成模型解读）：部分候选实验由原文关键词匹配，可能遗漏或误配，请逐项对照原文。
         </p>
       )}
 
@@ -123,7 +123,7 @@ export default function PaperExperimentsPanel({ payload, pending, onJump }: {
                         key={`${ref.unit_id}:${ref.snippet}`}
                         type="button"
                         className="pe-page"
-                        title={ref.snippet || "回到 PDF 核对"}
+                        title={ref.snippet ? `章节起始页；线索：${ref.snippet}` : "回到章节起始页核对"}
                         onClick={() => onJump(ref.unit_id)}
                       >
                         {ref.page ? `p.${ref.page}` : "原文"}
