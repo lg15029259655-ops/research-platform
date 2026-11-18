@@ -12,6 +12,7 @@ type Props = {
   /** 任务开始时间戳（Date.now()）。null/undefined 表示当前没有任务，组件不渲染。 */
   startedAt?: number | null;
   onCancel?: () => void;
+  hint?: string;
   /** fixed 用于综合/设计页右下角悬浮（替代原 floatingBusy）；inline 嵌在分区里。 */
   variant?: "inline" | "fixed";
 };
@@ -19,7 +20,7 @@ type Props = {
 /** 为什么计时器放在组件里：三个页面都要显示「已等待 N 秒」，放组件内避免三份计时逻辑漂移。
  *  为什么文案分成 stageLabel + title：后端每次下发的 stage_label 是当下真实阶段，比页面猜的
  *  "正在组织证据" 更准；后端没给时才退回 title。 */
-export default function JobProgress({ title = "正在处理", stageLabel, progress, startedAt, onCancel, variant = "inline" }: Props) {
+export default function JobProgress({ title = "正在处理", stageLabel, progress, startedAt, onCancel, hint = "可以离开这一分区继续浏览，结果会保留", variant = "inline" }: Props) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -48,7 +49,7 @@ export default function JobProgress({ title = "正在处理", stageLabel, progre
       )}
       <div className="jobProgressMeta">
         {progress && progress.total > 0 && <span className="jobProgressCount">{progress.done} / {progress.total}</span>}
-        <span className="jobProgressHint">可以离开这一分区继续浏览，结果会保留</span>
+        {hint && <span className="jobProgressHint">{hint}</span>}
         {onCancel && <button type="button" className="jobProgressCancel" onClick={onCancel}>取消</button>}
       </div>
     </div>

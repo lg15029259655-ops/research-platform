@@ -1,5 +1,6 @@
 import base64
 import json
+from contextlib import aclosing
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -9,6 +10,7 @@ import threading
 from difflib import SequenceMatcher
 import pymupdf
 
+from anyio import CancelScope
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -33,6 +35,7 @@ ACTIONS = {"START", "NEXT", "NAVIGATE", "FIGURE", "WHY_DESIGN", "EVIDENCE", "QUE
 Owner = Depends(current_owner)
 PARSE_STAGES = {"uploaded", "reading", "structure", "figures", "manifest", "images"}
 PARSE_LEASE = timedelta(minutes=30)
+_active_chats: set[tuple[str, str]] = set()
 
 
 class ParseSuperseded(Exception):
@@ -47,11 +50,13 @@ async def _stream_model_events(messages, *, vision: bool = False):
     """
     runner = getattr(bailian_service, "stream_events", None)
     if runner is not None:
-        async for event in runner(messages, vision=vision, thinking_budget=config.thinking_budget()):
-            yield event
+        async with aclosing(runner(messages, vision=vision, thinking_budget=config.thinking_budget())) as source:
+            async for event in source:
+                yield event
         return
-    async for chunk in bailian_service.stream_completion(messages, vision=vision):
-        yield {"type": "content", "content": chunk}
+    async with aclosing(bailian_service.stream_completion(messages, vision=vision)) as source:
+        async for chunk in source:
+            yield {"type": "content", "content": chunk}
 
 
 def owned_paper(db, paper_id: str, owner: str) -> Paper:
@@ -523,10 +528,41 @@ def display_request(action: str, message: str | None, heading: str) -> str:
     return labels.get(action, (message or "").strip())
 
 
+class _ChatStream(StreamingResponse):
+    def __init__(self, events, key: tuple[str, str]):
+        super().__init__(with_heartbeat(events), media_type="text/event-stream",
+                         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+        self.key = key
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                # The response can disconnect while sending a frame, with the
+                # model iterator suspended at a yield rather than awaiting I/O.
+                with CancelScope(shield=True):
+                    await self.body_iterator.aclose()
+            finally:
+                _active_chats.discard(self.key)
+
+
 @router.post("/{paper_id}/chat")
 async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
     if request.action not in ACTIONS or (request.action == "QUESTION" and not (request.message or "").strip()):
         raise HTTPException(400, "无效的精读操作")
+    key = (owner, paper_id)
+    if key in _active_chats:
+        raise HTTPException(409, "这篇论文已有讲解正在进行，请等当前讲解结束后再试")
+    _active_chats.add(key)
+    try:
+        return await run_in_threadpool(_prepare_chat, paper_id, request, owner)
+    except BaseException:
+        _active_chats.discard(key)
+        raise
+
+
+def _prepare_chat(paper_id: str, request: ChatRequest, owner: str) -> StreamingResponse:
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
@@ -579,7 +615,7 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
     visual_input_ready = False
     if is_figure and page:
         try:
-            png = await run_in_threadpool(render_page_png, path, page)
+            png = render_page_png(path, page)
             visual_input_ready = bool(png)
         except Exception as exc:
             logger.warning("Figure page render failed: %s", type(exc).__name__)
@@ -596,20 +632,37 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
     def frame(payload: dict) -> str:
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    async def forward(source):
+    async def forward(vision: bool):
         """把 typed 事件转成前端的 delta / thinking 帧。"""
         nonlocal answer
-        async for event in source:
-            if event.get("type") == "reasoning":
+        async with aclosing(_stream_model_events(messages, vision=vision)) as source:
+            async for event in source:
                 content = event.get("content", "")
-                if content:
+                if not content:
+                    continue
+                if event.get("type") == "reasoning":
                     yield frame({"type": "thinking", "content": content})
-                continue
-            delta = event.get("content", "")
-            if not delta:
-                continue
-            answer += delta
-            yield frame({"type": "delta", "content": delta})
+                else:
+                    answer += content
+                    yield frame({"type": "delta", "content": content})
+
+    def save_answer(verified: bool) -> bool:
+        with SessionLocal() as db:
+            values = {"last_read_at": datetime.now(timezone.utc)}
+            if request.action in {"START", "NEXT", "NAVIGATE"}:
+                values["current_unit_id"] = selected_id
+            claim = db.execute(update(Paper).where(
+                Paper.id == paper_id, Paper.owner_id == owner, Paper.status == "parsed",
+                Paper.content_revision == content_revision, Paper.sha256 == source_hash,
+            ).values(**values))
+            if claim.rowcount != 1:
+                return False
+            db.add(Message(id=str(uuid4()), paper_id=paper_id, role="user", content=user_visible_request,
+                           action=request.action, reading_unit_id=selected_id))
+            db.add(Message(id=str(uuid4()), paper_id=paper_id, role="assistant", content=answer,
+                           action=request.action, reading_unit_id=selected_id, visual_verified=verified))
+            db.commit()
+        return True
 
     answer = ""
     async def events():
@@ -620,8 +673,9 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
                 yield frame({'type': 'selected', 'unit_id': selected_id, 'page': page, 'heading': '题目与摘要' if first_abstract else heading})
             if visual_input_ready:
                 try:
-                    async for chunk in forward(_stream_model_events(messages, vision=True)):
-                        yield chunk
+                    async with aclosing(forward(vision=True)) as stream:
+                        async for chunk in stream:
+                            yield chunk
                     if not answer.strip():
                         raise RuntimeError("视觉模型未返回内容")
                     verified = True
@@ -632,32 +686,18 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
                     messages[-1] = {"role": "user", "content": prompt}
                     yield frame({"type": "reset"})
             if not verified:
-                async for chunk in forward(_stream_model_events(messages, vision=False)):
-                    yield chunk
+                async with aclosing(forward(vision=False)) as stream:
+                    async for chunk in stream:
+                        yield chunk
             if not answer.strip():
                 raise RuntimeError("模型没有返回可用文字")
-            with SessionLocal() as db:
-                values = {"last_read_at": datetime.now(timezone.utc)}
-                if request.action in {"START", "NEXT", "NAVIGATE"}:
-                    values["current_unit_id"] = selected_id
-                claim = db.execute(update(Paper).where(
-                    Paper.id == paper_id, Paper.owner_id == owner, Paper.status == "parsed",
-                    Paper.content_revision == content_revision, Paper.sha256 == source_hash,
-                ).values(**values))
-                if claim.rowcount != 1:
-                    db.rollback()
-                    yield frame({"type": "reset"})
-                    yield frame({"type": "error", "message": "论文内容在讲解过程中发生变化，请重新打开论文后再试"})
-                    return
-                db.add(Message(id=str(uuid4()), paper_id=paper_id, role="user", content=user_visible_request,
-                               action=request.action, reading_unit_id=selected_id))
-                db.add(Message(id=str(uuid4()), paper_id=paper_id, role="assistant", content=answer,
-                               action=request.action, reading_unit_id=selected_id,
-                               visual_verified=verified))
-                db.commit()
+            if not await run_in_threadpool(save_answer, verified):
+                yield frame({"type": "reset"})
+                yield frame({"type": "error", "message": "论文内容在讲解过程中发生变化，请重新打开论文后再试"})
+                return
             yield frame({'type': 'done', 'current_unit_id': selected_id if request.action in {'START', 'NEXT', 'NAVIGATE'} else None, 'visual_verified': verified})
         except Exception as exc:
             logger.warning("Paper AI request failed: %s", type(exc).__name__)
             yield frame({'type': 'error', 'message': 'AI 服务暂时不可用，请重试'})
 
-    return StreamingResponse(with_heartbeat(events()), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+    return _ChatStream(events(), (owner, paper_id))

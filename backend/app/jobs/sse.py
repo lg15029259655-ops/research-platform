@@ -11,6 +11,8 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
 
+from anyio import CancelScope
+
 
 def sse_event(event: str | None, data) -> str:
     """编码一条 SSE 事件；event 为 None 时只发 data 行（兼容旧客户端）。"""
@@ -44,5 +46,6 @@ async def with_heartbeat(source: AsyncGenerator[str, None], interval: float = 15
             finally:
                 if not pending.done():
                     pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
+                    with CancelScope(shield=True):
+                        await asyncio.gather(pending, return_exceptions=True)
             yield chunk

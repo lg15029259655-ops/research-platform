@@ -55,6 +55,7 @@ export default function ReadPage() {
   const [page, setPage] = useState(1);
   const [readerTab, setReaderTab] = useState<"read" | "mindmap" | "experiments">("read");
   const [thinking, setThinking] = useState("");
+  const [chatStartedAt, setChatStartedAt] = useState<number | null>(null);
   const [mindmap, setMindmap] = useState<MindMapPayload | null>(null);
   const [mindmapBusy, setMindmapBusy] = useState(false);
   const [mindmapStage, setMindmapStage] = useState("");
@@ -147,7 +148,7 @@ export default function ReadPage() {
   }, [loadList, loadPaper]);
 
   // 组件卸载（跳到别的页面）时取消后台任务，避免服务端为一个没人看的任务继续花钱。
-  useEffect(() => () => { abortReaderJobs(); }, []);
+  useEffect(() => () => { chatRequest.current?.abort(); abortReaderJobs(); }, []);
 
   // A paper can finish parsing after the initial upload wait, or while the
   // reader is closed. Resume lightweight polling when it is opened again.
@@ -345,10 +346,12 @@ export default function ReadPage() {
   }
 
   async function act(action: Action, message?: string) {
-    if (!paper || !ready || pending) return;
+    if (!paper || !ready || pending || chatRequest.current) return;
     const controller = new AbortController();
     chatRequest.current = controller;
+    setChatStartedAt(Date.now());
     setPending(true); setError(""); setStream(""); setThinking(""); setActiveHeading(""); followLatest.current = true;
+    let completed = false;
     try {
       const res = await fetch(`${API}/api/papers/${paper.id}/chat`, {
         method: "POST", credentials: "include", signal: controller.signal, headers: { "Content-Type": "application/json" },
@@ -357,7 +360,7 @@ export default function ReadPage() {
       if (!res.ok) { const data = await res.json(); throw new Error(data.detail || "请求失败"); }
       if (!res.body) throw new Error("浏览器未收到流式响应");
       const reader = res.body.getReader(); const decoder = new TextDecoder();
-      let buffer = ""; let answer = ""; let completed = false;
+      let buffer = ""; let answer = "";
       while (true) {
         const { done, value } = await reader.read();
         if (controller.signal.aborted) return;
@@ -374,24 +377,43 @@ export default function ReadPage() {
           if (data.type === "reset") { answer = ""; setStream(""); setThinking(""); }
           if (data.type === "selected") { if (data.page) setPage(data.page); setActiveHeading(data.heading || ""); }
           if (data.type === "error") throw new Error(data.message);
-          if (data.type === "done") completed = true;
+          if (data.type === "done") {
+            completed = true;
+            setChatStartedAt(null);
+            if (action === "QUESTION") setDraft("");
+          }
         }
       }
       if (!completed) throw new Error("流式回复未正常结束");
       await loadPaper(paper.id);
       if (controller.signal.aborted) return;
-      await loadList();
-      if (controller.signal.aborted) return;
       setStream("");
-      if (action === "QUESTION") setDraft("");
-    } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "精读失败"); }
-    finally { if (chatRequest.current === controller) { chatRequest.current = null; setPending(false); setActiveHeading(""); } }
+      await loadList().catch(() => {});
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        if (!completed) { setStream(""); setThinking(""); }
+        setError(completed ? "回复已保存，暂时无法刷新论文，请重新打开查看。"
+          : e instanceof Error ? e.message : "精读失败");
+        controller.abort();
+      }
+    } finally {
+      if (chatRequest.current === controller) {
+        chatRequest.current = null;
+        setChatStartedAt(null); setPending(false); setActiveHeading("");
+      }
+    }
+  }
+
+  function stopChat() {
+    if (!chatRequest.current) return;
+    chatRequest.current.abort();
+    chatRequest.current = null;
+    setChatStartedAt(null); setPending(false); setStream(""); setThinking(""); setActiveHeading("");
   }
 
   function selectPaper(id: string) {
-    const interruptedChat = !!chatRequest.current;
-    chatRequest.current?.abort();
-    chatRequest.current = null;
+    const interruptedChat = chatStartedAt !== null;
+    stopChat();
     abortReaderJobs();
     setThinking("");
     setPending(false); setStream(""); setActiveHeading(""); setError(interruptedChat ? "已停止上一篇论文尚未完成的讲解。" : ""); setPaper(null);
@@ -408,7 +430,7 @@ export default function ReadPage() {
     setError("");
     const response = await fetch(`${API}/api/papers/${id}`, { method: "DELETE", credentials: "include" });
     if (!response.ok) { setError("删除论文失败，请重试"); return; }
-    if (paper?.id === id) { setPaper(null); setStream(""); window.history.replaceState({}, "", "/read"); }
+    if (paper?.id === id) { stopChat(); setPaper(null); setStream(""); window.history.replaceState({}, "", "/read"); }
     await loadList();
   }
 
@@ -435,6 +457,9 @@ export default function ReadPage() {
       <header className="readerTop"><div className="readerTitle"><button className="libraryToggle" onClick={() => setLibraryOpen((open) => !open)} aria-label={libraryOpen ? "收起论文库" : "展开论文库"} title={libraryOpen ? "收起论文库" : "展开论文库"}><svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button><div><span className="sectionLabel">AI DEEP READING</span><h1>{paper?.title || "选择或上传一篇论文"}</h1></div></div>{paper?.status === "parsed" && readerTab === "read" && <div className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">{(["split", "pdf", "ai"] as const).map((item) => <button key={item} {...modeTabs.item(item)}>{item === "split" ? "左右分屏" : item === "pdf" ? "仅 PDF" : "仅 AI"}</button>)}</div>}</header>
       {paper?.status === "parsed" && <div className="readerSubnav" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>}
       {error && <div className="alert" role="alert">{error}</div>}
+      <JobProgress startedAt={chatStartedAt} hint=""
+        title={stream ? "正在生成精读回复" : thinking ? "正在分析原文" : "正在等待精读回复"}
+        onCancel={stopChat} />
       {parseStage && paper && <div className="parseNotice" role="status">{parseStage}</div>}
       {paper?.warning && <div className="alert" role="status">{paper.warning}</div>}
       {needsReplacement && <div className="alert" role="status">{paper.source_matches === false ? "当前 PDF 与保存的阅读内容无法确认对应，已暂停全文分析。可重新识别当前文件，或上传原文件。" : "当前 PDF 文件无法读取或重新识别失败。重新上传后会保留旧精读记录和综合结果，请核对其与原文的对应关系。"}{paper.source_matches === false && <button type="button" onClick={reparse} disabled={pending} className="quietButton">重新识别当前 PDF</button>}<label className="quietButton" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>重新上传 PDF<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label></div>}
@@ -452,7 +477,7 @@ export default function ReadPage() {
       <div className="split">
         {mode !== "ai" && <div className="pdfColumn" data-pdf-mode={mode} style={{ "--pdf-w": `${pdfWidth}%` } as CSSProperties}><PdfPane paperId={paper.id} page={page} totalPages={paper.page_count} onPageChange={setPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" role="separator" aria-orientation="vertical" tabIndex={0} aria-valuenow={Math.round(pdfWidth)} aria-valuemin={30} aria-valuemax={70} aria-label="调整 PDF 与 AI 面板宽度" onKeyDown={(e) => { let next = pdfWidth; if (e.key === "ArrowLeft") next = Math.max(30, pdfWidth - 2); else if (e.key === "ArrowRight") next = Math.min(70, pdfWidth + 2); else if (e.key === "Home") next = 30; else if (e.key === "End") next = 70; else return; e.preventDefault(); setPdfWidth(next); window.localStorage.setItem("reader-pdf-width", String(next)); }} onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</div>}
         {mode !== "pdf" && <div className="chatColumn"><div className="readingStatus"><span>当前阅读位置</span><strong>{activeHeading || current?.heading || "尚未开始"}</strong><small>阅读进度已保存；提问不会推进。</small>{figureIndex > 0 && <div className="figureProgress">Figure {figureIndex} / {figures.length}<div>{figures.map((unit, i) => <span key={unit.id} className={i < figureIndex ? "filled" : ""}>●</span>)}</div></div>}</div>
-          <div className="messages" ref={messagesRef} onScroll={(event) => { const box = event.currentTarget; followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }}>{!paper.messages?.length && !stream && !thinking && <div className="chatIntro">点击“开始精读”，先读题目与摘要。之后每次只推进一个阅读单元。</div>}{paper.messages?.map((item) => <div key={item.id} className={`bubble ${item.role}`}><span>{item.role === "user" ? "你" : "精读助手"}{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "FIGURE" && <em className={item.visual_verified ? "verified" : "unverified"}>{item.visual_verified ? "视觉解析已完成" : "基于正文和图注，图像未核验"}</em>}</span>{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "RECAP" ? <SummaryCards content={item.content} /> : <div className="markdownBody"><Markdown content={item.content} /></div>}</div>)}<ThinkingTrail text={thinking} active={pending && !!thinking.trim()} />{stream && <div className="bubble assistant"><span>精读助手 · 正在生成</span><div className="markdownBody streamText">{stream}</div></div>}</div>
+          <div className="messages" ref={messagesRef} onScroll={(event) => { const box = event.currentTarget; followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }}>{!paper.messages?.length && !stream && !thinking && <div className="chatIntro">点击“开始精读”，先读题目与摘要。之后每次只推进一个阅读单元。</div>}{paper.messages?.map((item) => <div key={item.id} className={`bubble ${item.role}`}><span>{item.role === "user" ? "你" : "精读助手"}{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "FIGURE" && <em className={item.visual_verified ? "verified" : "unverified"}>{item.visual_verified ? "视觉解析已完成" : "基于正文和图注，图像未核验"}</em>}</span>{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "RECAP" ? <SummaryCards content={item.content} /> : <div className="markdownBody"><Markdown content={item.content} /></div>}</div>)}<ThinkingTrail text={thinking} active={pending && !!thinking.trim()} />{stream && <div className="bubble assistant"><span>{chatStartedAt === null ? "精读助手 · 回复已保存" : "精读助手 · 正在生成"}</span><div className="markdownBody streamText">{stream}</div></div>}</div>
           <div className="chatControls"><div className="quickActions"><button disabled={pending || (!next && !!current)} aria-busy={pending} onClick={() => act(current ? "NEXT" : "START")}>{nextLabel}</button>{current?.kind === "FIGURE" && <button disabled={pending} aria-busy={pending} onClick={() => act("FIGURE")}>解释这张图</button>}<button disabled={pending} aria-busy={pending} onClick={() => act("WHY_DESIGN")}>为什么这样设计？</button><button disabled={pending} aria-busy={pending} onClick={() => act("EVIDENCE")}>这个结果说明什么？</button></div><form onSubmit={(e) => { e.preventDefault(); if (draft.trim()) act("QUESTION", draft.trim()); }}><textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="提出你的科研问题…" aria-label="提出你的科研问题" rows={2} disabled={pending} /><button type="submit" disabled={pending || !draft.trim()} aria-busy={pending}>{pending ? "生成中" : "发送 ↗"}</button></form></div>
         </div>}
       </div>}

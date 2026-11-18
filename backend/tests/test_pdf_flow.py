@@ -1,3 +1,6 @@
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pymupdf
@@ -265,6 +268,82 @@ def test_streamed_chat_is_not_saved_if_paper_changes_mid_answer(monkeypatch, tmp
         assert '"type": "error"' in response.text and "发生变化" in response.text
         assert '"type": "done"' not in response.text
         detail = client.get(f"/api/papers/{paper['id']}").json()
+        assert detail["messages"] == [] and detail["current_unit_id"] is None
+
+
+def test_same_paper_chat_rejects_duplicate_while_other_paper_remains_available(monkeypatch, tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    async def model(_messages, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await asyncio.to_thread(release.wait, 5)
+        yield {"type": "content", "content": "Answer"}
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.papers.model_config", lambda vision=False: ("unused", "unused", "unused"))
+    monkeypatch.setattr("app.services.bailian_service.stream_events", model)
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        first = upload(client, "First Concurrent Chat")
+        second = upload(client, "Second Concurrent Chat")
+        path = f"/api/papers/{first['id']}/chat"
+        body = {"action": "START"}
+        active = pool.submit(client.post, path, json=body)
+        try:
+            assert entered.wait(3)
+            assert client.post(path, json={"action": "NEXT"}).status_code == 409
+            assert '"type": "done"' in client.post(f"/api/papers/{second['id']}/chat", json=body).text
+            assert calls == 2
+        finally:
+            release.set()
+        assert '"type": "done"' in active.result(timeout=4).text
+        assert '"type": "done"' in client.post(path, json={"action": "NEXT"}).text
+
+
+def test_disconnected_chat_closes_model_and_does_not_save_partial_reply(monkeypatch, tmp_path):
+    from starlette.requests import ClientDisconnect
+    from app import papers
+
+    closed = False
+
+    async def model(_messages, **_kwargs):
+        nonlocal closed
+        try:
+            yield {"type": "content", "content": "Partial"}
+            await asyncio.Event().wait()
+        finally:
+            closed = True
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    monkeypatch.setattr(papers, "model_config", lambda vision=False: ("unused", "unused", "unused"))
+    monkeypatch.setattr("app.services.bailian_service.stream_events", model)
+    with TestClient(app) as client:
+        paper_id = upload(client, "Disconnected Chat")["id"]
+        owner = owner_of(client)
+
+        async def disconnect_after_delta():
+            response = await papers.chat(paper_id, papers.ChatRequest(action="START"), owner)
+
+            async def send(message):
+                if b'"type": "delta"' in message.get("body", b""):
+                    raise OSError("connection closed")
+
+            async def receive():
+                await asyncio.Event().wait()
+
+            try:
+                await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+            except ClientDisconnect:
+                pass
+
+        asyncio.run(disconnect_after_delta())
+        assert closed
+        assert (owner, paper_id) not in papers._active_chats
+        detail = client.get(f"/api/papers/{paper_id}").json()
         assert detail["messages"] == [] and detail["current_unit_id"] is None
 def test_pdf_search_stops_after_thirty_matches(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
