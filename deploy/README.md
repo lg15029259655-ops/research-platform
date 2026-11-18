@@ -1,5 +1,7 @@
 # lunyu-lab.site 测试部署准备
 
+> **现行正式站（2026-11-17）**：`https://lunyu-lab.site` 的 DNS 指向腾讯云成都轻量云主机 `1.14.126.145`。通过 OrcaTerm 发布提交 `80a9fdf`，`/opt/research-platform/current` 已指向 `releases/80a9fdf`。保留 `runtime-default-v2` 作为回滚版本。持久化目录仍在 `/var/lib/research-platform`，本次切换前的数据库和上传备份位于 `/var/backups/research-platform/before-80a9fdf-20261118T044016Z`。服务器后端 137 项测试、前端 11 项测试和 Linux standalone 构建通过。公网核对了新版精读脚本、四个模块、同一示例会话的数据和跨会话隔离。以下阿里云内容是较早的部署记录。
+
 > **杭州 ECS 临时 IP 预览（2026-10-18）**：用户明确要求把当天最新版本部署到阿里云杭州免费试用 ECS。已部署 Git 提交 `0edfe1b` 到实例 `i-bp1iot27mz2araj1pct6`（公网 IP `114.55.113.45`）的 `/opt/research-platform/releases/0edfe1b`，`current` 指向该版本。后端、前端、Nginx 的 systemd 服务分别为 `research-platform-backend`、`research-platform-frontend`、`nginx`；SQLite 和上传目录位于 `/var/lib/research-platform`。临时访问地址为 `http://114.55.113.45/`；本机和公网的页面、`/api/health`、`/api/session`、`/api/ai/status` 已验证，服务器端 28 项测试通过，百炼 probe 返回成功。阿里云接入备案与正式域名 HTTPS 尚未办理，本次未改 `lunyu-lab.site` DNS。IP 预览使用 [nginx-ecs-ip-preview.conf](./nginx-ecs-ip-preview.conf)；需要停止预览时运行 `systemctl stop nginx research-platform-frontend research-platform-backend`。
 
 > **备案状态更新（2026-10-15）**：用户提供的控制台截图显示 `lunyu-lab.site` 的 ICP 备案号为 `陕ICP备2026026714号-2`，状态“正常”。另一个域名 `campusradar.site` 的编号为 `陕ICP备2026026714号-1`。详见 [域名备案记录](../docs/domain-filings.md)。用户本次要求暂不部署。
