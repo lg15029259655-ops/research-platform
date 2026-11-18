@@ -2,15 +2,13 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { type CSSProperties, type KeyboardEvent, ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { type CSSProperties, type KeyboardEvent, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { API } from "@/lib/api";
 import ResearchNav from "@/components/ResearchNav";
 import JobProgress from "@/components/jobs/JobProgress";
 import ThinkingTrail from "@/components/reader/ThinkingTrail";
-import MindMapPanel, { type MindMapPayload } from "@/components/mindmap/MindMapPanel";
-import PaperExperimentsPanel, { type PaperExperimentsPayload } from "@/components/experiment-map/PaperExperimentsPanel";
+import type { MindMapPayload } from "@/components/mindmap/MindMapPanel";
+import type { PaperExperimentsPayload } from "@/components/experiment-map/PaperExperimentsPanel";
 import { submitJob, watchJob, type JobProgress as JobProgressData } from "@/lib/jobs";
 import { updateWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
@@ -19,16 +17,25 @@ import "./enhancements.css";
 import "../studio.css";
 
 const PdfPane = dynamic(() => import("@/components/PdfPane"), { ssr: false });
+const MindMapPanel = dynamic(() => import("@/components/mindmap/MindMapPanel"));
+const PaperExperimentsPanel = dynamic(() => import("@/components/experiment-map/PaperExperimentsPanel"));
+const ReadingMarkdown = lazy(() => import("@/components/reader/ReadingMarkdown"));
 type Unit = { id: string; position: number; kind: string; heading: string; page_start: number | null; actual_pdf_page?: number | null; caption?: string | null; evidence_snippet?: string | null };
 type Message = { id: string; role: string; content: string; reading_unit_id: string | null; visual_verified?: boolean };
 type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean; source_matches?: boolean };
 type Action = "START" | "NEXT" | "NAVIGATE" | "FIGURE" | "WHY_DESIGN" | "EVIDENCE" | "QUESTION";
 type Mode = "split" | "pdf" | "ai";
 
+function Markdown({ content }: { content: string }) {
+  return <Suspense fallback={<span className="streamText">{content}</span>}>
+    <ReadingMarkdown content={content} />
+  </Suspense>;
+}
+
 function SummaryCards({ content }: { content: string }) {
   const parts = [...content.matchAll(/【([^】]+)】([\s\S]*?)(?=【[^】]+】|$)/g)];
-  if (parts.length < 3) return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
-  return <div className="summaryGrid">{parts.map((part, index) => <article className="summaryCard" key={index}><h3>{part[1]}</h3>{part[1] === "关系图" ? <div className="relationFlow">{part[2].trim().split("\n").filter(Boolean).map((line, i) => { const nodes = line.replace(/^[-*]\s*/, "").split(/\s*(?:->|→)\s*/); return nodes.length === 2 ? <div className="relationEdge" key={i}><span>{nodes[0]}</span><b>→</b><span>{nodes[1]}</span></div> : <div key={i}>{line}</div>; })}</div> : <div><ReactMarkdown remarkPlugins={[remarkGfm]}>{part[2].trim()}</ReactMarkdown></div>}</article>)}</div>;
+  if (parts.length < 3) return <Markdown content={content} />;
+  return <div className="summaryGrid">{parts.map((part, index) => <article className="summaryCard" key={index}><h3>{part[1]}</h3>{part[1] === "关系图" ? <div className="relationFlow">{part[2].trim().split("\n").filter(Boolean).map((line, i) => { const nodes = line.replace(/^[-*]\s*/, "").split(/\s*(?:->|→)\s*/); return nodes.length === 2 ? <div className="relationEdge" key={i}><span>{nodes[0]}</span><b>→</b><span>{nodes[1]}</span></div> : <div key={i}>{line}</div>; })}</div> : <div><Markdown content={part[2].trim()} /></div>}</article>)}</div>;
 }
 
 export default function ReadPage() {
@@ -445,7 +452,7 @@ export default function ReadPage() {
       <div className="split">
         {mode !== "ai" && <div className="pdfColumn" data-pdf-mode={mode} style={{ "--pdf-w": `${pdfWidth}%` } as CSSProperties}><PdfPane paperId={paper.id} page={page} totalPages={paper.page_count} onPageChange={setPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" role="separator" aria-orientation="vertical" tabIndex={0} aria-valuenow={Math.round(pdfWidth)} aria-valuemin={30} aria-valuemax={70} aria-label="调整 PDF 与 AI 面板宽度" onKeyDown={(e) => { let next = pdfWidth; if (e.key === "ArrowLeft") next = Math.max(30, pdfWidth - 2); else if (e.key === "ArrowRight") next = Math.min(70, pdfWidth + 2); else if (e.key === "Home") next = 30; else if (e.key === "End") next = 70; else return; e.preventDefault(); setPdfWidth(next); window.localStorage.setItem("reader-pdf-width", String(next)); }} onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</div>}
         {mode !== "pdf" && <div className="chatColumn"><div className="readingStatus"><span>当前阅读位置</span><strong>{activeHeading || current?.heading || "尚未开始"}</strong><small>阅读进度已保存；提问不会推进。</small>{figureIndex > 0 && <div className="figureProgress">Figure {figureIndex} / {figures.length}<div>{figures.map((unit, i) => <span key={unit.id} className={i < figureIndex ? "filled" : ""}>●</span>)}</div></div>}</div>
-          <div className="messages" ref={messagesRef} onScroll={(event) => { const box = event.currentTarget; followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }}>{!paper.messages?.length && !stream && !thinking && <div className="chatIntro">点击“开始精读”，先读题目与摘要。之后每次只推进一个阅读单元。</div>}{paper.messages?.map((item) => <div key={item.id} className={`bubble ${item.role}`}><span>{item.role === "user" ? "你" : "精读助手"}{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "FIGURE" && <em className={item.visual_verified ? "verified" : "unverified"}>{item.visual_verified ? "视觉解析已完成" : "基于正文和图注，图像未核验"}</em>}</span>{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "RECAP" ? <SummaryCards content={item.content} /> : <div className="markdownBody"><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown></div>}</div>)}<ThinkingTrail text={thinking} active={pending && !!thinking.trim()} />{stream && <div className="bubble assistant"><span>精读助手 · 正在生成</span><div className="markdownBody streamText">{stream}</div></div>}</div>
+          <div className="messages" ref={messagesRef} onScroll={(event) => { const box = event.currentTarget; followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }}>{!paper.messages?.length && !stream && !thinking && <div className="chatIntro">点击“开始精读”，先读题目与摘要。之后每次只推进一个阅读单元。</div>}{paper.messages?.map((item) => <div key={item.id} className={`bubble ${item.role}`}><span>{item.role === "user" ? "你" : "精读助手"}{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "FIGURE" && <em className={item.visual_verified ? "verified" : "unverified"}>{item.visual_verified ? "视觉解析已完成" : "基于正文和图注，图像未核验"}</em>}</span>{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "RECAP" ? <SummaryCards content={item.content} /> : <div className="markdownBody"><Markdown content={item.content} /></div>}</div>)}<ThinkingTrail text={thinking} active={pending && !!thinking.trim()} />{stream && <div className="bubble assistant"><span>精读助手 · 正在生成</span><div className="markdownBody streamText">{stream}</div></div>}</div>
           <div className="chatControls"><div className="quickActions"><button disabled={pending || (!next && !!current)} aria-busy={pending} onClick={() => act(current ? "NEXT" : "START")}>{nextLabel}</button>{current?.kind === "FIGURE" && <button disabled={pending} aria-busy={pending} onClick={() => act("FIGURE")}>解释这张图</button>}<button disabled={pending} aria-busy={pending} onClick={() => act("WHY_DESIGN")}>为什么这样设计？</button><button disabled={pending} aria-busy={pending} onClick={() => act("EVIDENCE")}>这个结果说明什么？</button></div><form onSubmit={(e) => { e.preventDefault(); if (draft.trim()) act("QUESTION", draft.trim()); }}><textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="提出你的科研问题…" aria-label="提出你的科研问题" rows={2} disabled={pending} /><button type="submit" disabled={pending || !draft.trim()} aria-busy={pending}>{pending ? "生成中" : "发送 ↗"}</button></form></div>
         </div>}
       </div>}

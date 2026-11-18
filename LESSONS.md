@@ -440,3 +440,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Restart coverage needs persisted progress and cancellation. Restore submission order, clear prior progress and finish persisted cancellations before running handlers. Exercise SSE with a paused client and verify it stops pulling messages, closes its source and preserves the user-facing cancellation state.
 - The automated tests explicitly disable demo seeding unless a test configures its own fixtures. Run the documented frontend tests and type check, and review the diff after a Next.js build because a custom output path can rewrite the tracked TypeScript configuration.
 - Status: verified locally with 134 backend tests, 11 frontend tests, TypeScript, a production build and local deployment preflight. Server load and backup restoration still require target-environment checks.
+
+## L-20261117-03 — Measure reader bundles and test real restored paths
+
+- Split Markdown and the two maps from the initial reader bundle. Compare production builds using the same API origin, then exercise saved Markdown, PDF rendering, and map tabs on a real paper in Chrome. The reader fell from 175 kB to 120 kB of first-load JavaScript. Restore the generated TypeScript metadata from Git after the isolated build adds its temporary output path.
+- SQLite stores absolute paths to PDFs and extracted images. After moving a backup bundle, restore to a new directory, take the original data path offline, and open the same paper using its original session. The 105-reference local drill, PDF hash, reading history, design history, and ownership checks passed. See [the deployment procedure](deploy/README.md#数据备份和恢复).
+- Status: verified locally. The production server and scientific quality of the sampled AI output still require separate checks. Local timing and scope are recorded in [release readiness](docs/release-readiness.md#local-follow-up--2026-11-17).
