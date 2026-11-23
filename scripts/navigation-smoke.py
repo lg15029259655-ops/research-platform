@@ -1456,6 +1456,39 @@ def synthesis_view_loading(browser, frontend, backend):
     page.goto(f"{frontend}/synthesis")
     expect(page.locator(".comparePaper").first).to_be_visible()
     assert requested == [path + "?view=matrix"]
+    checks = page.locator(".selectionList input:checked")
+    expand = page.get_by_role("button", name="更换对比论文", exact=True)
+    expand.click()
+    expect(checks).to_have_count(len(workspace["selected_paper_ids"]))
+    page.get_by_role("button", name="收起论文列表", exact=True).click()
+    library_url = f"{backend}/api/papers?view=summary"
+    context.route(library_url, lambda route: route.fulfill(status=503, json={}), times=1)
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    stale = page.get_by_role("alert").filter(has_text="当前显示上次读取的论文状态")
+    expect(stale).to_be_visible()
+    expand.click()
+    expect(checks).to_have_count(len(workspace["selected_paper_ids"]))
+    expect(page.locator(".comparePaper").first).to_be_visible()
+    libraries = []
+    context.route(library_url, lambda route: libraries.append(route))
+    with page.expect_request(library_url):
+        page.get_by_role("button", name="重试读取论文库").click()
+    expect(page.get_by_role("button", name="正在重试…")).to_be_disabled()
+    expect(stale).to_be_visible()
+    page.evaluate("for (let i = 0; i < 3; i++) window.dispatchEvent(new Event('focus'))")
+    papers = context.request.get(library_url).json()
+    changed = next(paper for paper in papers if paper["id"] == workspace["selected_paper_ids"][0])
+    changed["status"] = "failed"
+    assert len(libraries) == 1
+    libraries[0].fulfill(json=papers)
+    context.unroute(library_url)
+    expect(stale).to_have_count(0)
+    expect(page.get_by_text(f"{changed['title']} · PDF 解析失败", exact=True)).to_be_visible()
+    expect(checks).to_have_count(len(workspace["selected_paper_ids"]) - 1)
+    count = len(workspace["selected_paper_ids"])
+    expect(page.get_by_role("heading", name=re.compile(r"^选择论文"))).to_contain_text(f"{count} / 5")
+    expect(page.locator(".comparePaper").first).to_be_visible()
+
     evidence = page.get_by_role("tab", name="证据关系", exact=True)
     matrix = page.get_by_role("tab", name="论文对比", exact=True)
     held = []
