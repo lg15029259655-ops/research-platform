@@ -133,8 +133,51 @@ body { background: var(--c-bg); color: var(--c-text); }
 .compareTray { position: relative; bottom: auto; z-index: 1; margin-bottom: 6px; border-radius: var(--r-panel); border-color: var(--c-line); box-shadow: none; }
 .compareTray>a { background: var(--c-primary); border-radius: var(--r-pill); }
 /* 已选论文标签：flex 容器上 text-overflow 不生效，改块级 + 绝对定位的 × 才能出省略号 */
-.compareTray span { position: relative; display: block; max-width: 200px; min-width: 110px; padding: 7px 26px 7px 10px; background: var(--c-primary-weak); border-radius: var(--r-pill); color: var(--c-text-mid); font-size: var(--fs-caption); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.compareTray span button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: 0; background: none; color: var(--c-text-soft); cursor: pointer; font-size: 15px; line-height: 1; }
+.compareTray .compareTrayList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: visible;
+}
+.compareTrayPaper {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  max-width: min(100%, 220px);
+  padding-inline-start: 10px;
+  background: var(--c-primary-weak);
+  border-radius: var(--r-pill);
+  color: var(--c-text-mid);
+}
+.compareTrayPaper small {
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.compareTrayPaper button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--c-text-mid);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+.compareTrayPaper button:is(:hover, :focus-visible) {
+  background: var(--c-surface);
+  color: var(--c-primary);
+}
+.compareTrayPaper button:focus-visible {
+  outline: 2px solid var(--c-primary);
+  outline-offset: -2px;
+}
 .compareTray strong { color: var(--c-primary); font-weight: 600; font-size: var(--fs-label); white-space: nowrap; }
 
 /* 分析面：去掉装饰性渐变，让画布本身承载视觉重量 */
@@ -440,12 +483,17 @@ body { background: var(--c-bg); color: var(--c-text); }
 /* 窄屏触摸目标 ≥44px（WCAG 2.2 §2.5.8 加严到 §2.5.5 的 44×44）。
    只抬高命中区，不改画布高度契约。 */
 @media(max-width:680px) {
-  .graphToolbar button, .flowToolbar button, .searchModes button, .bubbleResetView, .planetariumMotion, .compareDimensions button, .compareTray>a, .compareTray span, .modeSwitch button, .readerSubnav button, .libraryToggle, .removePaper, .readerShell .quickActions button, .drawerHead button{
+  .graphToolbar button, .flowToolbar button, .searchModes button, .bubbleResetView, .planetariumMotion, .compareDimensions button, .compareTray>a, .modeSwitch button, .readerSubnav button, .libraryToggle, .removePaper, .readerShell .quickActions button, .drawerHead button{
     min-height: 44px;
   }
-  .compareTray span button { min-width: 44px; min-height: 44px; }
+  .compareTrayPaper button { width: 44px; height: 44px; }
   .libraryToggle, .drawerHead button{ width: 44px; height: 44px; }
   .removePaper { min-width: 44px; }
+}
+
+@media(max-width:480px) {
+  .compareTray .compareTrayList { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .compareTrayPaper { max-width: 100%; }
 }
 
 /* Literature observatory: tiers are qualitative, not measured distances. */

@@ -626,3 +626,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: a lost upload response left no record of the submission in the reader. Resubmitting the same file created another paper and triggered parsing again.
 - Action: remember an upload receipt before sending the file, derive the paper ID from the receipt and owner, and use one atomic insert. Remove only each losing attempt's own temporary file. Look up the receipt on connection loss or reload, and reuse it when the browser identifies a retry of the same file.
 - Verification: two concurrent server requests with the same receipt and bytes produced one paper and one stored PDF. Reusing the receipt with different bytes was rejected, as was a lookup by another owner. Chrome at 390px held a real PDF upload response, refreshed, lost the first receipt query, and opened the single accepted paper. The production build, source preflight, 150 backend tests and 13 frontend tests passed.
+
+## L-20261123-26 — Keep selection controls reachable as the viewport narrows
+
+- Evidence: the discovery page itself fit at 320px and 360px, while its horizontally scrolling selection tray placed the last remove button outside the visible area. An absolutely positioned touch target could also overlap the title.
+- Action: wrap the paper list and stack its rows on narrow screens. Give the title and remove button separate columns. Check individual control bounds in the browser alongside the page's overall width.
+- Verification: Chrome at 320, 360, 390, 480, 720 and 1440 CSS pixels kept each remove button within the viewport and separate from its title. At 320px the last remove action updated the saved selection, then the synthesis link opened its page. The full Chrome navigation smoke test, production build, source preflight, 150 backend tests and 13 frontend tests passed.

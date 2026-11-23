@@ -724,6 +724,17 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     topic = page.get_by_role("region", name="研究主题")
     expect(topic).to_contain_text(original["query"])
     assert context.request.get(workspace_url).json() == original
+    original_viewport = page.viewport_size
+    page.set_viewport_size({"width": 320, "height": 740})
+    tray = page.get_by_role("list", name="待综合论文")
+    remove_buttons = tray.get_by_role("button", name=re.compile("^移出 "))
+    expect(remove_buttons).to_have_count(len(original["selected_paper_ids"]))
+    for button in remove_buttons.all():
+        box = button.bounding_box()
+        assert box and box["width"] >= 44 and box["height"] >= 44, box
+        assert box["x"] >= 0 and box["x"] + box["width"] <= 320, box
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    page.set_viewport_size(original_viewport)
     with page.expect_request(old_lineage):
         page.get_by_role("tab", name="文献谱系", exact=True).click()
     page.get_by_role("tab", name="谱系图", exact=True).press("ArrowRight")

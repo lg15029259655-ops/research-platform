@@ -394,6 +394,25 @@ export default function DiscoverPage() {
         </div><aside className="graphAside" key={`${graphView}-${showingLineage ? lineageCenter : center}`}>{selected ? <><div className="relationSummary"><strong>与中心论文的关系</strong><p>{relationText(selected)}</p></div>{workCard(selected, true)}<button className="moreButton" onClick={() => (showingLineage ? showLineage(selected.openalex_id) : showGraph(selected.openalex_id))} disabled={busy || relationBusy || selected.openalex_id === (showingLineage ? lineageCenter : center)} aria-busy={relationBusy}>{relationBusy ? "正在展开…" : selected.openalex_id === (showingLineage ? lineageCenter : center) ? "当前中心论文" : "以这篇论文为中心展开 →"}</button></> : <p>选择一篇论文查看摘要与可用操作。</p>}</aside></div>
       </>}
 </>}
-    {!!workspace?.selected_paper_ids.length && <div className="compareTray"><strong>待综合 · {workspace.selected_paper_ids.length} / 5</strong><div>{workspace.selected_paper_ids.map((id) => <span key={id} title={saved.find((item) => item.id === id)?.title || "已选论文"}>{saved.find((item) => item.id === id)?.title || "已选论文"}<button title="移出待综合论文" aria-label={`移出 ${saved.find((item) => item.id === id)?.title || "论文"}`} onClick={() => setPaperInSynthesis(id, false, workspace.query).catch((e) => setError(e.message))}>×</button></span>)}</div><Link href="/synthesis">开始综合 →</Link></div>}
+    {!!workspace?.selected_paper_ids.length && (
+      <div className="compareTray">
+        <strong>待综合 · {workspace.selected_paper_ids.length} / 5</strong>
+        <div className="compareTrayList" role="list" aria-label="待综合论文">
+          {workspace.selected_paper_ids.map((id) => {
+            const title = saved.find((paper) => paper.id === id)?.title || "已选论文";
+            return (
+              <div className="compareTrayPaper" key={id} role="listitem">
+                <small title={title}>{title}</small>
+                <button type="button" title="移出待综合论文" aria-label={`移出 ${title}`}
+                  onClick={() => setPaperInSynthesis(id, false, workspace.query).catch((e) => setError(e.message))}>
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <Link href="/synthesis">开始综合 →</Link>
+      </div>
+    )}
   </main>;
 }
