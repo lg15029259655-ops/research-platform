@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 from contextlib import asynccontextmanager
@@ -7,11 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
 from .db import Base, SessionLocal, engine
 from . import models  # noqa: F401 - register tables
 from .services.bailian_service import AIConfigurationError, stream_completion, text_config
 from .papers import router as papers_router
+from .papers import pending_parse_tickets, recover_pending_parses
 from .research import route_research, router as research_router
 from .workspace import router as workspace_router
 from .auth import anonymous_session
@@ -47,10 +50,17 @@ async def lifespan(_app: FastAPI):
             paper.study_type = routed["study_type"]
             paper.template = routed["template"]
         db.commit()
+    stopping = asyncio.Event()
+    tickets = await run_in_threadpool(pending_parse_tickets)
     register_all()
     start_worker()
-    yield
-    await stop_worker()
+    recovery = asyncio.create_task(recover_pending_parses(tickets, stopping))
+    try:
+        yield
+    finally:
+        stopping.set()
+        await recovery
+        await stop_worker()
 
 
 app = FastAPI(title="科研工作台 API", lifespan=lifespan)

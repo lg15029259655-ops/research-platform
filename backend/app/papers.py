@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 from contextlib import aclosing
@@ -354,22 +355,61 @@ def paper_status(paper_id: str, background_tasks: BackgroundTasks, owner: str = 
             heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
         if (paper.status in PARSE_STAGES and paper.parse_token and heartbeat_at
                 and heartbeat_at < cutoff):
-            token = str(uuid4())
-            previous_token = paper.parse_token
-            claim = db.execute(update(Paper).where(
-                Paper.id == paper_id, Paper.owner_id == owner,
-                Paper.status.in_(PARSE_STAGES), Paper.parse_token == previous_token,
-                Paper.parse_heartbeat < cutoff,
-            ).values(status="uploaded", parse_token=token, parse_heartbeat=datetime.now(timezone.utc))
-                .execution_options(synchronize_session=False))
-            if claim.rowcount == 1:
-                path = paper.local_file_path
-                replace_existing = db.scalar(select(ReadingUnit.id).where(
-                    ReadingUnit.paper_id == paper_id).limit(1)) is not None
-                db.commit()
-                background_tasks.add_task(process_paper, paper_id, owner, path, replace_existing, token)
+            attempt = claim_interrupted_parse(db, paper_id, owner, paper.parse_token, cutoff)
+            if attempt:
+                background_tasks.add_task(process_paper, *attempt)
                 return {"id": paper_id, "status": "uploaded", "warning": paper.parse_warning}
+            paper = db.get(Paper, paper_id, populate_existing=True)
+            if paper is None:
+                raise HTTPException(404, "论文不存在")
         return {"id": paper.id, "status": paper.status, "warning": paper.parse_warning}
+
+
+def claim_interrupted_parse(db, paper_id: str, owner: str, prior_token: str | None,
+                            cutoff: datetime | None = None) -> tuple[str, str, str, bool, str] | None:
+    conditions = [Paper.id == paper_id, Paper.owner_id == owner, Paper.status.in_(PARSE_STAGES),
+                  Paper.parse_token == prior_token]
+    if cutoff is not None:
+        conditions.append(Paper.parse_heartbeat < cutoff)
+    token = str(uuid4())
+    claim = db.execute(update(Paper).where(*conditions)
+                       .values(status="uploaded", parse_token=token, parse_heartbeat=datetime.now(timezone.utc))
+                       .execution_options(synchronize_session=False))
+    if claim.rowcount != 1:
+        db.rollback()
+        return None
+    paper = owned_paper(db, paper_id, owner)
+    replace_existing = bool(paper.content_revision or paper.source_sha256) or db.scalar(
+        select(ReadingUnit.id).where(ReadingUnit.paper_id == paper_id).limit(1)
+    ) is not None
+    db.commit()
+    return paper_id, owner, paper.local_file_path, replace_existing, token
+
+
+def pending_parse_tickets() -> list[tuple[str, str, str | None]]:
+    with SessionLocal() as db:
+        return [tuple(row) for row in db.execute(select(Paper.id, Paper.owner_id, Paper.parse_token)
+                .where(Paper.status.in_(PARSE_STAGES))
+                .order_by(Paper.created_at, Paper.id))]
+
+
+def resume_parse(ticket: tuple[str, str, str | None]) -> None:
+    with SessionLocal() as db:
+        attempt = claim_interrupted_parse(db, *ticket)
+    if attempt:
+        process_paper(*attempt)
+
+
+async def recover_pending_parses(tickets: list[tuple[str, str, str | None]], stopping: asyncio.Event) -> None:
+    # The deployed API uses one process. Tickets captured before startup
+    # completes belong to the previous run; tokens fence competing retries.
+    for ticket in tickets:
+        if stopping.is_set():
+            return
+        try:
+            await run_in_threadpool(resume_parse, ticket)
+        except Exception:
+            logger.exception("Could not resume interrupted PDF parse")
 
 
 @router.get("/{paper_id}/file")

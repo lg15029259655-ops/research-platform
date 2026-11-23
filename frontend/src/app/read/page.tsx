@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { type CSSProperties, type KeyboardEvent, type ReactNode, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { API, apiJson } from "@/lib/api";
+import { API, ApiError, apiJson } from "@/lib/api";
 import JobProgress from "@/components/jobs/JobProgress";
 import ThinkingTrail from "@/components/reader/ThinkingTrail";
 import type { MindMapPayload } from "@/components/mindmap/MindMapPanel";
@@ -179,6 +179,7 @@ export default function ReadPage() {
       setPage(data.units?.find((unit) => unit.id === data.current_unit_id)?.page_start || 1);
       void updateWorkspace({core_paper_id: id}).catch(() => {});
     }
+    return data;
   }, []);
 
   useEffect(() => {
@@ -226,27 +227,34 @@ export default function ReadPage() {
   useEffect(() => {
     if (!paper || pending || !parseStages[paper.status]) return;
     const id = paper.id;
-    const request = paperRequest.current;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const isCurrent = () => !controller.signal.aborted && activePaper.current === id;
     const poll = async () => {
       try {
-        const response = await fetch(`${API}/api/papers/${id}/status`, { credentials: "include", signal: controller.signal });
-        if (response.ok) {
-          const progress: Pick<Paper, "status" | "warning"> = await response.json();
-          if (controller.signal.aborted || request !== paperRequest.current) return;
-          if (progress.status === "parsed" || progress.status === "failed") {
-            await loadPaper(id);
-            setParseProgress("");
-            await loadList();
-            return;
-          }
-          setParseProgress(parseStages[progress.status] || "");
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
+        const progress = await apiJson<Pick<Paper, "status">>(`/api/papers/${id}/status`, { signal, cache: "no-store" });
+        if (!isCurrent()) return;
+        if (progress.status === "parsed" || progress.status === "failed") {
+          await loadPaper(id, false, signal);
+          if (!isCurrent()) return;
+          setParseProgress("");
+          void loadList().catch(() => {});
+          return;
         }
-      } catch {
-        // A temporary network error should not stop future status checks.
+        setParseProgress(parseStages[progress.status] || "");
+      } catch (error) {
+        if (!isCurrent()) return;
+        if (error instanceof ApiError && error.status === 404) {
+          setParseProgress("");
+          setError("这篇论文已不在论文库。可以打开其他论文。");
+          setPaper(null);
+          void loadList().catch(() => {});
+          return;
+        }
+        setParseProgress("暂时无法读取论文状态，正在重试…");
       }
-      if (!controller.signal.aborted && request === paperRequest.current) timer = setTimeout(poll, 3000);
+      if (isCurrent()) timer = setTimeout(poll, 3000);
     };
     void poll();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
@@ -306,49 +314,44 @@ export default function ReadPage() {
     finally { setPending(false); setParseStage(""); event.target.value = ""; }
   }
 
+  async function submitParseRequest(id: string, action: "attach" | "reparse", body?: FormData) {
+    setPending(true); setError("");
+    setParseStage(action === "attach" ? "正在上传全文 PDF…" : "正在提交重新识别…");
+    try {
+      const result = await apiJson<Pick<Paper, "status">>(`/api/papers/${id}/${action}`, {
+        method: "POST", body, signal: body ? undefined : AbortSignal.timeout(20000),
+      });
+      if (!active.current || activePaper.current !== id) return;
+      abortReaderJobs();
+      setReaderTab("read"); setMindmap(null); setExperiments(null);
+      setPaper((record) => record?.id === id ? { ...record, status: result.status, warning: undefined } : record);
+      setParseProgress(parseStages[result.status] || "");
+    } catch (error) {
+      if (!active.current || activePaper.current !== id) return;
+      setError(error instanceof ApiError ? error.message : "暂时无法确认提交结果，正在刷新论文状态");
+      // A response can be lost after the server has accepted the request.
+      void loadPaper(id, false, AbortSignal.timeout(10000))
+        .then((data) => {
+          if (data && parseStages[data.status] && active.current && activePaper.current === id) setError("");
+        })
+        .catch(() => {
+          if (active.current && activePaper.current === id) setError("暂时无法读取论文状态，请稍后刷新确认");
+        });
+    } finally { setPending(false); setParseStage(""); }
+  }
+
   async function attach(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !paper) return;
-    setPending(true); setError(""); setParseStage("正在上传并解析全文 PDF…");
-    try {
-      const body = new FormData(); body.append("file", file);
-      const response = await fetch(`${API}/api/papers/${paper.id}/attach`, { method: "POST", credentials: "include", body });
-      if (!response.ok) { const data = await response.json(); throw new Error(data.detail || "上传失败"); }
-      for (let attempt = 0; attempt < 240; attempt++) {
-        const status = await fetch(`${API}/api/papers/${paper.id}/status`, { credentials: "include" });
-        if (!status.ok) throw new Error("论文读取失败，请稍后重试");
-        const latest: Pick<Paper, "status" | "warning"> = await status.json();
-        if (latest.status === "failed") throw new Error("PDF 解析失败，请重试");
-        if (latest.status === "parsed") { await loadPaper(paper.id); await loadList(); return; }
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-      throw new Error("解析仍在进行，请稍后从论文库打开");
-    } catch (e) { setError(e instanceof Error ? e.message : "上传失败"); }
-    finally { setPending(false); setParseStage(""); event.target.value = ""; }
+    if (!file || !paper || pending) return;
+    const body = new FormData();
+    body.append("file", file);
+    try { await submitParseRequest(paper.id, "attach", body); }
+    finally { event.target.value = ""; }
   }
 
   async function reparse() {
     if (!paper || pending || !window.confirm("重新识别会保留原 PDF、旧精读记录和综合结果，但会重置当前阅读位置。旧记录与新章节的关联将解除，旧综合结果需要重新核对。继续吗？")) return;
-    const id = paper.id;
-    setPending(true); setError(""); setParseStage("正在用新版规则重新解析 PDF…");
-    try {
-      const response = await fetch(`${API}/api/papers/${id}/reparse`, { method: "POST", credentials: "include" });
-      if (!response.ok) { const data = await response.json(); throw new Error(data.detail || "重新解析失败"); }
-      for (let attempt = 0; attempt < 240; attempt++) {
-        const status = await fetch(`${API}/api/papers/${id}/status`, { credentials: "include" });
-        if (!status.ok) throw new Error("无法读取解析进度");
-        const latest: Pick<Paper, "status" | "warning"> = await status.json();
-        if (latest.status === "failed") throw new Error("重新解析失败，请检查 PDF");
-        if (latest.status === "parsed") {
-          await loadPaper(id); await loadList();
-          if (latest.warning) setError(latest.warning);
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 750));
-      }
-      throw new Error("解析仍在进行，请稍后重新打开论文");
-    } catch (e) { setError(e instanceof Error ? e.message : "重新解析失败"); }
-    finally { setPending(false); setParseStage(""); }
+    await submitParseRequest(paper.id, "reparse");
   }
 
   /** 章节骨架由后端确定性生成，AI 只补关键点。 */

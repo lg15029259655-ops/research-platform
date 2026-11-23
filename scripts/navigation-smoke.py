@@ -145,6 +145,36 @@ def manual_design_draft(browser, frontend, backend):
     context.close()
 
 
+def reader_reparse(browser, frontend, backend):
+    context = browser.new_context()
+    page = context.new_page()
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace = context.request.get(f"{backend}/api/workspace").json()
+    paper_id = workspace["core_paper_id"]
+    detail_url = f"{backend}/api/papers/{paper_id}"
+    prior = context.request.get(detail_url).json()
+    context.route(detail_url, lambda route: route.fulfill(json={**prior, "warning": "未可靠识别论文章节"}), times=1)
+    status_url = f"{detail_url}/status"
+    status_requests = []
+    context.route(status_url, lambda route: status_requests.append(route))
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.goto(f"{frontend}/read?paper={paper_id}")
+    with page.expect_response(f"{detail_url}/reparse") as requested:
+        page.get_by_role("button", name="重新识别当前 PDF").click()
+    assert requested.value.ok, requested.value.text()
+    expect(page.get_by_text("PDF 正在解析。", exact=False)).to_be_visible()
+    expect(page.locator(".pdfCanvas")).to_have_count(0)
+    if status_requests:
+        status_requests[0].fulfill(json={"status": "reading"})
+    context.unroute(status_url)
+    page.reload()
+    expect(page.locator(".pdfCanvas canvas")).to_be_visible(timeout=15000)
+    after = context.request.get(detail_url).json()
+    assert after["status"] == "parsed"
+    assert [item["id"] for item in after["messages"]] == [item["id"] for item in prior["messages"]]
+    context.close()
+
+
 def shared_selection(browser, frontend, backend):
     context = browser.new_context()
     first = context.new_page()
@@ -449,9 +479,11 @@ def smoke(browser, frontend, backend):
         )
     expect(page).to_have_url(re.compile(rf"/read[?]paper={source_id}$"))
     expect(page.get_by_text("PDF 正在解析。", exact=False)).to_be_visible()
+    context.route(detail_url, lambda route: route.fulfill(status=503, json={}), times=1)
     statuses[0].fulfill(json={"status": "parsed"})
     context.unroute(status_url)
-    expect(page.locator(".pdfCanvas canvas")).to_be_visible()
+    expect(page.get_by_text("暂时无法读取论文状态，正在重试…", exact=True)).to_be_visible()
+    expect(page.locator(".pdfCanvas canvas")).to_be_visible(timeout=12000)
 
     # Use a real PDF from the isolated demo session to verify the deferred upload.
     expect(page.locator(".library .paperItem").first).to_be_visible()
@@ -516,6 +548,7 @@ if __name__ == "__main__":
             manual_design_draft(browser, args.frontend, args.backend)
             compact_reading(browser, args.frontend, args.backend)
             shared_selection(browser, args.frontend, args.backend)
+            reader_reparse(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")

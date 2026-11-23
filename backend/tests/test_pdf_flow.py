@@ -2,8 +2,10 @@ import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from uuid import uuid4
 
 import pymupdf
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -798,6 +800,53 @@ def test_stale_parse_recovers_and_preserves_history(monkeypatch, tmp_path):
         assert after["status"] == "parsed" and after["units"]
         assert after["messages"][0]["content"] == "Keep this note"
         assert after["messages"][0]["reading_unit_id"] is None
+
+
+@pytest.mark.parametrize("prior_token", ["interrupted-attempt", None])
+def test_restart_resumes_pdf_parse_without_a_status_request(monkeypatch, tmp_path, prior_token):
+    from datetime import datetime, timezone
+    from threading import Event
+    from time import monotonic, sleep
+
+    from app import papers as papers_module
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as first:
+        paper = upload(first, "Restart Recovery Study")
+        cookie = first.cookies.get(COOKIE_NAME)
+        with SessionLocal() as db:
+            record = db.get(Paper, paper["id"])
+            record.status = "reading"
+            record.parse_token = prior_token
+            record.parse_heartbeat = datetime.now(timezone.utc) if prior_token else None
+            db.add(Message(id=str(uuid4()), paper_id=paper["id"], role="assistant",
+                           content="Keep this note", reading_unit_id=paper["units"][0]["id"]))
+            db.commit()
+
+    original = papers_module.parse_pdf
+    started, release = Event(), Event()
+
+    def hold_recovery(path, **options):
+        started.set()
+        assert release.wait(5)
+        return original(path, **options)
+
+    monkeypatch.setattr(papers_module, "parse_pdf", hold_recovery)
+    with TestClient(app) as restarted:
+        restarted.cookies.set(COOKIE_NAME, cookie)
+        try:
+            assert started.wait(3), "startup must resume parsing without a browser status request"
+            assert restarted.get("/api/health").status_code == 200
+        finally:
+            release.set()
+        deadline = monotonic() + 5
+        while monotonic() < deadline:
+            result = restarted.get(f"/api/papers/{paper['id']}").json()
+            if result["status"] == "parsed":
+                break
+            sleep(.02)
+        assert result["status"] == "parsed" and result["units"]
+        assert result["messages"][0]["content"] == "Keep this note"
+        assert result["messages"][0]["reading_unit_id"] is None
 
 
 def test_live_or_legacy_parse_is_not_restarted(monkeypatch, tmp_path):

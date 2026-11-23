@@ -59,13 +59,11 @@ with TestClient(app) as client:
         child.terminate()
         child.wait(timeout=10)
     with sqlite3.connect(database) as db:
-        row = db.execute("SELECT id, status, parse_token FROM papers").fetchone()
-        assert row and row[1] == "reading" and row[2]
-        # Advance the lease without making the test wait 30 minutes.
-        db.execute("UPDATE papers SET parse_heartbeat = '2000-01-01 00:00:00' WHERE id = ?", (row[0],))
+        row = db.execute("SELECT id, status, parse_token, parse_heartbeat FROM papers").fetchone()
+        assert row and row[1] == "reading" and row[2] and row[3]
     env["CRASH_PAPER_ID"] = row[0]
     recover = r'''
-import json, os
+import json, os, time
 from pathlib import Path
 from fastapi.testclient import TestClient
 from app.auth import COOKIE_NAME
@@ -73,17 +71,19 @@ from app.main import app
 with TestClient(app) as client:
     client.cookies.set(COOKIE_NAME, Path(os.environ["CRASH_COOKIE"]).read_text())
     paper_id = os.environ["CRASH_PAPER_ID"]
-    status = client.get(f"/api/papers/{paper_id}/status")
-    detail = client.get(f"/api/papers/{paper_id}")
-    Path(os.environ["CRASH_OUTPUT"]).write_text(json.dumps({"status_code": status.status_code,
-        "status": status.json(), "detail_code": detail.status_code, "detail": detail.json()}), encoding="utf-8")
+    deadline = time.monotonic() + 5
+    while True:
+        detail = client.get(f"/api/papers/{paper_id}")
+        assert detail.status_code == 200
+        if detail.json()["status"] == "parsed" or time.monotonic() >= deadline:
+            break
+        time.sleep(0.02)
+    Path(os.environ["CRASH_OUTPUT"]).write_text(json.dumps(detail.json()), encoding="utf-8")
 '''
     subprocess.run([sys.executable, "-c", recover], cwd=backend_root, env=env,
                    check=True, timeout=30, capture_output=True)
     result = json.loads(output_file.read_text(encoding="utf-8"))
-    assert result["status_code"] == 200 and result["status"]["status"] == "uploaded"
-    assert result["detail_code"] == 200 and result["detail"]["status"] == "parsed"
-    assert result["detail"]["units"]
+    assert result["status"] == "parsed" and result["units"]
 
 
 def test_existing_database_receives_parse_columns_on_startup(tmp_path):
