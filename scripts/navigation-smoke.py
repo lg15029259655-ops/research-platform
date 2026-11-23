@@ -303,8 +303,20 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
     edit.press("Enter")
     instruction.fill("Review only this stage")
     original_size = page.viewport_size
-    page.set_viewport_size({"width": 320, "height": 256})
     node_drawer = page.get_by_role("dialog")
+    page.set_viewport_size({"width": 1440, "height": 900})
+    expect(node_drawer).to_be_visible()
+    assert node_drawer.evaluate("node => node.matches(':modal')")
+    background_link = page.locator('.researchNav nav a[href="/synthesis"]')
+    nav_box, modal_box = background_link.bounding_box(), node_drawer.bounding_box()
+    assert nav_box["x"] + nav_box["width"] < modal_box["x"]
+    page.mouse.click(nav_box["x"] + nav_box["width"] / 2, nav_box["y"] + nav_box["height"] / 2)
+    expect(page).to_have_url(f"{frontend}/design?view=canvas")
+    expect(node_drawer).to_be_visible()
+    instruction.focus()
+    background_link.evaluate("link => link.focus()")
+    expect(instruction).to_be_focused()
+    page.set_viewport_size({"width": 320, "height": 256})
     node_drawer.evaluate("node => { node.scrollTop = node.scrollHeight; }")
     assert node_drawer.evaluate("node => node.scrollTop > 100")
     expect(node_drawer.get_by_role("button", name="关闭详情", exact=True)).to_be_in_viewport(ratio=1)
@@ -400,6 +412,14 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
     expect(page.locator(".versionBar strong")).to_have_text(version_label)
     assert context.request.get(workspace_url).json()["design_version_id"] == base_id
     expect(form).to_have_count(0)
+    edit.click()
+    instruction.fill("Retain the research question while updating this stage")
+    job_url = f"{backend}/api/jobs"
+    context.route(job_url, lambda route: route.fulfill(status=422, json={"detail": "阶段优化测试响应"}), times=1)
+    with page.expect_request(job_url) as stage_job:
+        page.get_by_role("button", name="AI 优化此节点").click()
+    assert stage_job.value.post_data_json["params"]["action"] == "node"
+    expect(node_drawer).to_have_count(0)
     context.close()
 
 

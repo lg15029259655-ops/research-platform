@@ -111,11 +111,18 @@
 @media(prefers-reduced-motion:reduce){.loadingPulse{animation:none}.workCard, .primaryButton, .searchBox button, .searchModes button, .evidenceNode, .gapStepItems button{transition:none}}
 
 .evidenceDrawer {
+  inset: 0 0 auto auto;
+  margin: 0;
+  max-width: none;
+  max-height: none;
   height: 100dvh;
+  border-block: 0;
+  border-inline-end: 0;
   overscroll-behavior: contain;
   overflow-wrap: anywhere;
   scroll-padding-block-start: 64px;
 }
+.evidenceDrawer::backdrop { background: rgba(15, 25, 40, .26); }
 .drawerHead {
   position: sticky;
   inset-block-start: 0;

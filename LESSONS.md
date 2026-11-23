@@ -832,3 +832,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: at 320 × 256 CSS pixels, scrolling the design-stage drawer to the end moved its close control completely above the viewport.
 - Action: keep the top row sticky in the shared drawer, reserve scroll padding for focused content, and center the close symbol within its existing target. Size the drawer to the dynamic viewport and contain its overscroll. Use the same behavior on both appearances.
 - Verification: Chrome and Edge on both appearances scrolled the design-stage and evidence drawers to the end at 320 × 256. The close control remained visible, the final citation link was reachable, and Escape restored the original focus. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
+
+## L-20261123-59 — Isolate pointer and keyboard interaction while a detail drawer is open
+
+- Evidence: the shared drawer advertised a modal and trapped Tab, but a pointer click on the desktop navigation behind it still switched pages and closed the user's current editor.
+- Action: make the shared drawer a native modal dialog while retaining its side placement and sticky close control. Keep Escape local to the open drawer so an enclosing view does not also exit. Close the stage editor after starting its optimization so the workspace progress controls are available.
+- Verification: Chrome and Edge on both appearances confirmed that clicking the visible background navigation did not change the route and that programmatic focus on that link left focus in the drawer. They verified Escape focus restoration, sticky close behavior, citation navigation and a mocked stage-job submission. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
