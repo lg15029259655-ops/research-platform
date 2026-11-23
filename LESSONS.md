@@ -614,3 +614,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: a new visit with no page in its URL reverted to the AI reading unit, even after the reader had manually moved to a different PDF page.
 - Action: remember a manually chosen page by paper ID and file fingerprint in the current tab. Use a valid explicit page first, then a same-file checkpoint, then the reading unit. Opening a citation alone does not change the checkpoint.
 - Verification: Chrome at 390px left for synthesis, resumed the previous page, followed a valid citation, returned to the earlier checkpoint, and rejected a checkpoint from a different file version. The production build, source preflight and 13 frontend tests passed.
+
+## L-20261123-24 — Keep the last opened paper separate from the research center
+
+- Evidence: every successful reader open sent a workspace update. Following a citation or briefly opening another paper could silently change the central paper in every tab.
+- Action: remember the recently opened paper within the tab. Set the center only through an explicit action guarded by the active research topic. Keep any save failure in the same library panel as the action. Let the default reader URL stand while the paper detail is loading: a late history replacement can interrupt navigation to another workspace page.
+- Verification: Chrome at 390px opened a citation for a non-central paper and checked that the server retained the center. Returning to the reader reopened the recent paper. An injected 503 left the center in place and displayed an error in the library drawer, and retrying the explicit action saved the new center. The production build, source preflight and 13 frontend tests passed.

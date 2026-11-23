@@ -65,6 +65,7 @@ function SummaryCards({ content }: { content: string }) {
 
 const questionDraftKey = (paperId: string) => `read:${paperId}`;
 const readingPositionKey = (paperId: string) => `read-position:${paperId}`;
+const lastPaperKey = "read-last-paper";
 const turnDraftKey = (paperId: string, action: Action) => `read-turn:${paperId}:${action}`;
 type ChatTurn = { id: string; message?: string };
 type ReadingPosition = { fileVersion: string; page: number };
@@ -100,7 +101,8 @@ export default function ReadPage() {
   const requestedPage = Number(linkPage);
   const sourceFile = searchParams.get("source_file");
   const { workspace, workspaceError, refresh } = useWorkspace();
-  const selectedId = paperParam ?? workspace?.core_paper_id ?? null;
+  const [lastPaper] = useTabDraft<string>(lastPaperKey);
+  const selectedId = paperParam ?? lastPaper ?? workspace?.core_paper_id ?? null;
   const [ready, setReady] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -116,6 +118,8 @@ export default function ReadPage() {
   const [parseStage, setParseStage] = useState("");
   const [parseProgress, setParseProgress] = useState("");
   const [addingToSynthesis, setAddingToSynthesis] = useState(false);
+  const [settingCenter, setSettingCenter] = useState(false);
+  const [centerError, setCenterError] = useState("");
   const [stream, setStream] = useState("");
   const [error, setError] = useState("");
   const compact = useSyncExternalStore(subscribeToViewport, () => window.matchMedia(compactQuery).matches, () => false);
@@ -211,7 +215,7 @@ export default function ReadPage() {
     if (opening) {
       const params = new URLSearchParams(window.location.search);
       setPage(startingPdfPage(data, Number(params.get("page")), params.get("source_file")));
-      void updateWorkspace({core_paper_id: id}).catch(() => {});
+      if (readTabDraft<string>(lastPaperKey) !== id) writeTabDraft(lastPaperKey, id);
     }
     return data;
   }, []);
@@ -223,24 +227,24 @@ export default function ReadPage() {
   }, [loadList]);
 
   useEffect(() => {
-    if (paperParam === null && selectedId) {
-      const params = new URLSearchParams(window.location.search);
-      params.set("paper", selectedId);
-      window.history.replaceState(null, "", `/read?${params}`);
-    }
-  }, [paperParam, selectedId]);
-  useEffect(() => {
     activePaper.current = selectedId;
     stopChat();
     abortReaderJobs();
     setPaper(null);
     setReaderTab("read"); setMindmap(null); setExperiments(null);
-    setThinking(""); setActiveHeading(""); setError(""); setParseProgress("");
+    setThinking(""); setActiveHeading(""); setError(""); setCenterError(""); setParseProgress("");
     setOpeningPaper(!!selectedId);
     if (!selectedId) return;
     const controller = new AbortController();
     loadPaper(selectedId, true, controller.signal)
-      .catch((e) => { if (!controller.signal.aborted) setError(e.message); })
+      .catch((e) => {
+        if (controller.signal.aborted) return;
+        if (!paperParam && e instanceof ApiError && e.status === 404 && readTabDraft<string>(lastPaperKey) === selectedId) {
+          writeTabDraft(lastPaperKey, null);
+          void refresh(true).catch(() => {});
+        }
+        setError(e.message);
+      })
       .finally(() => { if (!controller.signal.aborted) setOpeningPaper(false); });
     return () => { ++paperRequest.current; controller.abort(); };
   }, [selectedId, loadPaper]);
@@ -568,6 +572,7 @@ export default function ReadPage() {
       writeTabDraft<ReadingPosition>(readingPositionKey(paper.id), { fileVersion: paper.file_version, page: next });
     }
     const params = new URLSearchParams(window.location.search);
+    params.set("paper", paper.id);
     params.set("page", String(next));
     params.delete("source_file");
     window.history.replaceState(null, "", `/read?${params}`);
@@ -581,6 +586,20 @@ export default function ReadPage() {
     finally { setAddingToSynthesis(false); }
   }
 
+  async function setAsCenter() {
+    if (!paper || !workspace || settingCenter) return;
+    const id = paper.id;
+    setSettingCenter(true); setCenterError("");
+    try {
+      await updateWorkspace({ core_paper_id: id }, workspace.query);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) await refresh(true).catch(() => {});
+      if (activePaper.current === id) setCenterError(e instanceof Error ? e.message : "暂时无法设置中心论文");
+    } finally {
+      setSettingCenter(false);
+    }
+  }
+
   async function removePaper(id: string) {
     if (!window.confirm("删除这篇论文及其聊天记录？此操作无法恢复。")) return;
     setError("");
@@ -588,6 +607,7 @@ export default function ReadPage() {
     if (!response.ok) { setError("删除论文失败，请重试"); return; }
     writeTabDraft(questionDraftKey(id), null);
     writeTabDraft(readingPositionKey(id), null);
+    if (readTabDraft<string>(lastPaperKey) === id) writeTabDraft(lastPaperKey, null);
     for (const action of chatActions) writeTabDraft(turnDraftKey(id, action), null);
     await refresh().catch(() => {});
     if (active.current && activePaper.current === id) {
@@ -625,6 +645,13 @@ export default function ReadPage() {
     {papers.length > 0 && <div className="libraryFilter">
       <input type="search" value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)}
         placeholder="搜索题名或文件名" aria-label="搜索论文库" />
+    </div>}
+    {paper && workspace && <div className="libraryFilter">
+      {workspace.core_paper_id === paper.id ? <span className="tabDraftNote" role="status">当前为中心论文</span>
+        : <button className="quietButton" type="button" onClick={() => void setAsCenter()} disabled={settingCenter} aria-busy={settingCenter}>
+          {settingCenter ? "正在保存…" : "设为中心论文"}
+        </button>}
+      {centerError && <p className="pdfError" role="alert">{centerError}</p>}
     </div>}
     <div className="libraryList">
       {libraryError && <button className="quietButton" onClick={() => void loadList().catch(() => {})}>重试读取论文库</button>}

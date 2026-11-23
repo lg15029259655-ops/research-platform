@@ -364,9 +364,9 @@ def compact_reading(browser, frontend, backend):
     expect(drawer).to_have_count(0)
     expect(library_toggle).to_be_focused()
     library_toggle.click()
-    current = parse_qs(urlsplit(page.url).query)["paper"][0]
+    current_title = drawer.locator('.paperItem[aria-current="true"] strong').inner_text()
     papers = context.request.get(f"{backend}/api/papers").json()
-    other = next(item for item in papers if item["id"] != current)
+    other = next(item for item in papers if item["title"] != current_title)
     search = drawer.get_by_role("searchbox", name="搜索论文库")
     search.fill("no matching bibliography")
     expect(drawer.get_by_text("没有匹配的论文。试试换个关键词。")).to_be_visible()
@@ -815,8 +815,9 @@ def evidence_source_navigation(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
     assert context.request.get(f"{backend}/api/session").ok
-    workspace = context.request.get(f"{backend}/api/workspace").json()
-    paper_id = workspace["core_paper_id"]
+    workspace_url = f"{backend}/api/workspace"
+    workspace = context.request.get(workspace_url).json()
+    paper_id = next(item for item in workspace["selected_paper_ids"] if item != workspace["core_paper_id"])
     paper = context.request.get(f"{backend}/api/papers/{paper_id}").json()
     starting_page = next((unit["page_start"] for unit in paper["units"] if unit["id"] == paper["current_unit_id"]), 1) or 1
     target = 2 if starting_page != 2 else 1
@@ -841,6 +842,7 @@ def evidence_source_navigation(browser, frontend, backend):
     page_number = page.locator(".pageTools span").first
     expect(page_number).to_have_text(re.compile(rf"^{target} /"))
     expect(page.locator(".pdfCanvas canvas")).to_be_visible()
+    assert context.request.get(workspace_url).json()["core_paper_id"] == workspace["core_paper_id"]
     stale = urlencode({"paper": paper_id, "page": target, "source_file": "old-pdf-version"})
     page.goto(f"{frontend}/read?{stale}")
     expect(page.get_by_role("status").filter(has_text="旧引用的页码与当前 PDF 无法确认对应")).to_be_visible()
@@ -852,6 +854,26 @@ def evidence_source_navigation(browser, frontend, backend):
     page.goto(f"{frontend}/read?{invalid}")
     expect(page.get_by_role("status").filter(has_text="页码不在这份 PDF 内")).to_be_visible()
     expect(page_number).to_have_text(re.compile(rf"^{starting_page} /"))
+    page.goto(f"{frontend}/read")
+    expect(page.get_by_role("heading", name=paper["title"], exact=True)).to_be_visible()
+    page.get_by_role("button", name="展开论文库").click()
+    drawer = page.get_by_role("dialog", name="论文库")
+
+    def fail_center_write(route):
+        if route.request.method == "PATCH":
+            route.fulfill(status=503, json={"detail": "暂时无法保存中心论文"})
+        else:
+            route.fallback()
+
+    context.route(workspace_url, fail_center_write)
+    center = drawer.get_by_role("button", name="设为中心论文", exact=True)
+    center.click()
+    expect(drawer.get_by_role("alert").filter(has_text="暂时无法保存中心论文")).to_be_visible()
+    assert context.request.get(workspace_url).json()["core_paper_id"] == workspace["core_paper_id"]
+    context.unroute(workspace_url, fail_center_write)
+    center.click()
+    expect(drawer.get_by_role("status").filter(has_text="当前为中心论文")).to_be_visible()
+    assert context.request.get(workspace_url).json()["core_paper_id"] == paper_id
     context.close()
 
 
