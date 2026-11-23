@@ -3,6 +3,7 @@
 import { Component, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { API, ApiError, apiJson } from "@/lib/api";
+import { useTabDraft } from "@/lib/tab-draft";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
@@ -18,13 +19,21 @@ class PdfErrorBoundary extends Component<{ children: ReactNode; fallback: ReactN
 
 type SearchHit = { page: number; snippet: string };
 type SearchState = { status: "idle" | "pending" } | { status: "ready"; hits: SearchHit[] } | { status: "error"; message: string };
+type PdfDisplay = { zoom: number; fitWidth: boolean };
+const defaultDisplay: PdfDisplay = { zoom: 1, fitWidth: true };
 
 export default function PdfPane({ paperId, fileVersion, page, totalPages, onPageChange }: {
   paperId: string; fileVersion?: string | null; page: number; totalPages?: number; onPageChange: (page: number) => void;
 }) {
   const [pages, setPages] = useState(0);
-  const [zoom, setZoom] = useState(1);
-  const [fitWidth, setFitWidth] = useState(true);
+  const [savedDisplay, setSavedDisplay] = useTabDraft<PdfDisplay & { fileVersion: string }>(`pdf-display:${paperId}`);
+  const [temporaryDisplay, setTemporaryDisplay] = useState(defaultDisplay);
+  const display = fileVersion
+    ? (savedDisplay?.fileVersion === fileVersion && typeof savedDisplay.zoom === "number"
+      && savedDisplay.zoom >= .65 && savedDisplay.zoom <= 2.5
+      && typeof savedDisplay.fitWidth === "boolean" ? savedDisplay : defaultDisplay)
+    : temporaryDisplay;
+  const { zoom, fitWidth } = display;
   const [availableWidth, setAvailableWidth] = useState(500);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
@@ -33,7 +42,7 @@ export default function PdfPane({ paperId, fileVersion, page, totalPages, onPage
   const searchRequest = useRef<AbortController | null>(null);
   const options = useMemo(() => ({ withCredentials: true }), []);
   useEffect(() => {
-    setPages(0); setQuery(""); setSearchState({ status: "idle" }); setZoom(1); setFitWidth(true);
+    setPages(0); setQuery(""); setSearchState({ status: "idle" }); setTemporaryDisplay(defaultDisplay);
     return () => { searchRequest.current?.abort(); searchRequest.current = null; };
   }, [paperId, fileVersion]);
   useEffect(() => {
@@ -51,6 +60,11 @@ export default function PdfPane({ paperId, fileVersion, page, totalPages, onPage
     searchRequest.current = null;
     setQuery(value);
     setSearchState({ status: "idle" });
+  }
+
+  function setDisplay(next: PdfDisplay) {
+    if (fileVersion) setSavedDisplay({ ...next, fileVersion });
+    else setTemporaryDisplay(next);
   }
 
   async function search() {
@@ -91,10 +105,10 @@ export default function PdfPane({ paperId, fileVersion, page, totalPages, onPage
         <button type="button" aria-label="上一页" onClick={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1}>‹</button>
         <span>{page} / {count || "…"}</span>
         <button type="button" aria-label="下一页" onClick={() => onPageChange(Math.min(count, page + 1))} disabled={page >= count}>›</button>
-        <button type="button" aria-label="缩小 PDF" onClick={() => setZoom(Math.max(.65, zoom - .15))}>−</button>
+        <button type="button" aria-label="缩小 PDF" onClick={() => setDisplay({ fitWidth, zoom: Math.max(.65, zoom - .15) })}>−</button>
         <span>{Math.round(zoom * 100)}%</span>
-        <button type="button" aria-label="放大 PDF" onClick={() => setZoom(Math.min(2.5, zoom + .15))}>＋</button>
-        <button type="button" aria-pressed={fitWidth} className={fitWidth ? "fitActive" : ""} onClick={() => { setFitWidth(!fitWidth); setZoom(1); }} title="切换适应宽度与原始宽度">适宽</button>
+        <button type="button" aria-label="放大 PDF" onClick={() => setDisplay({ fitWidth, zoom: Math.min(2.5, zoom + .15) })}>＋</button>
+        <button type="button" aria-pressed={fitWidth} className={fitWidth ? "fitActive" : ""} onClick={() => setDisplay({ fitWidth: !fitWidth, zoom: 1 })} title="切换适应宽度与原始宽度">适宽</button>
       </div>
       <form onSubmit={(event) => { event.preventDefault(); void search(); }}>
         <input value={query} onChange={(event) => editQuery(event.target.value)} placeholder="搜索 PDF 文字" aria-label="在 PDF 内搜索文字" />

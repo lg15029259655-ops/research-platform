@@ -123,6 +123,7 @@ export default function ReadPage() {
   const linkPage = searchParams.get("page");
   const requestedPage = Number(linkPage);
   const sourceFile = searchParams.get("source_file");
+  const citation = sourceFile !== null || searchParams.get("citation") === "1";
   const { workspace, workspaceError, refresh } = useWorkspace();
   const [lastPaper] = useTabDraft<string>(lastPaperKey);
   const [pendingUpload] = useTabDraft<PendingUpload>(pendingUploadKey);
@@ -150,9 +151,13 @@ export default function ReadPage() {
   const [stream, setStream] = useState("");
   const [error, setError] = useState("");
   const compact = useSyncExternalStore(subscribeToViewport, () => window.matchMedia(compactQuery).matches, () => false);
-  const [desktopMode, setDesktopMode] = useState<Mode>("split");
-  const [compactMode, setCompactMode] = useState<"pdf" | "ai" | null>(null);
-  const mode = compact ? compactMode ?? (desktopMode === "ai" ? "ai" : "pdf") : desktopMode;
+  const [desktopMode, setDesktopMode] = useTabDraft<Mode>("read-mode-desktop");
+  const [compactMode, setCompactMode] = useTabDraft<"pdf" | "ai">("read-mode-compact");
+  const preferredMode = compact ? compactMode ?? (desktopMode === "ai" ? "ai" : "pdf") : desktopMode ?? "split";
+  const requestedMode = searchParams.get("view");
+  const defaultMode = citation && preferredMode === "ai" ? "pdf" : preferredMode;
+  const mode = requestedMode === "pdf" || requestedMode === "ai" || (requestedMode === "split" && !compact)
+    ? requestedMode : defaultMode;
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [libraryQuery, setLibraryQuery] = useState("");
@@ -183,6 +188,11 @@ export default function ReadPage() {
   const modeTabs = tabGroup<Mode>(modes, mode, (next) => {
     if (compact) setCompactMode(next === "ai" ? "ai" : "pdf");
     else setDesktopMode(next);
+    if (citation || requestedMode) {
+      const params = new URLSearchParams(window.location.search);
+      params.set("view", next);
+      window.history.replaceState(null, "", `/read?${params}`);
+    }
   });
   const readerTabs = tabGroup(["read", "mindmap", "experiments"] as const, readerTab, setReaderTab);
   // 任务请求的 in-flight 令牌。pending 与同页其它请求共用，不能拿来判重；
@@ -658,6 +668,7 @@ export default function ReadPage() {
     const params = new URLSearchParams(window.location.search);
     params.set("paper", paper.id);
     params.set("page", String(next));
+    if (params.has("source_file")) params.set("citation", "1");
     params.delete("source_file");
     window.history.replaceState(null, "", `/read?${params}`);
   }

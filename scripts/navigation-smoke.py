@@ -1005,23 +1005,45 @@ def resume_pdf_reading_position(browser, frontend, backend):
     assert remembered > 0
     page.get_by_role("button", name="下一页" if offset > 0 else "上一页", exact=True).click()
     expect(page_number).to_have_text(re.compile(rf"^{remembered} /"))
+    fit = page.get_by_role("button", name="适宽", exact=True)
+    scale = page.locator(".pageTools span").nth(1)
+    fit.click()
+    page.get_by_role("button", name="放大 PDF", exact=True).click()
+    expect(fit).to_have_attribute("aria-pressed", "false")
+    expect(scale).to_have_text("115%")
     navigation = page.locator(".researchNav nav")
     for destination in ("文献综合", "深度精读"):
         navigation.get_by_role("link", name=destination).click()
     expect(page_number).to_have_text(re.compile(rf"^{remembered} /"))
+    expect(fit).to_have_attribute("aria-pressed", "false")
+    expect(scale).to_have_text("115%")
+    chat_tab = page.get_by_role("tab", name="AI 讲解", exact=True)
+    chat_tab.click()
+    navigation.get_by_role("link", name="文献综合").click()
+    navigation.get_by_role("link", name="深度精读").click()
+    expect(chat_tab).to_have_attribute("aria-selected", "true")
+    expect(page.get_by_role("textbox", name="提出你的科研问题")).to_be_visible()
 
     citation = urlencode({"page": initial, "source_file": paper["file_version"]})
     page.goto(f"{base}&{citation}")
     expect(page_number).to_have_text(re.compile(rf"^{initial} /"))
+    expect(page.get_by_role("tab", name="原文 PDF", exact=True)).to_have_attribute("aria-selected", "true")
+    expect(scale).to_have_text("115%")
     page.goto(base)
+    expect(chat_tab).to_have_attribute("aria-selected", "true")
+    page.get_by_role("tab", name="原文 PDF", exact=True).click()
     expect(page_number).to_have_text(re.compile(rf"^{remembered} /"))
     page.evaluate("""(id) => {
-      const key = 'medread-draft:read-position:' + id;
-      const saved = JSON.parse(sessionStorage.getItem(key));
-      sessionStorage.setItem(key, JSON.stringify({...saved, fileVersion: 'obsolete-version'}));
+      for (const prefix of ['read-position:', 'pdf-display:']) {
+        const key = 'medread-draft:' + prefix + id;
+        const saved = JSON.parse(sessionStorage.getItem(key));
+        sessionStorage.setItem(key, JSON.stringify({...saved, fileVersion: 'obsolete-version'}));
+      }
     }""", paper_id)
     page.reload()
     expect(page_number).to_have_text(re.compile(rf"^{initial} /"))
+    expect(fit).to_have_attribute("aria-pressed", "true")
+    expect(scale).to_have_text("100%")
     context.close()
 
 

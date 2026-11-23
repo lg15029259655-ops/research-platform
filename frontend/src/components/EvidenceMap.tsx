@@ -12,7 +12,7 @@ const columns = [["SUPPORTS", "支持", "现有证据支持"], ["REFUTES", "结�
   ["INSUFFICIENT", "证据不足", "当前资料不足以判断"]] as const;
 
 function sourceLink(ref: Ref, stale: boolean) {
-  const params = new URLSearchParams({ paper: ref.paper_id });
+  const params = new URLSearchParams({ paper: ref.paper_id, citation: "1" });
   const page = ref.page || ref.page_start;
   if (ref.file_version) params.set("source_file", ref.file_version);
   if (stale && !ref.file_version) {

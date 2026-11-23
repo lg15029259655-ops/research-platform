@@ -706,3 +706,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the search list survived reader navigation, while the graph tab and centers reverted on back or reload.
 - Action: remember the view, loaded center and selected paper in the tab, scoped by query, mode and semantic batch. Restore the requested graph data by its saved center. Clear the destination view on an explicit first-page search and use the list for fresh results.
 - Verification: Chrome and Edge at 390px opened a paper from the second search result's lineage, returned to that center and reloaded it. With WebGL disabled, both also joined the reader from a reference node and recovered that selected node and its original center. A different query opened in the list view. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.
+
+## L-20261123-39 — Resume reader display settings without hiding a citation
+
+- Evidence: the workspace kept the PDF page on return, but discarded the reader pane, zoom and width mode when the reader route unmounted.
+- Action: remember compact and desktop pane choices separately within the tab, and restore display settings for the same PDF fingerprint. Start a citation with its PDF visible even when the regular preference is the AI pane, without changing that preference.
+- Verification: Chrome and Edge at 390px restored a page at 115% in original-width mode, retained the AI pane across navigation, and showed the original PDF for a citation while an ordinary reopen kept the AI preference. Both discarded zoom and page state when the saved fingerprint was changed. At 1440px both retained only-PDF mode, then verified that a separate compact AI choice had no effect on the desktop choice. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.
