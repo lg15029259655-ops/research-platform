@@ -556,6 +556,74 @@ def smoke(browser, frontend, backend):
     context.close()
 
 
+def discovery_relation_race(browser, frontend, backend):
+    context = browser.new_context()
+    page = context.new_page()
+    initial, newer = "First graph query", "Replacement graph query"
+
+    def work(work_id, title):
+        return {"openalex_id": work_id, "title": title, "authors": [], "year": 2021,
+                "journal": "", "doi": "", "abstract": "", "citation_count": 0, "oa_pdf_url": None}
+
+    def search_fixture(route):
+        query = parse_qs(urlsplit(route.request.url).query)
+        term = query["q"][0]
+        items = ([work("W101", initial)] if term == initial else
+                 [work("W102", newer)] if term == newer else [])
+        route.fulfill(json={"items": items, "count": len(items), "page": 1, "mode": query["mode"][0]})
+
+    def lineage_fixture(route, title):
+        work_id = urlsplit(route.request.url).path.rsplit("/", 1)[1]
+        center = work(work_id, title)
+        route.fulfill(json={"center": center, "nodes": [{**center, "role": "center"}],
+                            "edges": [], "cached": False, "fetched_at": ""})
+
+    search = re.compile(rf"^{re.escape(backend)}/api/research/discover[?]")
+    context.route(search, search_fixture)
+    old_lineage = f"{backend}/api/research/lineage/W101"
+    held = []
+    context.route(old_lineage, lambda route: held.append(route), times=1)
+    context.route(f"{backend}/api/research/graph/W101", lambda route: route.fulfill(json={
+        "nodes": [work("W101", "Constellation center")], "links": [],
+    }))
+
+    page.goto(f"{frontend}/discover?{urlencode({'q': initial})}")
+    expect(page.get_by_role("heading", name=initial)).to_be_visible()
+    with page.expect_request(old_lineage):
+        page.get_by_role("tab", name="文献谱系", exact=True).click()
+    page.get_by_role("tab", name="谱系图", exact=True).press("ArrowRight")
+    aside = page.locator(".graphAside")
+    expect(aside.get_by_role("heading", name="Constellation center")).to_be_visible()
+    lineage_fixture(held.pop(), "Lineage center")
+    expect(aside.get_by_role("heading", name="Constellation center")).to_be_visible()
+    page.get_by_role("tab", name="星座视图").press("ArrowLeft")
+    expect(aside.get_by_role("heading", name="Lineage center")).to_be_visible()
+    page.get_by_role("tab", name="谱系图", exact=True).press("ArrowRight")
+    expect(aside.get_by_role("heading", name="Constellation center")).to_be_visible()
+
+    page.get_by_role("tab", name="列表", exact=True).click()
+    query = page.get_by_role("textbox", name="论文检索")
+    query.fill(newer)
+    page.get_by_role("button", name="检索论文").click()
+    expect(page.get_by_role("heading", name=newer)).to_be_visible()
+    new_lineage = f"{backend}/api/research/lineage/W102"
+    context.route(new_lineage, lambda route: route.fulfill(status=503, json={"detail": "谱系暂不可用"}), times=1)
+    context.route(new_lineage + "?refresh=true", lambda route: lineage_fixture(route, "Recovered lineage"))
+    page.get_by_role("tab", name="文献谱系", exact=True).click()
+    page.get_by_role("tab", name="谱系图", exact=True).click()
+    expect(page.get_by_role("alert").filter(has_text="谱系暂不可用")).to_be_visible()
+    page.get_by_role("tab", name="列表", exact=True).click()
+    expect(page.get_by_role("alert").filter(has_text="谱系暂不可用")).to_have_count(0)
+    page.get_by_role("tab", name="文献谱系", exact=True).click()
+    page.get_by_role("button", name="重试读取").click()
+    expect(aside.get_by_role("heading", name="Recovered lineage")).to_be_visible()
+    query.fill("No results")
+    page.get_by_role("button", name="检索论文").click()
+    expect(page.get_by_text("没有找到匹配的论文。", exact=False)).to_be_visible()
+    expect(aside).to_have_count(0)
+    context.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frontend", default="http://127.0.0.1:3320")
@@ -571,6 +639,7 @@ if __name__ == "__main__":
             compact_reading(browser, args.frontend, args.backend)
             shared_selection(browser, args.frontend, args.backend)
             reader_reparse(browser, args.frontend, args.backend)
+            discovery_relation_race(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")
