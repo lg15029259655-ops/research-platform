@@ -316,9 +316,27 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
     instruction.focus()
     background_link.evaluate("link => link.focus()")
     expect(instruction).to_be_focused()
+    background_y = page.evaluate("window.scrollY")
+    scroll_limit = page.evaluate("document.documentElement.scrollHeight - innerHeight")
+    assert scroll_limit > 0
+    direction = 1 if background_y < scroll_limit else -1
+    page.mouse.move(nav_box["x"] + nav_box["width"] / 2, 350)
+    page.mouse.wheel(0, 630 * direction)
+    page.wait_for_timeout(200)
+    assert page.evaluate("window.scrollY") == background_y
+    instruction.press("Escape")
+    expect(edit).to_be_focused()
+    assert page.evaluate("window.scrollY") == background_y
+    page.mouse.wheel(0, 380 * direction)
+    page.wait_for_function("([initial, direction]) => (window.scrollY - initial) * direction > 0",
+                           arg=[background_y, direction])
+    edit.click()
+    expect(instruction).to_have_value("Review only this stage")
     page.set_viewport_size({"width": 320, "height": 256})
-    node_drawer.evaluate("node => { node.scrollTop = node.scrollHeight; }")
-    assert node_drawer.evaluate("node => node.scrollTop > 100")
+    node_drawer.evaluate("node => { node.scrollTop = 0; }")
+    page.mouse.move(160, 170)
+    page.mouse.wheel(0, 800)
+    page.wait_for_function("document.querySelector('.evidenceDrawer').scrollTop > 100")
     expect(node_drawer.get_by_role("button", name="关闭详情", exact=True)).to_be_in_viewport(ratio=1)
     instruction.press("Escape")
     expect(edit).to_be_focused()

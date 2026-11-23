@@ -838,3 +838,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the shared drawer advertised a modal and trapped Tab, but a pointer click on the desktop navigation behind it still switched pages and closed the user's current editor.
 - Action: make the shared drawer a native modal dialog while retaining its side placement and sticky close control. Keep Escape local to the open drawer so an enclosing view does not also exit. Close the stage editor after starting its optimization so the workspace progress controls are available.
 - Verification: Chrome and Edge on both appearances confirmed that clicking the visible background navigation did not change the route and that programmatic focus on that link left focus in the drawer. They verified Escape focus restoration, sticky close behavior, citation navigation and a mocked stage-job submission. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
+
+## L-20261123-60 — Preserve the page scroll position behind an open detail drawer
+
+- Evidence: a mouse-wheel gesture over the backdrop moved the underlying design page from 738px to 1156px even after the drawer became a native modal.
+- Action: lock viewport scrolling while the native evidence dialog is modal, with a stable scrollbar gutter. Keep the drawer itself scrollable and release the viewport lock when the dialog closes.
+- Verification: Chrome and Edge on both appearances used real wheel events to verify a stationary backdrop, unchanged scroll position after Escape, normal background scrolling after close and scrolling inside the 320 × 256 drawer with its close button visible. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.

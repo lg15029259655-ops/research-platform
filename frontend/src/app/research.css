@@ -123,6 +123,10 @@
   scroll-padding-block-start: 64px;
 }
 .evidenceDrawer::backdrop { background: rgba(15, 25, 40, .26); }
+html:has(.evidenceDrawer:modal) {
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
 .drawerHead {
   position: sticky;
   inset-block-start: 0;
