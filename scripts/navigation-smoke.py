@@ -719,7 +719,19 @@ def synthesis_view_loading(browser, frontend, backend):
     expect(page.get_by_role("alert").filter(has_text="暂时无法读取这个综合视图")).to_have_count(0)
     context.route(path + "?view=evidence", lambda route: route.fulfill(status=503, json={}), times=1)
     evidence.click()
+    script = re.compile(rf"^{re.escape(frontend)}/_next/static/chunks/(?:\d+\.[a-f0-9]+|[^/]*EvidenceMap[^/]*)\.js(?:\?.*)?$")
+    blocked = []
+
+    def drop_panel_script(route):
+        blocked.append(route.request.url)
+        route.abort("internetdisconnected")
+
+    context.route(script, drop_panel_script, times=1)
     page.get_by_role("button", name="重试读取视图").click()
+    expect(page.get_by_role("button", name="重试打开证据关系")).to_be_visible()
+    assert blocked
+    expect(page.locator(".researchNav")).to_be_visible()
+    page.get_by_role("button", name="重试打开证据关系").click()
     expect(page.get_by_text("文献证据关系", exact=True)).to_be_visible()
     matrix.click()
     evidence.click()
@@ -730,6 +742,14 @@ def synthesis_view_loading(browser, frontend, backend):
     expect(page.get_by_role("button", name="用这个问题设计研究")).to_be_visible()
     assert requested == [path + "?view=gaps"]
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
+    broken = context.request.get(path + "?view=matrix").json()
+    broken["payload"]["dimensions"] = None
+    context.route(path + "?view=matrix", lambda route: route.fulfill(json=broken), times=1)
+    page.goto(f"{frontend}/synthesis")
+    expect(page.get_by_role("heading", name="这个页面暂时无法打开")).to_be_visible()
+    expect(page.locator(".researchNav")).to_be_visible()
+    page.get_by_role("button", name="重试页面").click()
+    expect(page.locator(".comparePaper").first).to_be_visible()
     context.close()
 
 

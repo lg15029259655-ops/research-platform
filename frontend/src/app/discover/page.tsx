@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChangeEvent, useEffect, useRef, useState } from "react";
@@ -9,9 +8,10 @@ import type { LineageResponse } from "@/components/lineage/lineageLayout";
 import { API, ApiError, apiJson, postJson } from "@/lib/api";
 import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
+import { deferredPanel } from "@/components/deferred-panel";
 
-const CitationGraph = dynamic(() => import("@/components/CitationGraph"), { ssr: false });
-const LineageGraph = dynamic(() => import("@/components/lineage/LineageGraph"), { ssr: false });
+const CitationGraph = deferredPanel(() => import("@/components/CitationGraph"), "星座视图");
+const LineageGraph = deferredPanel(() => import("@/components/lineage/LineageGraph"), "谱系图");
 type Work = { openalex_id: string; title: string; authors: string[]; year: number | null; journal: string;
   doi: string; abstract: string; citation_count: number; oa_pdf_url: string | null;
   domain?: string; study_type?: string; related_ids?: string[]; reference_ids?: string[] };

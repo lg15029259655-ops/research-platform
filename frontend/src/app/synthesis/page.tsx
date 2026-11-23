@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
@@ -12,13 +11,10 @@ import { tabGroup } from "@/lib/tabs";
 import type { Claim } from "@/components/EvidenceMap";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
 import SavedHistory from "@/components/SavedHistory";
+import { deferredPanel } from "@/components/deferred-panel";
 
-const EvidenceMap = dynamic(() => import("@/components/EvidenceMap"), {
-  loading: () => <p className="workspaceLoading" role="status">正在打开证据关系…</p>,
-});
-const GapPath = dynamic(() => import("@/components/GapPath"), {
-  loading: () => <p className="workspaceLoading" role="status">正在打开研究空白…</p>,
-});
+const EvidenceMap = deferredPanel(() => import("@/components/EvidenceMap"), "证据关系");
+const GapPath = deferredPanel(() => import("@/components/GapPath"), "研究空白");
 
 type Paper = { id: string; title: string; status: string; domain: string | null; year: number | null; warning?: string | null };
 type Cell = { paper_id: string; value: string; source: string };

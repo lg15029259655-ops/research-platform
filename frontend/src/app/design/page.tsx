@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -14,11 +13,12 @@ import type { SimilarPaper } from "@/components/NoveltySpace";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
 import DesignStepEditor from "@/components/DesignStepEditor";
 import SavedHistory from "@/components/SavedHistory";
+import { deferredPanel } from "@/components/deferred-panel";
 import type { Step } from "@/components/DesignFlow";
 import "@/components/design-insights.css";
 
-const DesignFlow = dynamic(() => import("@/components/DesignFlow"), { ssr: false });
-const NoveltySpace = dynamic(() => import("@/components/NoveltySpace"), { ssr: false });
+const DesignFlow = deferredPanel(() => import("@/components/DesignFlow"), "设计沙盘");
+const NoveltySpace = deferredPanel(() => import("@/components/NoveltySpace"), "新颖性扫描");
 type Novelty = { query: string; similar_papers: SimilarPaper[];
   similarity_level: string; differences: string[]; novel_angles: string[]; evidence_scope: string;
   search_only?: boolean; search_message?: string };

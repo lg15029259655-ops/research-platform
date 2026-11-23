@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { type CSSProperties, type KeyboardEvent, type ReactNode, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -13,15 +12,15 @@ import { submitJob, watchJob, type JobProgress as JobProgressData } from "@/lib/
 import { setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
+import { deferredPanel } from "@/components/deferred-panel";
 import "./enhancements.css";
 
-const PdfPane = dynamic(() => import("@/components/PdfPane"), {
-  ssr: false,
-  loading: () => <p className="pdfPaneLoading" role="status">正在打开 PDF…</p>,
-});
-const MindMapPanel = dynamic(() => import("@/components/mindmap/MindMapPanel"));
-const PaperExperimentsPanel = dynamic(() => import("@/components/experiment-map/PaperExperimentsPanel"));
-const ReadingMarkdown = lazy(() => import("@/components/reader/ReadingMarkdown"));
+const PdfPane = deferredPanel(() => import("@/components/PdfPane"), " PDF", "pdfPaneLoading");
+const MindMapPanel = deferredPanel(() => import("@/components/mindmap/MindMapPanel"), "思维导图");
+const PaperExperimentsPanel = deferredPanel(() => import("@/components/experiment-map/PaperExperimentsPanel"), "实验导图");
+const ReadingMarkdown = lazy(() => import("@/components/reader/ReadingMarkdown").catch(() => ({
+  default: ({ content }: { content: string }) => <span className="streamText">{content}</span>,
+})));
 type Unit = { id: string; position: number; kind: string; heading: string; page_start: number | null; actual_pdf_page?: number | null; caption?: string | null; evidence_snippet?: string | null };
 type Message = { id: string; role: string; content: string; reading_unit_id: string | null; visual_verified?: boolean; turn_id?: string | null };
 type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean; source_matches?: boolean };
