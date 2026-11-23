@@ -590,3 +590,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: changing the query did not cancel the in-flight search. Its late result could move the reader to a page for the old query. A result with zero matches looked the same as idle, and PDF rendering and search failures shared one message.
 - Action: cancel and clear the search on input or paper changes, use a bounded request, and distinguish pending, empty, successful and retryable results. Give file loading its own retry while keeping the page and zoom state.
 - Verification: at 390px, Chrome recovered from a PDF file response error, held an old search while the query was edited, confirmed that it did not move the reader, disconnected the new search, and retried through to the real no-match response. The production build, 13 frontend tests and source preflight passed. The earlier comparison previews retain their pinned appearance-review builds.
+
+## L-20261123-20 — Reuse the PDF pages already extracted for search
+
+- Evidence: each search re-extracted every page it needed, including work performed for earlier search terms. Reaching 30 matches should continue to stop the first scan early.
+- Action: retain a bounded prefix of extracted pages, keyed to the file signature and content revision. Resume extraction after that prefix as needed. Check that the file signature still matches before returning results, and continue scanning without caching past the text budget.
+- Verification: backend tests cover the 30-match limit, reuse of a partial or complete scan, replacement before and during search, and the uncached fallback. An isolated 240-page synthetic PDF measured median search-function times of 497.6 ms on a cold scan and 0.3 ms for a different query after caching. This measures local extraction and matching without HTTP or browser rendering. The full backend suite passed with 148 tests.

@@ -28,6 +28,7 @@ from .jobs.sse import with_heartbeat
 from .services.file_service import save_pdf
 from .services import file_service
 from .services.pdf_service import extract_embedded_images, parse_pdf, render_page_png
+from .services.pdf_search import PdfChangedDuringSearch, search_pdf_text
 
 router = APIRouter(prefix="/api/papers")
 RULES = Path(__file__).parent / "prompts" / "reading_rules.md"
@@ -452,26 +453,21 @@ def search_paper(paper_id: str, q: str, owner: str = Owner):
         if not paper_source_matches(paper):
             raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
         path = paper.local_file_path
+        revision = paper.content_revision
     query = q.strip().lower()
     if len(query) < 2:
         return []
-    if not path or not Path(path).is_file():
+    if not path:
         raise HTTPException(404, "PDF 文件不存在，请重新上传")
-    hits = []
     try:
-        with pymupdf.open(path) as document:
-            for number, page in enumerate(document, 1):
-                content = page.get_text("text")
-                index = content.lower().find(query)
-                if index >= 0:
-                    hits.append({"page": number,
-                                 "snippet": content[max(0, index - 60):index + len(query) + 100].replace("\n", " ")})
-                    if len(hits) >= 30:
-                        break
+        return search_pdf_text(Path(path), query, revision)
+    except PdfChangedDuringSearch as exc:
+        raise HTTPException(409, "搜索期间 PDF 文件已变化，请重新搜索") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "PDF 文件不存在，请重新上传") from exc
     except Exception as exc:
         logger.warning("PDF search failed: %s", type(exc).__name__)
         raise HTTPException(422, "PDF 无法读取，请检查文件后重新上传") from exc
-    return hits
 
 
 @router.get("/{paper_id}/manifest")

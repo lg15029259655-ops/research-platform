@@ -402,7 +402,7 @@ def test_chat_retry_recovers_committed_answer_without_advancing_twice(monkeypatc
         assert calls == 3
 
 
-def test_pdf_search_stops_after_thirty_matches(monkeypatch, tmp_path):
+def test_pdf_search_reuses_extracted_text_and_stops_after_thirty_matches(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     with TestClient(app) as client:
         owner = None
@@ -410,22 +410,58 @@ def test_pdf_search_stops_after_thirty_matches(monkeypatch, tmp_path):
             paper = upload(client, "Search limit paper")
             owner = owner_of(client)
             pages_read = []
+            files_opened = []
+            content = "A matching sentence appears on this page."
+            change_during_search = False
 
             class FakePage:
                 def get_text(self, _format):
+                    nonlocal change_during_search
                     pages_read.append(1)
-                    return "A matching sentence appears on this page."
+                    if change_during_search:
+                        change_during_search = False
+                        path.write_bytes(b"Changed while reading PDF pages")
+                    return content
 
             class FakeDocument:
+                page_count = 100
+
                 def __enter__(self): return self
                 def __exit__(self, *_args): return False
-                def __iter__(self): return iter(FakePage() for _ in range(100))
+                def __getitem__(self, _index): return FakePage()
 
-            monkeypatch.setattr("app.papers.pymupdf.open", lambda *_args, **_kwargs: FakeDocument())
-            response = client.get(f"/api/papers/{paper['id']}/search", params={"q": "matching"})
+            def open_pdf(*_args, **_kwargs):
+                files_opened.append(1)
+                return FakeDocument()
+
+            monkeypatch.setattr("app.services.pdf_search.pymupdf.open", open_pdf)
+            url = f"/api/papers/{paper['id']}/search"
+            response = client.get(url, params={"q": "matching"})
             assert response.status_code == 200
             assert len(response.json()) == 30
             assert len(pages_read) == 30
+            assert client.get(url, params={"q": "sentence"}).json() == [
+                {"page": number, "snippet": content} for number in range(1, 31)
+            ]
+            assert len(pages_read) == 30 and len(files_opened) == 1
+            assert client.get(url, params={"q": "no result"}).json() == []
+            assert len(pages_read) == 100 and len(files_opened) == 2
+            assert client.get(url, params={"q": "another missing phrase"}).json() == []
+            assert len(pages_read) == 100 and len(files_opened) == 2
+
+            with SessionLocal() as db:
+                path = Path(db.get(Paper, paper["id"]).local_file_path)
+            path.write_bytes(b"Replace file on disk after indexing")
+            content = "A replacement page."
+            replaced = client.get(url, params={"q": "replacement"}).json()
+            assert replaced[0] == {"page": 1, "snippet": content}
+            assert len(pages_read) == 130 and len(files_opened) == 3
+            change_during_search = True
+            assert client.get(url, params={"q": "missing text"}).status_code == 409
+            monkeypatch.setattr("app.services.pdf_search._CACHE_BYTES_PER_FILE", 1)
+            assert len(client.get(url, params={"q": "replacement"}).json()) == 30
+            assert len(client.get(url, params={"q": "replacement"}).json()) == 30
+            assert len(files_opened) == 6
         finally:
             if owner:
                 with SessionLocal() as db:
