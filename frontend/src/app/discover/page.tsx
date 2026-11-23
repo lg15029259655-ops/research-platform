@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import StepLoading from "@/components/StepLoading";
 import type { LineageResponse } from "@/components/lineage/lineageLayout";
-import { API, ApiError, apiJson, postJson } from "@/lib/api";
+import { ApiError, apiJson, postJson } from "@/lib/api";
 import { hasParsedPdf, isPdfParsing, paperLibraryIssue, readPaperLibrary } from "@/lib/paper-library";
 import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
@@ -75,6 +75,7 @@ export default function DiscoverPage() {
   const [pendingCenter, setPendingCenter] = useState<string | null>(null);
   const [pendingWorkId, setPendingWorkId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [unconfirmedAttachment, setUnconfirmedAttachment] = useState<Paper | null>(null);
   const searchVersion = useRef(0);
   const searchRequest = useRef<AbortController | null>(null);
   const graphRequest = useRef<AbortController | null>(null);
@@ -347,18 +348,56 @@ export default function DiscoverPage() {
 
   async function upload(work: Work, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file) return;
+    event.target.value = "";
+    if (!file || busy) return;
+    setUnconfirmedAttachment(null);
     setBusy(true); setBusyLabel("正在上传 PDF"); setError("");
     try {
       const paper = await save(work);
       if (!active.current) return;
-      if (paper.status === "parsed") { openReader(paper.id); return; }
+      if (paper.status === "parsed" || isPdfParsing(paper.status)) { openReader(paper.id); return; }
       const body = new FormData(); body.append("file", file);
-      const response = await fetch(`${API}/api/papers/${paper.id}/attach`, { method: "POST", credentials: "include", body });
-      if (!response.ok) { const data = await response.json(); throw new Error(data.detail || "上传 PDF 失败"); }
+      try {
+        // Allow a slow transfer of a large PDF, with a limit for a stalled request.
+        await apiJson(`/api/papers/${encodeURIComponent(paper.id)}/attach`, {
+          method: "POST", body, signal: AbortSignal.timeout(15 * 60 * 1000),
+        });
+      } catch (error) {
+        if (error instanceof ApiError && error.status < 500 && error.status !== 408 && error.status !== 409) throw error;
+        if (active.current) await checkAttachment(paper);
+        return;
+      }
       openReader(paper.id);
-    } catch (e) { setError(e instanceof Error ? e.message : "上传失败"); }
-    finally { setBusy(false); event.target.value = ""; }
+    } catch (e) { if (active.current) setError(e instanceof Error ? e.message : "上传失败"); }
+    finally { if (active.current) setBusy(false); }
+  }
+
+  async function checkAttachment(paper: Paper) {
+    setBusy(true); setBusyLabel("正在核对上传结果"); setError("");
+    try {
+      const { status } = await apiJson<Pick<Paper, "status">>(`/api/papers/${encodeURIComponent(paper.id)}/status`, {
+        cache: "no-store", signal: AbortSignal.timeout(10000),
+      });
+      if (!active.current) return;
+      if (status === "parsed" || isPdfParsing(status) || (status === "failed" && paper.status !== "failed")) {
+        setSaved((current) => current.map((item) => item.id === paper.id ? { ...item, status } : item));
+        setUnconfirmedAttachment(null);
+        openReader(paper.id);
+        return;
+      }
+    } catch (error) {
+      if (!active.current) return;
+      if (error instanceof ApiError && error.status === 404) {
+        setSaved((current) => current.filter((item) => item.id !== paper.id));
+        setUnconfirmedAttachment(null);
+        setError("这篇论文已不在论文库，可以重新选择 PDF 上传。");
+        return;
+      }
+    } finally {
+      if (active.current) setBusy(false);
+    }
+    if (!active.current) return;
+    setUnconfirmedAttachment(paper);
   }
 
   async function importOpenPdf(work: Work) {
@@ -399,6 +438,10 @@ export default function DiscoverPage() {
     <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} disabled={busy || restoring} onClick={() => changeSearchMode("semantic")}>语义检索</button><button className={mode === "keyword" ? "active" : ""} disabled={busy || restoring} onClick={() => changeSearchMode("keyword")}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
     {!result.items.length && <div className="suggestions">试试：{["single cell RNA sequencing cancer", "tumor immune microenvironment", "gene expression metabolic pathway", "CRISPR cell function"].map((term) => <button key={term} onClick={() => { setQuery(term); search(1, term); }}>{term}</button>)}</div>}
     {error && <div className="researchError" role="alert">{error}</div>}
+    {unconfirmedAttachment && <div className="workspaceLoading">
+      <p role="alert">暂时无法确认 PDF 是否已上传：{unconfirmedAttachment.title}</p>
+      <button type="button" className="quietButton" disabled={busy} onClick={() => void checkAttachment(unconfirmedAttachment)}>核对上传进度</button>
+    </div>}
     {libraryStatus === "error" && <div className="workspaceLoading">
       <p role="alert">暂时无法核对论文库中的全文状态。</p>
       <button type="button" className="quietButton" onClick={() => {
@@ -406,7 +449,7 @@ export default function DiscoverPage() {
         setLibraryAttempt((attempt) => attempt + 1);
       }}>重试读取论文库</button>
     </div>}
-    {busy && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
+    {busy && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : busyLabel === "正在核对上传结果" ? ["核对论文当前解析状态"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
     {restoring && <p className="workspaceLoading" role="status">正在恢复上次检索…</p>}
     {!!result.items.length && <section className="workspaceLoading" aria-label="研究主题" style={{ overflowWrap: "anywhere" }}>
       <p>当前研究主题 · {activeTopic || (workspace ? "尚未设置" : workspaceError || "正在读取")}</p>

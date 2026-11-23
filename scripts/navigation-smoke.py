@@ -816,7 +816,7 @@ def reader_chat_idle_recovery(browser, frontend, backend, *, viewport=None):
         expect(send).to_be_enabled()
 
 
-def smoke(browser, frontend, backend):
+def smoke(browser, frontend, backend, *, attachment_viewport=None):
     context = browser.new_context(viewport={"width": 1440, "height": 900})
     page = context.new_page()
     errors = []
@@ -1014,28 +1014,48 @@ def smoke(browser, frontend, backend):
     page.go_back()
     expect(page.locator(".workCard")).to_have_count(2)
 
-    # Model a slow attachment after discovery. The reader should open before parsing finishes.
+    # Lose the response to an accepted attachment, then recover its status without resending the PDF.
+    previous_viewport = page.viewport_size
+    if attachment_viewport:
+        page.set_viewport_size(attachment_viewport)
     detail_url = f"{backend}/api/papers/{source_id}"
     source_detail = context.request.get(detail_url).json()
     import_url = f"{backend}/api/research/import"
     attach_url = f"{detail_url}/attach"
     status_url = f"{detail_url}/status"
     context.route(import_url, lambda route: route.fulfill(json={**source_detail, "status": "metadata_only"}), times=1)
-    context.route(attach_url, lambda route: route.fulfill(json={"id": source_id, "status": "uploaded"}), times=1)
+    attachments = []
+
+    def disconnect_attachment(route):
+        attachments.append(route.request.method)
+        route.abort("connectionreset")
+
+    context.route(attach_url, disconnect_attachment)
     context.route(detail_url, lambda route: route.fulfill(json={**source_detail, "status": "uploaded"}), times=1)
-    statuses = []
-    context.route(status_url, lambda route: statuses.append(route))
-    with page.expect_request(status_url):
+    context.route(status_url, lambda route: route.fulfill(status=503, json={}), times=1)
+    with page.expect_request(attach_url):
         page.locator(".workCard").first.locator("input[type=file]").set_input_files(
             {"name": "attachment.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4"}
         )
+    expect(page.get_by_role("alert").filter(has_text="暂时无法确认 PDF 是否已上传")).to_be_visible()
+    expect(page.locator(".workCard")).to_have_count(2)
+    statuses = []
+    context.route(status_url, lambda route: statuses.append(route))
+    context.route(status_url, lambda route: route.fulfill(json={"status": "uploaded"}), times=1)
+    with page.expect_request(lambda request: request.url == status_url and "/read?" in request.frame.url):
+        page.get_by_role("button", name="核对上传进度", exact=True).click()
     expect(page).to_have_url(re.compile(rf"/read[?]paper={source_id}$"))
     expect(page.get_by_text("PDF 正在解析。", exact=False)).to_be_visible()
+    assert attachments == ["POST"]
+    context.unroute(attach_url)
     context.route(detail_url, lambda route: route.fulfill(status=503, json={}), times=1)
+    assert len(statuses) == 1
     statuses[0].fulfill(json={"status": "parsed"})
     context.unroute(status_url)
     expect(page.get_by_text("暂时无法读取论文状态，正在重试…", exact=True)).to_be_visible()
     expect(page.locator(".pdfCanvas canvas")).to_be_visible(timeout=12000)
+    if attachment_viewport:
+        page.set_viewport_size(previous_viewport)
 
     # Use a real PDF from the isolated demo session to verify the deferred upload.
     expect(page.locator(".library .paperItem").first).to_be_visible()
