@@ -3,7 +3,7 @@
 import argparse
 import json
 import re
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -105,6 +105,46 @@ def background_jobs(browser, frontend, backend):
     context.close()
 
 
+def manual_design_draft(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    page.goto(f"{frontend}/design")
+    editor = page.locator(".design-step-editor")
+    editor.get_by_role("button", name="手动添加或删除实验步骤").click()
+    step = editor.get_by_label("新步骤名称")
+    notes = editor.get_by_label("目的或操作说明（可选）")
+    step.fill("Review the baseline evidence")
+    notes.fill("Keep this step in the local draft before creating a new version.")
+    save = editor.get_by_role("button", name="保存为新版本")
+    expect(save).to_be_disabled()
+    page.reload()
+    expect(step).to_have_value("Review the baseline evidence")
+    expect(notes).to_have_value("Keep this step in the local draft before creating a new version.")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
+    assert editor.locator(".dse-list button").first.evaluate(
+        "(button) => button.clientHeight >= 42 && getComputedStyle(button).whiteSpace === 'nowrap'"
+    )
+    editor.get_by_role("button", name="加入草稿").click()
+    page.reload()
+    expect(editor.get_by_role("textbox", name="步骤名称：Review the baseline evidence", exact=True)).to_be_visible()
+    expect(save).to_be_enabled()
+
+    save_url = f"{backend}/api/research/design/manual"
+    context.route(save_url, lambda route: route.fulfill(status=503, json={"detail": "步骤保存暂不可用"}), times=1)
+    save.click()
+    expect(editor.get_by_role("alert").filter(has_text="步骤保存暂不可用")).to_be_visible()
+    expect(editor.get_by_role("textbox", name="步骤名称：Review the baseline evidence", exact=True)).to_be_visible()
+    with page.expect_response(lambda response: response.url == save_url) as saved:
+        save.click()
+    assert saved.value.ok, saved.value.text()
+    expect(page.locator(".versionBar button.active")).to_contain_text("手动编辑")
+    page.reload()
+    editor.get_by_role("button", name="手动添加或删除实验步骤").click()
+    expect(editor.get_by_role("textbox", name="步骤名称：Review the baseline evidence", exact=True)).to_be_visible()
+    expect(save).to_be_disabled()
+    context.close()
+
+
 def smoke(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 1440, "height": 900})
     page = context.new_page()
@@ -171,6 +211,20 @@ def smoke(browser, frontend, backend):
     page.go_back()
     expect(toolbar).to_contain_text(re.compile(rf"{current_page} / [0-9]+"))
     expect(draft).to_have_value("Keep this draft with the current paper")
+    page.reload()
+    expect(draft).to_have_value("Keep this draft with the current paper")
+
+    chat_url = f"{backend}/api/papers/{source_id}/chat"
+    context.route(chat_url, lambda route: route.fulfill(status=503, json={"detail": "精读服务暂不可用"}), times=1)
+    page.get_by_role("button", name="发送").click()
+    expect(page.get_by_role("alert").filter(has_text="精读服务暂不可用")).to_be_visible()
+    expect(draft).to_have_value("Keep this draft with the current paper")
+    context.route(chat_url, lambda route: route.fulfill(content_type="text/event-stream",
+                  body='data: {"type":"done"}\n\n'), times=1)
+    page.get_by_role("button", name="发送").click()
+    expect(draft).to_have_value("")
+    page.reload()
+    expect(draft).to_have_value("")
     page.go_back()
     expect(page.locator(".comparePaper").first).to_be_visible()
 
@@ -192,7 +246,28 @@ def smoke(browser, frontend, backend):
     expect(page.get_by_role("button", name="正在带入研究问题…")).to_be_disabled()
     patches[0].continue_()
     context.unroute(workspace_url)
-    expect(page.get_by_label("我的研究想法")).to_have_value(question)
+    idea = page.get_by_label("我的研究想法")
+    constraints = page.get_by_label("约束条件（可选）")
+    expect(idea).to_have_value(question)
+    idea.fill("")  # An intentionally blank draft must also survive a reload.
+    constraints.fill("Draft constraints for the current evidence")
+    page.locator(".researchNav nav").get_by_role("link", name="深度精读").click()
+    expect(page.locator(".reader")).to_be_visible()
+    page.locator(".researchNav nav").get_by_role("link", name="科研设计").click()
+    expect(constraints).to_have_value("Draft constraints for the current evidence")
+    page.reload()
+    expect(idea).to_have_value("")
+    expect(constraints).to_have_value("Draft constraints for the current evidence")
+    alternate = "Independent design idea"
+    page.goto(f"{frontend}/design?{urlencode({'idea': alternate})}")
+    expect(idea).to_have_value(alternate)
+    expect(constraints).to_have_value("")
+    constraints.fill("Independent constraints")
+    page.go_back()
+    expect(idea).to_have_value("")
+    expect(constraints).to_have_value("Draft constraints for the current evidence")
+    page.get_by_role("button", name="还原已保存内容").click()
+    expect(idea).to_have_value(question)
     source_link = page.get_by_role("link", name="返回研究空白查看依据")
     workspace = context.request.get(workspace_url).json()
     assert workspace["gap_context"]["synthesis_id"] == workspace["synthesis_id"]
@@ -306,6 +381,7 @@ if __name__ == "__main__":
         try:
             smoke(browser, args.frontend, args.backend)
             background_jobs(browser, args.frontend, args.backend)
+            manual_design_draft(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")

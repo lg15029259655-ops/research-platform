@@ -6,7 +6,7 @@ import { requestJobCancellation, submitJob, watchJob, type JobProgress } from "@
 
 type Kind = "compare" | "novelty" | "design";
 type Scope = "synthesis" | "design";
-type Draft = { idea: string; constraints?: string };
+type Draft = { idea: string; constraints?: string; key?: string };
 type Ticket = { id: string; kind: Kind; startedAt: number; draft?: Draft };
 type Job = {
   kind: Kind; startedAt: number; stage: string; progress: JobProgress | null;
