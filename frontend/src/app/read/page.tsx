@@ -66,9 +66,11 @@ function SummaryCards({ content }: { content: string }) {
 const questionDraftKey = (paperId: string) => `read:${paperId}`;
 const readingPositionKey = (paperId: string) => `read-position:${paperId}`;
 const lastPaperKey = "read-last-paper";
+const pendingUploadKey = "read-pending-upload";
 const turnDraftKey = (paperId: string, action: Action) => `read-turn:${paperId}:${action}`;
 type ChatTurn = { id: string; message?: string };
 type ReadingPosition = { fileVersion: string; page: number };
+type PendingUpload = { requestId: string; name: string; size: number; modified: number };
 const chatActions: Action[] = ["START", "NEXT", "NAVIGATE", "FIGURE", "WHY_DESIGN", "EVIDENCE", "QUESTION"];
 
 function validPdfPage(paper: Paper | null, page: number) {
@@ -94,6 +96,25 @@ function reconcileChatTurns(paper: Paper) {
   }
 }
 
+async function checkUploadReceipt(requestId: string, signal: AbortSignal) {
+  let notFound = false;
+  for (const delay of [0, 500, 1000]) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    signal.throwIfAborted();
+    try {
+      return await apiJson<{ id: string }>(`/api/papers/uploads/${encodeURIComponent(requestId)}`, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]), cache: "no-store",
+      });
+    } catch (e) {
+      if (signal.aborted) throw e;
+      notFound = e instanceof ApiError && e.status === 404;
+      if (e instanceof ApiError && e.status < 500 && e.status !== 429 && !notFound) throw e;
+    }
+  }
+  throw new Error(notFound ? "暂未找到这次上传。可以再次确认，或重新选择同一文件。"
+    : "暂时无法确认上传结果，可以稍后重试确认。");
+}
+
 export default function ReadPage() {
   const searchParams = useSearchParams();
   const paperParam = searchParams.get("paper");
@@ -102,6 +123,7 @@ export default function ReadPage() {
   const sourceFile = searchParams.get("source_file");
   const { workspace, workspaceError, refresh } = useWorkspace();
   const [lastPaper] = useTabDraft<string>(lastPaperKey);
+  const [pendingUpload] = useTabDraft<PendingUpload>(pendingUploadKey);
   const selectedId = paperParam ?? lastPaper ?? workspace?.core_paper_id ?? null;
   const [ready, setReady] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
@@ -166,6 +188,7 @@ export default function ReadPage() {
   const activePaper = useRef<string | null>(null);
   const active = useRef(false);
   const chatRequest = useRef<AbortController | null>(null);
+  const uploadAttempt = useRef<AbortController | null>(null);
   const libraryUploadRef = useRef<HTMLInputElement>(null);
   const welcomeUploadRef = useRef<HTMLInputElement>(null);
   const attachUploadRef = useRef<HTMLInputElement>(null);
@@ -256,7 +279,15 @@ export default function ReadPage() {
   // 组件卸载（跳到别的页面）时取消后台任务，避免服务端为一个没人看的任务继续花钱。
   useEffect(() => {
     active.current = true;
-    return () => { active.current = false; chatRequest.current?.abort(); abortReaderJobs(); };
+    const saved = readTabDraft<PendingUpload>(pendingUploadKey);
+    if (saved?.requestId) void runUpload(saved);
+    return () => {
+      active.current = false;
+      chatRequest.current?.abort();
+      uploadAttempt.current?.abort();
+      uploadAttempt.current = null;
+      abortReaderJobs();
+    };
   }, []);
 
   // A paper can finish parsing after the initial upload wait, or while the
@@ -338,17 +369,55 @@ export default function ReadPage() {
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !ready) return;
+    event.target.value = "";
+    if (!file || !ready || pending || uploadAttempt.current) return;
+    const saved = readTabDraft<PendingUpload>(pendingUploadKey);
+    const intent = saved?.name === file.name && saved.size === file.size && saved.modified === file.lastModified ? saved : {
+      requestId: crypto.randomUUID(), name: file.name, size: file.size, modified: file.lastModified,
+    };
     closeLibraryDrawer();
-    setPending(true); setError(""); setParseStage("正在上传 PDF…");
-    const origin = activePaper.current;
+    await runUpload(intent, file);
+  }
+
+  async function runUpload(intent: PendingUpload, file?: File) {
+    if (uploadAttempt.current) return;
+    const controller = new AbortController();
+    uploadAttempt.current = controller;
+    const current = () => active.current && !controller.signal.aborted && uploadAttempt.current === controller;
+    const openingPaperId = new URLSearchParams(window.location.search).get("paper");
+    writeTabDraft(pendingUploadKey, intent);
+    setPending(true); setError(""); setParseStage(file ? "正在上传 PDF…" : "正在确认 PDF 是否入库…");
     try {
-      const body = new FormData(); body.append("file", file);
-      const result = await apiJson<{ id: string }>("/api/papers?deferred=true", { method: "POST", body });
-      if (active.current && activePaper.current === origin) selectPaper(result.id);
-      if (active.current) void loadList().catch(() => {});
-    } catch (e) { setError(e instanceof Error ? e.message : "上传失败"); }
-    finally { setPending(false); setParseStage(""); event.target.value = ""; }
+      let result: { id: string };
+      if (file) {
+        const body = new FormData();
+        body.append("file", file);
+        try {
+          result = await apiJson<{ id: string }>(`/api/papers?deferred=true&request_id=${encodeURIComponent(intent.requestId)}`, { method: "POST", body });
+        } catch (e) {
+          if (!current()) return;
+          if (e instanceof ApiError && e.status < 500 && e.status !== 429) {
+            if (e.status !== 409) writeTabDraft(pendingUploadKey, null);
+            throw e;
+          }
+          setParseStage("正在确认 PDF 是否入库…");
+          result = await checkUploadReceipt(intent.requestId, controller.signal);
+        }
+      } else {
+        result = await checkUploadReceipt(intent.requestId, controller.signal);
+      }
+      if (!current()) return;
+      writeTabDraft(pendingUploadKey, null);
+      if (new URLSearchParams(window.location.search).get("paper") === openingPaperId) selectPaper(result.id);
+      void loadList().catch(() => {});
+    } catch (e) {
+      if (current()) setError(e instanceof Error ? e.message : "暂时无法确认上传结果");
+    } finally {
+      if (uploadAttempt.current === controller) {
+        uploadAttempt.current = null;
+        setPending(false); setParseStage("");
+      }
+    }
   }
 
   async function submitParseRequest(id: string, action: "attach" | "reparse", body?: FormData) {
@@ -700,7 +769,7 @@ export default function ReadPage() {
         </div>}
       </header>
       {paper?.status === "parsed" && <div className="readerSubnav"><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">{compact ? "查看待综合 ↗" : "已选入综合 · 查看 ↗"}</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
-      {error && <div className="alert" role="alert">{error}{selectedId && !paper && !openingPaper && <button className="quietButton" onClick={() => selectPaper(selectedId)}>重试打开论文</button>}</div>}
+      {error && <div className="alert" role="alert">{error}{pendingUpload && !pending && <button className="quietButton" onClick={() => void runUpload(pendingUpload)}>重试确认上传</button>}{selectedId && !paper && !openingPaper && <button className="quietButton" onClick={() => selectPaper(selectedId)}>重试打开论文</button>}</div>}
       <JobProgress startedAt={chatStartedAt} hint=""
         title={stream ? "正在生成精读回复" : thinking ? "正在分析原文" : "正在等待精读回复"}
         onCancel={stopChat} />

@@ -620,3 +620,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: every successful reader open sent a workspace update. Following a citation or briefly opening another paper could silently change the central paper in every tab.
 - Action: remember the recently opened paper within the tab. Set the center only through an explicit action guarded by the active research topic. Keep any save failure in the same library panel as the action. Let the default reader URL stand while the paper detail is loading: a late history replacement can interrupt navigation to another workspace page.
 - Verification: Chrome at 390px opened a citation for a non-central paper and checked that the server retained the center. Returning to the reader reopened the recent paper. An injected 503 left the center in place and displayed an error in the library drawer, and retrying the explicit action saved the new center. The production build, source preflight and 13 frontend tests passed.
+
+## L-20261123-25 — Recover an accepted PDF upload without adding another copy
+
+- Evidence: a lost upload response left no record of the submission in the reader. Resubmitting the same file created another paper and triggered parsing again.
+- Action: remember an upload receipt before sending the file, derive the paper ID from the receipt and owner, and use one atomic insert. Remove only each losing attempt's own temporary file. Look up the receipt on connection loss or reload, and reuse it when the browser identifies a retry of the same file.
+- Verification: two concurrent server requests with the same receipt and bytes produced one paper and one stored PDF. Reusing the receipt with different bytes was rejected, as was a lookup by another owner. Chrome at 390px held a real PDF upload response, refreshed, lost the first receipt query, and opened the single accepted paper. The production build, source preflight, 150 backend tests and 13 frontend tests passed.

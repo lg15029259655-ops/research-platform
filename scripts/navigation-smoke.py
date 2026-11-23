@@ -150,6 +150,46 @@ def reload_before_job_confirmation(browser, frontend, backend):
     context.close()
 
 
+def reload_before_upload_confirmation(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace = context.request.get(f"{backend}/api/workspace").json()
+    library_url = f"{backend}/api/papers"
+    initial_ids = {paper["id"] for paper in context.request.get(library_url).json()}
+    original = context.request.get(f"{library_url}/{workspace['core_paper_id']}/file")
+    assert original.ok
+    held = []
+    submit_url = re.compile(rf"^{re.escape(library_url)}\?deferred=true&request_id=")
+
+    def hold_upload(route):
+        accepted = route.fetch()
+        assert accepted.ok, accepted.text()
+        request_id = parse_qs(urlsplit(route.request.url).query)["request_id"][0]
+        held.append((route, request_id, accepted.json()["id"]))
+
+    context.route(submit_url, hold_upload)
+    page.goto(f"{frontend}/read")
+    page.get_by_role("button", name="展开论文库").click()
+    with page.expect_request(submit_url):
+        page.locator(".libraryHeading input").set_input_files(
+            {"name": "receipt-check.pdf", "mimeType": "application/pdf", "buffer": original.body()}
+        )
+    expect(page.get_by_text("正在上传 PDF…", exact=True)).to_be_visible()
+    pending = page.evaluate("JSON.parse(sessionStorage.getItem('medread-draft:read-pending-upload'))")
+    receipt_url = f"{library_url}/uploads/{pending['requestId']}"
+    context.route(receipt_url, lambda route: route.abort("internetdisconnected"), times=1)
+    with page.expect_request(receipt_url):
+        page.reload()
+    expect(page).to_have_url(re.compile(rf"/read\?paper={held[0][2]}$"))
+    expect(page.locator(".pdfCanvas canvas")).to_be_visible(timeout=30000)
+    assert len(held) == 1 and held[0][1] == pending["requestId"]
+    assert {paper["id"] for paper in context.request.get(library_url).json()} == initial_ids | {held[0][2]}
+    assert page.evaluate("sessionStorage.getItem('medread-draft:read-pending-upload')") is None
+    held[0][0].abort()
+    context.close()
+
+
 def manual_design_draft(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
@@ -599,7 +639,7 @@ def smoke(browser, frontend, backend):
     expect(page.locator(".library .paperItem").first).to_be_visible()
     pdf = context.request.get(f"{backend}/api/papers/{source_id}/file")
     assert pdf.ok
-    with page.expect_response(lambda response: response.url.endswith("/api/papers?deferred=true")) as uploaded:
+    with page.expect_response(lambda response: "/api/papers?deferred=true&request_id=" in response.url) as uploaded:
         page.locator(".libraryHeading input").set_input_files(
             {"name": "navigation-smoke.pdf", "mimeType": "application/pdf", "buffer": pdf.body()}
         )
@@ -948,6 +988,7 @@ if __name__ == "__main__":
             smoke(browser, args.frontend, args.backend)
             background_jobs(browser, args.frontend, args.backend)
             reload_before_job_confirmation(browser, args.frontend, args.backend)
+            reload_before_upload_confirmation(browser, args.frontend, args.backend)
             manual_design_draft(browser, args.frontend, args.backend)
             pdf_search_recovery(browser, args.frontend, args.backend)
             compact_reading(browser, args.frontend, args.backend)

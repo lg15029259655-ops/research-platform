@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from hashlib import sha256
 from pathlib import Path
 from stat import S_ISREG
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import shutil
 import logging
 import threading
@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.sqlite import insert
 
 from .db import SessionLocal
 from .models import Message, Paper, PaperImage, ReadingUnit, ResearchArtifact, ResearchWorkspace
@@ -241,20 +242,45 @@ def process_paper(paper_id: str, owner: str, path: str, replace_existing: bool =
         logger.exception("Post-parse precomputation scheduling failed for paper %s", paper_id)
 
 
+def upload_paper_id(owner: str, request_id: UUID) -> str:
+    return str(uuid5(NAMESPACE_URL, f"medread:pdf-upload:{owner}:{request_id}"))
+
+
+@router.get("/uploads/{request_id}")
+def upload_status(request_id: UUID, owner: str = Owner):
+    with SessionLocal() as db:
+        paper = owned_paper(db, upload_paper_id(owner, request_id), owner)
+        return {"id": paper.id, "status": paper.status}
+
+
 @router.post("")
 async def upload_paper(background_tasks: BackgroundTasks, file: UploadFile = File(...),
-                       deferred: bool = False, owner: str = Owner):
-    paper_id = str(uuid4())
+                       deferred: bool = False, request_id: UUID | None = None, owner: str = Owner):
+    paper_id = upload_paper_id(owner, request_id) if request_id else str(uuid4())
     token = str(uuid4())
     original, path, size, digest = await save_pdf(file, owner, paper_id)
-    with SessionLocal() as db:
-        paper = Paper(id=paper_id, owner_id=owner, title="正在解析论文",
-                      original_filename=original, stored_filename=Path(path).name,
-                      local_file_path=path, mime_type="application/pdf", file_size_bytes=size,
-                      sha256=digest, status="uploaded", parse_token=token,
-                      parse_heartbeat=datetime.now(timezone.utc))
-        db.add(paper)
-        db.commit()
+    created = False
+    try:
+        with SessionLocal() as db:
+            result = db.execute(insert(Paper).values(id=paper_id, owner_id=owner, title="正在解析论文",
+                original_filename=original, stored_filename=Path(path).name, local_file_path=path,
+                mime_type="application/pdf", file_size_bytes=size, sha256=digest, status="uploaded",
+                parse_token=token, parse_heartbeat=datetime.now(timezone.utc),
+            ).on_conflict_do_nothing(index_elements=[Paper.id]))
+            if result.rowcount != 1:
+                existing = owned_paper(db, paper_id, owner)
+                if existing.sha256 != digest:
+                    raise HTTPException(409, "这次上传已用于另一份 PDF")
+                if deferred or existing.status != "parsed":
+                    return {"id": existing.id, "status": existing.status}
+                units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id).order_by(ReadingUnit.position)).all()
+                return paper_data(existing, units)
+            db.commit()
+            created = True
+    finally:
+        if not created:
+            # Each request writes its own unique path, even if the receipt is shared.
+            await run_in_threadpool(Path(path).unlink, missing_ok=True)
     if deferred:
         background_tasks.add_task(process_paper, paper_id, owner, path, False, token)
         return {"id": paper_id, "status": "uploaded"}

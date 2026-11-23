@@ -471,6 +471,39 @@ def test_pdf_search_reuses_extracted_text_and_stops_after_thirty_matches(monkeyp
                         db.commit()
 
 
+def test_deferred_upload_receipt_recovers_the_same_file_and_does_not_duplicate_it(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    receipt = str(uuid4())
+    with TestClient(app) as client:
+        client.get("/api/session")
+        owner = owner_of(client)
+        content = make_pdf("PDF upload receipt")
+        params = {"deferred": "true", "request_id": receipt}
+        endpoint = f"/api/papers/uploads/{receipt}"
+
+        def send(data):
+            return client.post("/api/papers", params=params, files={"file": ("paper.pdf", data, "application/pdf")})
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                replies = list(executor.map(send, (content, content)))
+            assert [reply.status_code for reply in replies] == [200, 200]
+            paper_id = replies[0].json()["id"]
+            assert replies[1].json()["id"] == paper_id
+            assert client.get(endpoint).json() == {"id": paper_id, "status": "parsed"}
+            assert [item["id"] for item in client.get("/api/papers").json()] == [paper_id]
+            assert send(make_pdf("A different paper")).status_code == 409
+            assert len(list(tmp_path.rglob("*.pdf"))) == 1
+            with TestClient(app) as visitor:
+                assert visitor.get(endpoint).status_code == 404
+        finally:
+            with SessionLocal() as db:
+                user = db.get(User, owner)
+                if user:
+                    db.delete(user)
+                    db.commit()
+
+
 def test_authenticated_pdf_revalidation_preserves_ranges_and_uses_replacement_bytes(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     with TestClient(app) as client:
