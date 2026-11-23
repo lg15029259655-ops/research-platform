@@ -1177,6 +1177,10 @@ def smoke(browser, frontend, backend, *, attachment_viewport=None):
     expect(page.locator(".bubble.assistant").filter(has_text=answer)).to_have_count(1)
     context.unroute(detail_url)
     page.go_back()
+    resumed_card = page.get_by_role("dialog")
+    expect(resumed_card.get_by_text(source_paper["title"], exact=True)).to_be_visible()
+    page.keyboard.press("Escape")
+    expect(resumed_card).to_have_count(0)
     expect(page.locator(".comparePaper").first).to_be_visible()
 
     page.get_by_role("tab", name="研究空白").click()
@@ -1690,14 +1694,24 @@ def comparison_dimension_navigation(browser, frontend, backend):
         assert title.evaluate("node => node.scrollWidth <= node.clientWidth + 1")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 2")
 
-        page.locator(".comparePaper:not([disabled])").first.click()
-        source = page.get_by_role("dialog").get_by_role("link", name="打开论文核对")
+        card = page.locator(".comparePaper:not([disabled])").first
+        paper_title = card.locator("strong").inner_text()
+        card.click()
+        cell = page.get_by_role("dialog", name=name, exact=True)
+        source = cell.get_by_role("link", name="打开论文核对")
         expected_paper = parse_qs(urlsplit(source.get_attribute("href")).query)["paper"]
         source.click()
         expect(page.get_by_role("main")).to_have_class(re.compile("reader"))
         assert parse_qs(urlsplit(page.url).query)["paper"] == expected_paper
         assert context.request.patch(workspace_url, data={"synthesis_id": None}).ok
         page.go_back()
+        expect(cell.get_by_text(paper_title, exact=True)).to_be_visible()
+        expect(cell.get_by_role("button", name="关闭详情", exact=True)).to_be_focused()
+        assert parse_qs(urlsplit(source.get_attribute("href")).query)["paper"] == expected_paper
+        page.keyboard.press("Escape")
+        expect(cell).to_have_count(0)
+        expect(card).to_be_focused()
+        assert "cell" not in parse_qs(urlsplit(page.url).query)
         expect(page.locator(".compareFocusBody h3")).to_have_text(name)
         navigation.scroll_into_view_if_needed()
         expect(dimension).to_be_in_viewport(ratio=0.95)

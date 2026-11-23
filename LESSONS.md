@@ -850,3 +850,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: at 320 CSS pixels a demo paper title had about 600px of clipped text. After selecting the last comparison dimension, reloading reset it to the first, and matrix-to-source links did not pin the originating comparison.
 - Action: wrap paper titles, store the selected dimension against its comparison in the URL, and bring the selected dimension into the horizontal index's visible area. Pin the original comparison when opening a source link from the matrix.
 - Verification: Chrome and Edge on both appearances at 320px verified title wrapping without page overflow, remembered the last dimension and kept its control in the visible part of the index. They opened a source, cleared the active workspace comparison and went back to the original saved comparison and dimension. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
+
+## L-20261123-62 — Return from a source PDF to the same comparison card
+
+- Evidence: after the comparison and its dimension became restorable, the selected paper card still lived only in component state and closed whenever the reader route replaced the synthesis page.
+- Action: include the selected paper in the comparison URL and scope it to both the artifact and dimension. Validate it against the displayed row. Closing the drawer removes the card selection from the URL and focuses the corresponding card.
+- Verification: Chrome and Edge on both appearances at 320px reopened the same paper's drawer after visiting its PDF, even after the workspace comparison pointer was cleared. Escape returned focus to the originating card and retained the selected dimension. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
