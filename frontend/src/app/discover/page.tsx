@@ -7,7 +7,7 @@ import { ChangeEvent, useEffect, useRef, useState } from "react";
 import StepLoading from "@/components/StepLoading";
 import type { LineageResponse } from "@/components/lineage/lineageLayout";
 import { API, ApiError, apiJson, postJson } from "@/lib/api";
-import { setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 
 const CitationGraph = dynamic(() => import("@/components/CitationGraph"), { ssr: false });
@@ -28,6 +28,9 @@ export default function DiscoverPage() {
   const urlQuery = useSearchParams().get("q")?.trim() || "";
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<Search>(emptySearch);
+  const [resultQuery, setResultQuery] = useState("");
+  const [topicConfirmation, setTopicConfirmation] = useState<string | null>(null);
+  const [savingTopic, setSavingTopic] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [mode, setMode] = useState<"semantic" | "keyword">("semantic");
   const [saved, setSaved] = useState<Paper[]>([]);
@@ -65,6 +68,8 @@ export default function DiscoverPage() {
   const relationBusy = showingLineage ? loadingLineage : loadingGraph;
   const relationError = showingLineage ? lineageError : graphError;
   const failedCenter = showingLineage ? lineageTried.current : graphTried.current;
+  const activeTopic = workspace?.query.trim() || "";
+  const canSetTopic = workspace && resultQuery && activeTopic.toLowerCase() !== resultQuery.toLowerCase();
   // 后端语义检索最多放行 5 页（50 篇），第 6 页直接 422。与其让「加载更多」点出一个错误横幅，
   // 不如在到顶时把按钮改成明确的下一步提示。
   const semanticExhausted = mode === "semantic" && result.items.length >= 50;
@@ -94,6 +99,8 @@ export default function DiscoverPage() {
     const matchingResult = previous?.mode === mode ? previous : null;
     setMode(mode);
     setResult(matchingResult || emptySearch);
+    setResultQuery(matchingResult ? term : "");
+    setTopicConfirmation(null);
     if (urlQuery && !matchingResult) {
       void search(1, term, false, mode);
       return;
@@ -107,6 +114,7 @@ export default function DiscoverPage() {
         if (searchVersion.current !== version) return;
         lastSearch = { query: term, result: data };
         setResult(data);
+        setResultQuery(term);
       }).catch((error) => {
         if (searchVersion.current === version && !(error instanceof ApiError && error.status === 404)) setError("无法恢复上次结果，请重新检索");
       }).finally(() => { if (searchVersion.current === version) setRestoring(false); });
@@ -143,6 +151,7 @@ export default function DiscoverPage() {
     searchRequest.current = controller;
     const version = ++searchVersion.current;
     setRestoring(false); setBusy(true); setBusyLabel("正在检索文献并整理结果"); setError("");
+    setTopicConfirmation(null);
     try {
       const next = term.trim();
       const data = await apiJson<Search>(`/api/research/discover?q=${encodeURIComponent(next)}&page=${page}&mode=${searchMode}${bypassCache ? "&refresh=true" : ""}`, { signal: controller.signal });
@@ -151,21 +160,36 @@ export default function DiscoverPage() {
       const completed = { ...data, items: page === 1 ? data.items : [...result.items, ...data.items] };
       lastSearch = { query: next, result: completed };
       setResult(completed);
+      setResultQuery(next);
       if (page === 1) {
         initializedEntry.current = next;
         window.history.replaceState(null, "", `/discover?q=${encodeURIComponent(next)}`);
         resetRelations();
-        const current = workspace ?? await refresh();
-        if (searchVersion.current !== version) return;
-        const newTopic = !!current.query && current.query.trim().toLocaleLowerCase() !== next.toLocaleLowerCase();
-        await updateWorkspace({ query: next, domain: data.items[0]?.domain || "general",
-          study_type: data.items[0]?.study_type || "unspecified",
-          ...(newTopic ? { selected_paper_ids: [], core_paper_id: null, synthesis_id: null,
-            research_gap: "", gap_context: {}, design_idea: "", novelty_id: null,
-            design_version_id: null } : {}) });
       }
     } catch (e) { if (searchVersion.current === version) setError(e instanceof Error ? e.message : "检索失败"); }
     finally { if (searchVersion.current === version) setBusy(false); }
+  }
+
+  async function activateTopic() {
+    if (!workspace || !canSetTopic || savingTopic) return;
+    if (activeTopic && !topicConfirmation) {
+      setTopicConfirmation(workspace.updated_at);
+      return;
+    }
+    setSavingTopic(true); setError("");
+    try {
+      await changeWorkspaceTopic({
+        query: resultQuery,
+        domain: result.items[0]?.domain || "general",
+        study_type: result.items[0]?.study_type || "unspecified",
+      }, topicConfirmation ?? workspace.updated_at);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) await refresh(true).catch(() => {});
+      setError(e instanceof Error ? e.message : "研究主题保存失败，请重试");
+    } finally {
+      setTopicConfirmation(null);
+      setSavingTopic(false);
+    }
   }
 
   function changeSearchMode(next: Search["mode"]) {
@@ -173,6 +197,8 @@ export default function DiscoverPage() {
     ++searchVersion.current;
     setMode(next);
     setResult({ ...emptySearch, mode: next });
+    setResultQuery("");
+    setTopicConfirmation(null);
     setError("");
     window.localStorage.setItem("medread-search-mode", next);
     resetRelations();
@@ -266,8 +292,9 @@ export default function DiscoverPage() {
 
   async function setCore(work: Work) {
     const version = searchVersion.current;
+    const query = (workspace ?? await refresh()).query;
     const paper = await save(work);
-    await updateWorkspace({ core_paper_id: paper.id, domain: work.domain || "general" });
+    await updateWorkspace({ core_paper_id: paper.id, domain: work.domain || "general" }, query);
     if (version === searchVersion.current) await showLineage(work.openalex_id);
   }
 
@@ -322,6 +349,17 @@ export default function DiscoverPage() {
     {error && <div className="researchError" role="alert">{error}</div>}
     {busy && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
     {restoring && <p className="workspaceLoading" role="status">正在恢复上次检索…</p>}
+    {!!result.items.length && <section className="workspaceLoading" aria-label="研究主题" style={{ overflowWrap: "anywhere" }}>
+      <p>当前研究主题 · {activeTopic || (workspace ? "尚未设置" : workspaceError || "正在读取")}</p>
+      {canSetTopic && <>
+        {topicConfirmation && <p>切换到「{resultQuery}」会清空待综合列表，并重置当前中心论文、综合和设计进度。已入库论文和已保存的结果会保留。</p>}
+        <div className="actionRow">
+          <button type="button" className="quietButton" onClick={topicConfirmation ? () => setTopicConfirmation(null) : activateTopic}
+            disabled={busy || savingTopic}>{topicConfirmation ? "保留当前主题" : savingTopic ? "正在保存…" : "将本次检索设为研究主题"}</button>
+          {topicConfirmation && <button type="button" className="quietButton" onClick={activateTopic} disabled={busy || savingTopic}>{savingTopic ? "正在切换…" : "确认切换主题"}</button>}
+        </div>
+      </>}
+    </section>}
     {result.page === 0 && !restoring && !busy && !error && <div className="discoverStarter"><div><span className="sectionLabel">HOW IT WORKS</span><h2>先检索，再决定读哪篇</h2><p>输入研究问题后，先查看摘要和论文关系；找到相关文献，再获取或上传 PDF 进入全文精读。</p></div><ol><li><b>01</b><span>检索主题</span></li><li><b>02</b><span>查看论文关系</span></li><li><b>03</b><span>取得 PDF 后精读</span></li></ol></div>}
     {result.page > 0 && !result.items.length && !busy && !error && <p className="workspaceLoading" role="status">没有找到匹配的论文。可以换一个检索词或切换检索方式。</p>}
     {!!result.items.length && <><div className="resultBar"><div><strong>{result.count.toLocaleString()}</strong> 条相关记录 <span>· 当前展示 {result.items.length} 篇</span>{result.cached && <small className="cacheStamp"> · 缓存结果{result.fetched_at ? ` · ${new Date(result.fetched_at).toLocaleString("zh-CN")}` : ""}{result.stale ? " · 当前网络不可用" : ""}</small>}</div><div className="resultBarActions"><button className="quietButton" disabled={busy} aria-busy={busy} onClick={() => search(1, lastSearch?.query || query, true, result.mode)}>刷新结果</button><div className="tabBar" {...resultTabs.list} aria-label="结果视图"><button {...resultTabs.item("list")}>列表</button><button {...resultTabs.item("graph")}>文献谱系</button></div></div></div>

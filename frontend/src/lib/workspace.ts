@@ -63,9 +63,10 @@ function queueWorkspaceWrite(send: () => Promise<Workspace>): Promise<Workspace>
   return request;
 }
 
-export function updateWorkspace(change: WorkspaceChange) {
+export function updateWorkspace(change: WorkspaceChange, expectedQuery?: string) {
   return queueWorkspaceWrite(() => apiJson<Workspace>("/api/workspace", {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change),
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...change, expected_query: expectedQuery }),
   }));
 }
 
@@ -73,6 +74,14 @@ export function setPaperInSynthesis(id: string, selected: boolean, query: string
   return queueWorkspaceWrite(() => apiJson<Workspace>("/api/workspace/selection", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ paper_id: id, selected, query }),
+    signal: AbortSignal.timeout(10000),
+  }));
+}
+
+export function changeWorkspaceTopic(topic: Pick<Workspace, "query" | "domain" | "study_type">, expectedUpdatedAt: string) {
+  return queueWorkspaceWrite(() => apiJson<Workspace>("/api/workspace/topic", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...topic, expected_updated_at: expectedUpdatedAt }),
     signal: AbortSignal.timeout(10000),
   }));
 }

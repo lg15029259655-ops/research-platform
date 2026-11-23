@@ -698,6 +698,47 @@ def test_selection_merges_simultaneous_changes_and_rejects_old_topic(monkeypatch
             clean(client)
 
 
+def test_topic_change_checks_the_confirmed_workspace_and_preserves_saved_papers(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        try:
+            paper = client.post("/api/papers", files={
+                "file": ("topic.pdf", pdf_bytes("Topic evidence")),
+            }).json()
+            initial = client.patch("/api/workspace", json={
+                "design_idea": "Prior design", "selected_paper_ids": [paper["id"]],
+            }).json()
+
+            def switch(query, snapshot):
+                return client.post("/api/workspace/topic", json={
+                    "query": query, "domain": "biomed", "study_type": "review",
+                    "expected_updated_at": snapshot["updated_at"],
+                })
+
+            first = switch("  Active topic  ", initial).json()
+            assert first["query"] == "Active topic"
+            assert first["design_idea"] == initial["design_idea"]
+            assert first["selected_paper_ids"] == [paper["id"]]
+            same = switch("active TOPIC", first).json()
+            assert same == first
+
+            latest = client.patch("/api/workspace", json={
+                "core_paper_id": paper["id"], "research_gap": "New evidence",
+            }).json()
+            assert switch("New topic", first).status_code == 409
+            assert client.get("/api/workspace").json() == latest
+            updated = switch("New topic", latest).json()
+            assert updated["query"] == "New topic"
+            assert updated["selected_paper_ids"] == [] and updated["core_paper_id"] is None
+            assert updated["research_gap"] == "" and updated["design_idea"] == ""
+            assert client.patch("/api/workspace", json={
+                "core_paper_id": paper["id"], "expected_query": "Active topic",
+            }).status_code == 409
+            assert client.get(f"/api/papers/{paper['id']}").status_code == 200
+        finally:
+            clean(client)
+
+
 def test_empty_comparison_claims_are_explicitly_insufficient(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     # A short X-Ray deadline must not cancel the separate multi-paper task.

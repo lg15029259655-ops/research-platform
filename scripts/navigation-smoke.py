@@ -556,10 +556,14 @@ def smoke(browser, frontend, backend):
     context.close()
 
 
-def discovery_relation_race(browser, frontend, backend):
-    context = browser.new_context()
+def discovery_relation_race(browser, frontend, backend, *, viewport=None):
+    context = browser.new_context(viewport=viewport)
     page = context.new_page()
     initial, newer = "First graph query", "Replacement graph query"
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace_url = f"{backend}/api/workspace"
+    original = context.request.patch(workspace_url, data={"query": "Existing research topic"}).json()
+    assert original["query"] and original["selected_paper_ids"] and original["synthesis_id"]
 
     def work(work_id, title):
         return {"openalex_id": work_id, "title": title, "authors": [], "year": 2021,
@@ -589,6 +593,9 @@ def discovery_relation_race(browser, frontend, backend):
 
     page.goto(f"{frontend}/discover?{urlencode({'q': initial})}")
     expect(page.get_by_role("heading", name=initial)).to_be_visible()
+    topic = page.get_by_role("region", name="研究主题")
+    expect(topic).to_contain_text(original["query"])
+    assert context.request.get(workspace_url).json() == original
     with page.expect_request(old_lineage):
         page.get_by_role("tab", name="文献谱系", exact=True).click()
     page.get_by_role("tab", name="谱系图", exact=True).press("ArrowRight")
@@ -621,6 +628,29 @@ def discovery_relation_race(browser, frontend, backend):
     page.get_by_role("button", name="检索论文").click()
     expect(page.get_by_text("没有找到匹配的论文。", exact=False)).to_be_visible()
     expect(aside).to_have_count(0)
+    assert context.request.get(workspace_url).json() == original
+
+    query.fill(newer)
+    page.get_by_role("button", name="检索论文").click()
+    activate = topic.get_by_role("button", name="将本次检索设为研究主题")
+    confirm = topic.get_by_role("button", name="确认切换主题")
+    activate.click()
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
+    topic.get_by_role("button", name="保留当前主题").click()
+    assert context.request.get(workspace_url).json() == original
+    activate.click()
+    latest = context.request.patch(workspace_url, data={"research_gap": "Saved by another tab"}).json()
+    confirm.click()
+    expect(page.get_by_role("alert").filter(has_text="工作区已有新进度")).to_be_visible()
+    assert context.request.get(workspace_url).json() == latest
+    activate.click()
+    confirm.click()
+    expect(topic.get_by_text(f"当前研究主题 · {newer}", exact=True)).to_be_visible()
+    expect(confirm).to_have_count(0)
+    changed = context.request.get(workspace_url).json()
+    assert changed["query"] == newer and changed["selected_paper_ids"] == []
+    archived = context.request.get(f"{backend}/api/research/artifacts?artifact_id={original['synthesis_id']}").json()
+    assert archived and archived[0]["id"] == original["synthesis_id"]
     context.close()
 
 

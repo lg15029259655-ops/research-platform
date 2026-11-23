@@ -85,6 +85,7 @@ def prune_stale_idea_results(db, item: ResearchWorkspace) -> None:
 
 
 class WorkspacePatch(BaseModel):
+    expected_query: str | None = Field(default=None, max_length=800)
     query: str | None = Field(default=None, max_length=800)
     domain: str | None = Field(default=None, max_length=50)
     study_type: str | None = Field(default=None, max_length=80)
@@ -109,8 +110,11 @@ def get_workspace(owner: str = Owner):
 @router.patch("")
 def patch_workspace(patch: WorkspacePatch, owner: str = Owner):
     changes = patch.model_dump(exclude_unset=True)
+    expected_query = changes.pop("expected_query", None)
     with SessionLocal() as db:
         item = workspace_for_write(db, owner)
+        if expected_query is not None and expected_query != item.query:
+            raise HTTPException(409, "研究主题已变化，请核对当前主题后再操作")
         if "design_idea" in changes and changes["design_idea"] != item.design_idea:
             for field in ("novelty_id", "design_version_id"):
                 if field not in changes:
@@ -149,6 +153,40 @@ class SelectionChange(BaseModel):
     paper_id: str = Field(min_length=1, max_length=36)
     selected: bool
     query: str = Field(max_length=800)
+
+
+class TopicChange(BaseModel):
+    query: str = Field(min_length=1, max_length=800)
+    domain: str = Field(max_length=50)
+    study_type: str = Field(max_length=80)
+    expected_updated_at: str = Field(min_length=1, max_length=40)
+
+
+@router.post("/topic")
+def change_topic(change: TopicChange, owner: str = Owner):
+    query = change.query.strip()
+    if not query:
+        raise HTTPException(422, "请输入研究主题")
+    with SessionLocal() as db:
+        workspace = workspace_for_write(db, owner)
+        if workspace.updated_at.isoformat() != change.expected_updated_at:
+            raise HTTPException(409, "工作区已有新进度，请核对后再切换主题")
+        current = workspace.query.strip()
+        if current and current.casefold() != query.casefold():
+            workspace.selected_paper_ids_json = "[]"
+            workspace.core_paper_id = None
+            workspace.synthesis_id = None
+            workspace.research_gap = ""
+            workspace.gap_context_json = "{}"
+            workspace.design_idea = ""
+            workspace.novelty_id = None
+            workspace.design_version_id = None
+        workspace.query = current if current.casefold() == query.casefold() else query
+        workspace.domain = change.domain
+        workspace.study_type = change.study_type
+        db.commit()
+        db.refresh(workspace)
+        return workspace_data(workspace)
 
 
 @router.post("/selection")
