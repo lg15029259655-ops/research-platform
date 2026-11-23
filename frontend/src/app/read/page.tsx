@@ -3,7 +3,7 @@
 import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { type CSSProperties, type KeyboardEvent, type ReactNode, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type CSSProperties, type KeyboardEvent, type ReactNode, ChangeEvent, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { API, ApiError, apiJson } from "@/lib/api";
 import { notifyPaperLibraryChange, readPaperLibrary, subscribeToPaperLibrary, type PaperSummary } from "@/lib/paper-library";
 import JobProgress from "@/components/jobs/JobProgress";
@@ -194,6 +194,8 @@ export default function ReadPage() {
   const [libraryQuery, setLibraryQuery] = useState("");
   const libraryDrawer = useRef<HTMLDialogElement>(null);
   const libraryToggle = useRef<HTMLButtonElement>(null);
+  const modeSwitch = useRef<HTMLDivElement>(null);
+  const focusedReaderControl = useRef<{ element: HTMLElement; region: "library" | "pane" } | null>(null);
   const [pdfWidth, setPdfWidth] = useState(38);
   const [activeHeading, setActiveHeading] = useState("");
   const [page, setPage] = useState(1);
@@ -226,6 +228,15 @@ export default function ReadPage() {
     }
   });
   const readerTabs = tabGroup(["read", "mindmap", "experiments"] as const, readerTab, setReaderTab);
+  useLayoutEffect(() => {
+    const last = focusedReaderControl.current;
+    const activeElement = document.activeElement;
+    if (!last || (activeElement !== document.body && activeElement !== last.element)) return;
+    if (last.element.isConnected && last.element.getClientRects().length) return;
+    const next = last.region === "pane"
+      ? modeSwitch.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]') : null;
+    (next ?? libraryToggle.current)?.focus({ preventScroll: true });
+  }, [compact, mode, paper?.status, readerTab]);
   // 任务请求的 in-flight 令牌。pending 与同页其它请求共用，不能拿来判重；
   // abort 会顺带取消服务端任务，切论文时旧结果不会串到新论文上。
   const mindmapAbort = useRef<AbortController | null>(null);
@@ -911,7 +922,13 @@ export default function ReadPage() {
     </div>
     <div className="libraryFoot">上传的 PDF 保存在当前服务端</div>
   </>;
-  return <PageMain route="/read" className={`reader ${compact ? "readerCompact" : ""} ${!libraryOpen ? "libraryClosed" : ""}`}>
+  return <PageMain route="/read" className={`reader ${compact ? "readerCompact" : ""} ${!libraryOpen ? "libraryClosed" : ""}`}
+    onFocusCapture={({ target }) => {
+      if (!(target instanceof HTMLElement)) return;
+      const region = target.closest("#reader-library") ? "library"
+        : target.closest(".modeSwitch, #reader-pane-pdf, #reader-pane-ai") ? "pane" : null;
+      focusedReaderControl.current = region ? { element: target, region } : null;
+    }}>
     {compact ? <dialog id="reader-library" ref={libraryDrawer} className="libraryDrawer" aria-labelledby="reader-library-title"
       onClose={() => { setDrawerOpen(false); libraryToggle.current?.focus({ preventScroll: true }); }}
       onClick={(event) => { if (event.target === event.currentTarget) closeLibraryDrawer(); }}>
@@ -931,7 +948,7 @@ export default function ReadPage() {
             <h1 title={paper?.title}>{paper?.title || (selectedId ? "深度精读" : readerLoading ? "正在打开精读" : "选择或上传一篇论文")}</h1>
           </div>
         </div>
-        {paper?.status === "parsed" && readerTab === "read" && <div className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">
+        {paper?.status === "parsed" && readerTab === "read" && <div ref={modeSwitch} className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">
           {modes.map((item) => <button key={item} type="button" {...modeTabs.item(item)} id={`reader-mode-${item}`}
             aria-controls={item === "split" ? "reader-pane-pdf reader-pane-ai" : `reader-pane-${item}`}>
             {item === "split" ? "左右分屏" : item === "pdf" ? (compact ? "原文 PDF" : "仅 PDF") : (compact ? "AI 讲解" : "仅 AI")}
