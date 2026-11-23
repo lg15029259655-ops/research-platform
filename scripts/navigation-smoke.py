@@ -297,6 +297,23 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
 
     stages.first.click()
     details = page.locator(".er-detail")
+    edit = details.get_by_role("button", name="编辑阶段", exact=True)
+    instruction = page.get_by_role("dialog").get_by_label("希望怎样修改这个节点？")
+    edit.focus()
+    edit.press("Enter")
+    instruction.fill("Review only this stage")
+    instruction.press("Escape")
+    expect(edit).to_be_focused()
+    stages.nth(1).click()
+    edit.click()
+    expect(instruction).to_have_value("")
+    instruction.press("Escape")
+    stages.first.click()
+    edit.click()
+    expect(instruction).to_have_value("Review only this stage")
+    instruction.press("Escape")
+    expect(edit).to_be_focused()
+
     add = details.get_by_role("button", name="添加实验")
     add.focus()
     add.press("Enter")
@@ -335,8 +352,12 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
     context.route(save_url, drop_save_response, times=1)
     receipt_url = f"{save_url}/receipts/{request_id}"
     with page.expect_response(lambda response: response.url == receipt_url and response.ok):
-        save.click()
+        save.focus()
+        save.press("Enter")
     expect(page.locator(".versionBar button.active")).to_contain_text("手动编辑")
+    expect(stages.first).to_have_attribute("aria-expanded", "true")
+    expect(stages.first).to_be_focused()
+    expect(details.get_by_role("heading", name="Check saved input")).to_be_visible()
     receipt = context.request.get(receipt_url).json()
     assert context.request.get(workspace_url).json()["design_version_id"] == receipt["id"]
     assert len(context.request.get(history_url).json()["items"]) == initial_count + 1

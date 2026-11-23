@@ -5,7 +5,7 @@ import DesignInsights from "./DesignInsights";
 import ExperimentIcon from "./experiment/ExperimentIcon";
 import { specificMethodCategory, stageIllustrationCategory } from "@/lib/experiment-categories";
 import { readTabDraft, useTabDraft } from "@/lib/tab-draft";
-import { readManualDesignReceipt } from "@/lib/manual-design";
+import { designStageKey, readManualDesignReceipt } from "@/lib/manual-design";
 import { effectiveCategory, type ExperimentCategory } from "./experimentCategory";
 import "./experiment-route.css";
 
@@ -22,8 +22,8 @@ function StageIcon({ kind, name, stage = false }: { kind: ExperimentCategory; na
   return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
 }
 
-export default function DesignFlow({ design, artifactId, onSelectNode, onExpandNode, onAddStep, onRemoveStep, busy = false, readOnly = false }: { design: Design; artifactId: string; onSelectNode?: (id: string) => void; onExpandNode?: (id: string) => void; onAddStep?: (id: string, step: Step, requestId: string) => Promise<void>; onRemoveStep?: (id: string, index: number) => Promise<void>; busy?: boolean; readOnly?: boolean }) {
-  const [savedStage, setExpanded] = useTabDraft<string>(artifactId ? `design-stage:${artifactId}` : null);
+export default function DesignFlow({ design, artifactId, onSelectNode, onExpandNode, onAddStep, onRemoveStep, resumeStage, onResumeStage, busy = false, readOnly = false }: { design: Design; artifactId: string; onSelectNode?: (id: string) => void; onExpandNode?: (id: string) => void; onAddStep?: (id: string, step: Step, requestId: string) => Promise<void>; onRemoveStep?: (id: string, index: number) => Promise<void>; resumeStage?: string; onResumeStage?: () => void; busy?: boolean; readOnly?: boolean }) {
+  const [savedStage, setExpanded] = useTabDraft<string>(artifactId ? designStageKey(artifactId) : null);
   const expanded = design.nodes.some((node) => node.id === savedStage) ? savedStage : null;
   const [insight, setInsight] = useState<"review" | "outcomes" | null>(null);
   const draftKey = expanded && artifactId && !readOnly ? `design-stage-draft:${JSON.stringify([artifactId, expanded])}` : null;
@@ -52,6 +52,11 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
     focusStageOnOpen.current = null;
     focusStage(expanded);
   }, [expanded]);
+  useLayoutEffect(() => {
+    if (!resumeStage) return;
+    if (expanded === resumeStage && document.activeElement === document.body) focusStage(resumeStage);
+    onResumeStage?.();
+  }, [expanded, resumeStage, onResumeStage]);
   useLayoutEffect(() => {
     if (!adding || !focusNameOnOpen.current) return;
     focusNameOnOpen.current = false;

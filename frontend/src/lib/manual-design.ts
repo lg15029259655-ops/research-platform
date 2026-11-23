@@ -1,5 +1,7 @@
 import { ApiError, apiJson } from "@/lib/api";
 
+export const designStageKey = (artifactId: string) => `design-stage:${artifactId}`;
+
 export function readManualDesignReceipt<T>(requestId: string) {
   return apiJson<T>(`/api/research/design/manual/receipts/${encodeURIComponent(requestId)}`, {
     cache: "no-store", signal: AbortSignal.timeout(8000),

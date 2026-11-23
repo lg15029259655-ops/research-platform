@@ -789,3 +789,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: activating an experiment preview removed the focused button. Review and branch shortcuts scrolled without moving focus. Opening an inline form left focus on its toggle, several controls before the name field.
 - Action: focus the persistent stage button after an explicit jump, scroll the button into view after expansion, and honor reduced motion. Focus the name field only when the user explicitly opens the form so restoring a saved stage or draft does not steal focus.
 - Verification: Chrome at 1440px and Edge at 390px used Enter to open the preview and the form, checked the focused elements, and verified the form still recovered its draft after leaving and returning. The route navigation keyboard checks, full Chrome navigation smoke, production build, source preflight, 154 backend tests, 13 frontend tests and the visual rollback patch check passed.
+
+## L-20261123-52 — Keep the stage context when a manual edit creates a design version
+
+- Evidence: the opened stage was scoped to the old version, so a newly accepted version collapsed the stage. The node-edit drawer used one instruction field across every stage.
+- Action: keep node instructions as tab drafts scoped to version and stage. Carry the current expanded stage into the confirmed active version and return focus to its heading if the save displaced focus. Verify the workspace pointer before showing a recovered save as the active version.
+- Verification: Chrome at 1440px and Edge at 390px checked Escape focus restoration, separate instruction drafts, recovery of a lost save response, and the saved experiment visible in the expanded stage with keyboard focus on its heading. Full Chrome navigation smoke, production build, source preflight, 154 backend tests, 13 frontend tests and the visual rollback patch check passed.
