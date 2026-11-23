@@ -694,6 +694,45 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     context.close()
 
 
+def synthesis_view_loading(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace = context.request.get(f"{backend}/api/workspace").json()
+    path = f"{backend}/api/research/comparisons/{workspace['synthesis_id']}"
+    requested = []
+    page.on("request", lambda request: requested.append(request.url) if request.url.startswith(path + "?") else None)
+    page.goto(f"{frontend}/synthesis")
+    expect(page.locator(".comparePaper").first).to_be_visible()
+    assert requested == [path + "?view=matrix"]
+    evidence = page.get_by_role("tab", name="证据关系", exact=True)
+    matrix = page.get_by_role("tab", name="论文对比", exact=True)
+    held = []
+    context.route(path + "?view=evidence", lambda route: held.append(route), times=1)
+    with page.expect_request(path + "?view=evidence"):
+        evidence.click()
+    expect(page.get_by_role("status").filter(has_text="正在打开证据关系")).to_be_visible()
+    matrix.click()
+    expect(page.locator(".comparePaper").first).to_be_visible()
+    assert requested.count(path + "?view=matrix") == 1
+    held[0].fulfill(status=503, json={})
+    expect(page.get_by_role("alert").filter(has_text="暂时无法读取这个综合视图")).to_have_count(0)
+    context.route(path + "?view=evidence", lambda route: route.fulfill(status=503, json={}), times=1)
+    evidence.click()
+    page.get_by_role("button", name="重试读取视图").click()
+    expect(page.get_by_text("文献证据关系", exact=True)).to_be_visible()
+    matrix.click()
+    evidence.click()
+    expect(page.get_by_text("文献证据关系", exact=True)).to_be_visible()
+    assert requested.count(path + "?view=evidence") == 3
+    requested.clear()
+    page.goto(f"{frontend}/synthesis?view=gaps&artifact={workspace['synthesis_id']}")
+    expect(page.get_by_role("button", name="用这个问题设计研究")).to_be_visible()
+    assert requested == [path + "?view=gaps"]
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
+    context.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frontend", default="http://127.0.0.1:3320")
@@ -710,6 +749,7 @@ if __name__ == "__main__":
             shared_selection(browser, args.frontend, args.backend)
             reader_reparse(browser, args.frontend, args.backend)
             discovery_relation_race(browser, args.frontend, args.backend)
+            synthesis_view_loading(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")

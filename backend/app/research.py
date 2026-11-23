@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -1023,3 +1024,33 @@ def list_artifacts(kind: str | None = None, artifact_id: str | None = None, owne
                  "paper_ids": json.loads(item.paper_ids_json),
                  "payload": json.loads(item.payload_json),
                  "created_at": item.created_at.isoformat()} for item in items]
+
+
+@router.get("/comparisons/{artifact_id}")
+def comparison_view(artifact_id: str, view: Literal["matrix", "evidence", "gaps"] = "matrix", owner: str = Owner):
+    with SessionLocal() as db:
+        item = db.scalar(select(ResearchArtifact).where(
+            ResearchArtifact.id == artifact_id, ResearchArtifact.owner_id == owner,
+            ResearchArtifact.kind == "paper_compare",
+        ))
+        if item is None:
+            raise HTTPException(404, "找不到已保存的综合结果")
+        saved = json.loads(item.payload_json)
+        fields = {
+            "matrix": ("dimensions", "consensus", "differences"),
+            "evidence": ("controversies",),
+            "gaps": ("consensus", "controversies", "gaps", "questions", "next_steps"),
+        }
+        relevant = ("papers", *fields[view])
+        payload = {key: saved.get(key, []) if key in relevant else []
+                   for key in ("papers", "dimensions", "consensus", "differences", "controversies", "gaps", "questions", "next_steps")}
+        if view == "gaps":
+            payload["controversies"] = [
+                {key: value for key, value in claim.items() if key != "evidence_refs"}
+                for claim in payload["controversies"]
+            ]
+        for key in ("extraction_warnings", "stale_after_reparse"):
+            if key in saved:
+                payload[key] = saved[key]
+        return {"id": item.id, "paper_ids": json.loads(item.paper_ids_json),
+                "payload": payload, "created_at": item.created_at.isoformat()}

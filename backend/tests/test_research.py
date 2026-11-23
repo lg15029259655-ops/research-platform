@@ -884,6 +884,34 @@ def test_comparison_history_paginates_summaries_with_stable_order_and_owner_scop
             clean(other_client)
 
 
+def test_comparison_views_only_return_requested_evidence_and_remain_owner_scoped():
+    with TestClient(app) as client, TestClient(app) as visitor:
+        try:
+            client.get("/api/session")
+            with SessionLocal() as db:
+                owner = db.scalar(select(User.id).where(User.session_hash == session_hash(client.cookies.get(COOKIE_NAME))))
+            claim = {"claim": "Evidence", "reason": "Observed", "paper_ids": ["paper"], "stance": "SUPPORTS",
+                     "evidence_refs": [{"snippet": "Text available only in the evidence view"}]}
+            artifact = save_artifact(owner, "paper_compare", ["paper"], {
+                "papers": [{"paper_id": "paper", "title": "Paper"}],
+                "dimensions": [{"name": "Dimension", "values": []}], "consensus": ["Agrees"],
+                "controversies": [claim], "questions": ["Question"], "stale_after_reparse": True,
+            })
+            path = f"/api/research/comparisons/{artifact['id']}"
+            matrix = client.get(path).json()["payload"]
+            assert matrix["dimensions"] and matrix["consensus"] == ["Agrees"]
+            assert matrix["controversies"] == matrix["questions"] == []
+            evidence = client.get(path, params={"view": "evidence"}).json()["payload"]
+            assert evidence["controversies"] == [claim] and evidence["dimensions"] == []
+            gaps = client.get(path, params={"view": "gaps"}).json()["payload"]
+            assert gaps["questions"] == ["Question"] and gaps["stale_after_reparse"] is True
+            assert "evidence_refs" not in gaps["controversies"][0]
+            assert visitor.get(path).status_code == 404
+        finally:
+            clean(client)
+            clean(visitor)
+
+
 def test_design_version_pointer_outside_list_window_stays_reachable():
     """当前工作区指向较早的设计版本时，前端仍能按 artifact_id 还原画布。"""
     import json
