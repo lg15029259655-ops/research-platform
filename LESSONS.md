@@ -494,3 +494,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Action: save drafts within the browser tab at input time. Bind reading questions to their paper, design inputs to their workspace and source question, and edited steps to their base design version. Preserve intentionally blank inputs and keep pending steps separate from changes ready to save.
 - Verification: Chrome covered reload, navigation, separate paper and idea scopes, a failed reader request, a confirmed reply, a failed version save, and a successful version save against isolated storage. A controlled novelty result also verified that unsaved constraints survived a changed workspace idea and reload. At 390px, inspect the editor itself as well as page width. The action row wraps and delete controls retain one line and a 44px touch target.
 - Status: local production build, 13 frontend tests, 140 backend tests, source preflight and browser checks passed. These drafts are tab-scoped and do not sync across devices. Public deployment is unchanged.
+
+## L-20261123-05 — Verify the compact reader in a real viewport
+
+- Evidence: in a 390 by 844 Chrome viewport, the default paper library occupied about 330px, the PDF started near the fold and the chat composer was below the long answer history. Changing panes remounted the PDF and reset zoom.
+- Action: move the compact library into a native dialog with searchable titles and filenames. Use separate full-width source and commentary views on narrow screens. Retain each visited pane for the current paper and ignore hidden-PDF resize events.
+- Verification: the browser regression checks 320px, 390px, 768px and desktop layouts. It verifies keyboard mode navigation, focus restoration, paper filtering and selection, PDF page/zoom/search retention and chat scroll retention. The feature-only build passes the regression independently of the optional visual polish.

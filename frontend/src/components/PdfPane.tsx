@@ -30,10 +30,13 @@ export default function PdfPane({ paperId, page, totalPages, onPageChange }: { p
   useEffect(() => { setPages(0); setHits([]); setError(""); setZoom(1); setFitWidth(true); return () => { searchRequest.current?.abort(); }; }, [paperId]);
   useEffect(() => {
     if (!canvasRef.current) return;
-    const observer = new ResizeObserver(([entry]) => setAvailableWidth(Math.max(240, Math.floor(entry.contentRect.width) - 36)));
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width > 0) setAvailableWidth(Math.max(240, Math.floor(entry.contentRect.width)));
+    });
     observer.observe(canvasRef.current);
     return () => observer.disconnect();
   }, []);
+  useEffect(() => { if (canvasRef.current) canvasRef.current.scrollTop = 0; }, [page]);
   async function search() {
     if (!query.trim()) return;
     searchRequest.current?.abort();
@@ -54,5 +57,5 @@ export default function PdfPane({ paperId, page, totalPages, onPageChange }: { p
     }
   }
   const count = pages || totalPages || 0;
-  return <div className="pdfPane"><div className="pdfToolbar"><div className="pageTools"><button onClick={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1}>‹</button><span>{page} / {count || "…"}</span><button onClick={() => onPageChange(Math.min(count, page + 1))} disabled={page >= count}>›</button><button onClick={() => setZoom(Math.max(.65, zoom - .15))}>−</button><span>{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(Math.min(2.5, zoom + .15))}>＋</button><button className={fitWidth ? "fitActive" : ""} onClick={() => { setFitWidth(!fitWidth); setZoom(1); }} title="切换适应宽度与原始宽度">适宽</button></div><form onSubmit={(e) => { e.preventDefault(); search(); }}><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 PDF 文字" aria-label="在 PDF 内搜索文字" /><button>搜索</button></form></div>{hits.length > 0 && <div className="searchHits">{hits.map((hit, i) => <button key={i} onClick={() => onPageChange(hit.page)}>第 {hit.page} 页 · {hit.snippet.slice(0, 80)}</button>)}</div>}{error && <div className="pdfError">{error}</div>}<div className="pdfCanvas" ref={canvasRef}><PdfErrorBoundary key={paperId}><Document file={`${API}/api/papers/${paperId}/file`} options={options} onLoadSuccess={({ numPages }) => setPages(numPages)} onLoadError={() => setError("PDF 无法显示，请检查本地后端") } loading="正在打开 PDF…"><Page pageNumber={Math.max(1, Math.min(count || page, page))} width={fitWidth ? Math.min(availableWidth, 850) : 650} scale={zoom} loading="正在渲染页面…" /></Document></PdfErrorBoundary></div></div>;
+  return <div className="pdfPane"><div className="pdfToolbar"><div className="pageTools"><button type="button" aria-label="上一页" onClick={() => onPageChange(Math.max(1, page - 1))} disabled={page <= 1}>‹</button><span>{page} / {count || "…"}</span><button type="button" aria-label="下一页" onClick={() => onPageChange(Math.min(count, page + 1))} disabled={page >= count}>›</button><button type="button" aria-label="缩小 PDF" onClick={() => setZoom(Math.max(.65, zoom - .15))}>−</button><span>{Math.round(zoom * 100)}%</span><button type="button" aria-label="放大 PDF" onClick={() => setZoom(Math.min(2.5, zoom + .15))}>＋</button><button type="button" aria-pressed={fitWidth} className={fitWidth ? "fitActive" : ""} onClick={() => { setFitWidth(!fitWidth); setZoom(1); }} title="切换适应宽度与原始宽度">适宽</button></div><form onSubmit={(e) => { e.preventDefault(); search(); }}><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 PDF 文字" aria-label="在 PDF 内搜索文字" /><button>搜索</button></form></div>{hits.length > 0 && <div className="searchHits">{hits.map((hit, i) => <button key={i} onClick={() => onPageChange(hit.page)}>第 {hit.page} 页 · {hit.snippet.slice(0, 80)}</button>)}</div>}{error && <div className="pdfError">{error}</div>}<div className="pdfCanvas" ref={canvasRef}><PdfErrorBoundary key={paperId}><Document file={`${API}/api/papers/${paperId}/file`} options={options} onLoadSuccess={({ numPages }) => setPages(numPages)} onLoadError={() => setError("PDF 无法显示，请检查本地后端") } loading="正在打开 PDF…"><Page pageNumber={Math.max(1, Math.min(count || page, page))} width={fitWidth ? Math.min(availableWidth, 850) : 650} scale={zoom} loading="正在渲染页面…" /></Document></PdfErrorBoundary></div></div>;
 }

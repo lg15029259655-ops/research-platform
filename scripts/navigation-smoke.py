@@ -145,6 +145,85 @@ def manual_design_draft(browser, frontend, backend):
     context.close()
 
 
+def compact_reading(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844}, has_touch=True)
+    page = context.new_page()
+    page.goto(f"{frontend}/read")
+    pdf_tab = page.get_by_role("tab", name="原文 PDF", exact=True)
+    chat_tab = page.get_by_role("tab", name="AI 讲解", exact=True)
+    drawer = page.get_by_role("dialog", name="论文库")
+    library_toggle = page.get_by_role("button", name="展开论文库")
+    expect(pdf_tab).to_have_attribute("aria-selected", "true")
+    expect(drawer).to_have_count(0)
+    expect(page.locator(".pdfCanvas canvas")).to_be_in_viewport()
+    expect(page.locator(".chatControls")).to_have_count(0)
+    toolbar = page.locator(".pageTools")
+    toolbar.get_by_role("button", name="放大 PDF").click()
+    pdf_search = page.get_by_role("textbox", name="在 PDF 内搜索文字")
+    pdf_search.fill("baseline")
+    expect(toolbar).to_contain_text("115%")
+    pdf_page = toolbar.locator("span").first.inner_text()
+
+    pdf_tab.focus()
+    page.keyboard.press("ArrowRight")
+    expect(chat_tab).to_be_focused()
+    expect(chat_tab).to_have_attribute("aria-selected", "true")
+    expect(page.get_by_role("textbox", name="提出你的科研问题")).to_be_in_viewport()
+    expect(page.locator(".pdfColumn")).to_be_hidden()
+    messages = page.locator(".messages")
+    messages.evaluate("(node) => { node.scrollTop = 260; node.dataset.probe = 'retained'; }")
+    chat_scroll = messages.evaluate("(node) => node.scrollTop")
+    assert chat_scroll > 0
+
+    pdf_tab.click()
+    expect(toolbar).to_contain_text("115%")
+    expect(toolbar.locator("span").first).to_have_text(pdf_page)
+    expect(pdf_search).to_have_value("baseline")
+    chat_tab.click()
+    expect(messages).to_have_attribute("data-probe", "retained")
+    assert abs(messages.evaluate("(node) => node.scrollTop") - chat_scroll) <= 1
+
+    library_toggle.click()
+    expect(drawer).to_be_visible()
+    expect(drawer.get_by_role("button", name="关闭论文库")).to_be_focused()
+    for name in ("上传 PDF", "关闭论文库"):
+        button = drawer.get_by_role("button", name=name)
+        assert button.evaluate("(element) => element.getBoundingClientRect().height >= 44"), name
+    page.keyboard.press("Escape")
+    expect(drawer).to_have_count(0)
+    expect(library_toggle).to_be_focused()
+    library_toggle.click()
+    current = parse_qs(urlsplit(page.url).query)["paper"][0]
+    papers = context.request.get(f"{backend}/api/papers").json()
+    other = next(item for item in papers if item["id"] != current)
+    search = drawer.get_by_role("searchbox", name="搜索论文库")
+    search.fill("no matching bibliography")
+    expect(drawer.get_by_text("没有匹配的论文。试试换个关键词。")).to_be_visible()
+    search.fill(other["original_filename"])
+    expect(drawer.locator(".paperItem")).to_have_count(1)
+    drawer.locator(".paperItem").click()
+    expect(drawer).to_have_count(0)
+    expect(page.get_by_role("heading", name=other["title"], exact=True)).to_be_visible()
+
+    page.set_viewport_size({"width": 320, "height": 675})
+    pdf_tab.click()
+    expect(page.locator(".pdfToolbar")).to_be_visible()
+    assert page.evaluate(
+        "() => { const reader = document.querySelector('.reader'); return reader.scrollWidth <= reader.clientWidth + 2; }"
+    )
+    page.set_viewport_size({"width": 768, "height": 1024})
+    expect(page.get_by_role("tab", name="左右分屏", exact=True)).to_have_attribute("aria-selected", "true")
+    assert page.evaluate(
+        "() => { const reader = document.querySelector('.reader'); return reader.scrollWidth <= reader.clientWidth + 2; }"
+    )
+    page.set_viewport_size({"width": 1440, "height": 900})
+    expect(page.get_by_role("tab", name="左右分屏", exact=True)).to_have_attribute("aria-selected", "true")
+    expect(page.locator(".pdfColumn")).to_be_visible()
+    expect(page.locator(".chatColumn")).to_be_visible()
+    expect(page.locator("aside.library")).to_be_visible()
+    context.close()
+
+
 def smoke(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 1440, "height": 900})
     page = context.new_page()
@@ -200,9 +279,9 @@ def smoke(browser, frontend, backend):
     draft = page.get_by_role("textbox", name="提出你的科研问题")
     draft.fill("Keep this draft with the current paper")
     toolbar = page.locator(".pageTools")
-    nav = toolbar.get_by_role("button", name="›", exact=True)
+    nav = toolbar.get_by_role("button", name="下一页", exact=True)
     if not nav.is_enabled():
-        nav = toolbar.get_by_role("button", name="‹", exact=True)
+        nav = toolbar.get_by_role("button", name="上一页", exact=True)
     nav.click()
     current_page = parse_qs(urlsplit(page.url).query)["page"][0]
     page.go_forward()
@@ -382,6 +461,7 @@ if __name__ == "__main__":
             smoke(browser, args.frontend, args.backend)
             background_jobs(browser, args.frontend, args.backend)
             manual_design_draft(browser, args.frontend, args.backend)
+            compact_reading(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")

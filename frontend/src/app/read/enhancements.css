@@ -96,3 +96,94 @@
   white-space: nowrap;
 }
 .readerSubnav .readerSynthesis:disabled { opacity: .55; cursor: wait; }
+
+.reader :is(.split, .pdfColumn, .chatColumn)[hidden] { display: none; }
+.libraryToggleText { display: none; }
+.libraryFilter { padding: 0 5px 8px; }
+.libraryFilter input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--c-line-strong);
+  border-radius: var(--r-1);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font: inherit;
+  font-size: 13px;
+}
+.pdfToolbar .pageTools { flex-wrap: wrap; min-width: 0; }
+.pdfPaneLoading { margin: auto; padding: 20px; color: var(--c-text-soft); }
+
+@media (max-width: 760px) {
+  .readerShell .readerCompact { display: flex; overflow: auto; }
+  .readerShell .readerCompact .workspace { height: auto; min-height: 100%; }
+  .readerCompact .workspace > :not(.split) { flex-shrink: 0; }
+  .readerCompact .split { min-height: 320px; }
+  .readerCompact .pdfColumn[data-pdf-mode="pdf"] {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+    border-right: 0;
+  }
+  .readerShell .readerCompact .chatColumn { min-width: 0; min-height: 0; }
+  .readerShell .readerCompact .readerTop { flex-wrap: wrap; gap: 8px; padding: 9px 12px; }
+  .readerCompact .readerTitle { width: 100%; gap: 10px; }
+  .readerCompact .readerTitle h1 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.3;
+  }
+  .readerCompact .libraryToggle { width: auto; min-height: 44px; padding: 0 10px; display: inline-flex; align-items: center; gap: 4px; }
+  .readerCompact .libraryToggleText { display: inline; font-size: 12px; }
+  .readerCompact .modeSwitch { display: grid; width: 100%; grid-template-columns: repeat(2, 1fr); }
+  .readerCompact .modeSwitch button { min-height: 44px; font-weight: 650; }
+  .readerCompact .readerSubnav { padding: 6px 10px; }
+  .readerCompact .readerSubnav :is(button, .readerSynthesis) { min-height: 44px; display: inline-flex; align-items: center; }
+  .readerCompact .readerViewTabs { flex-wrap: wrap; }
+  .readerCompact .readerViewTabs button { padding-inline: 10px; }
+  .readerCompact .pdfToolbar, .readerCompact .chatControls { padding-inline: 12px; }
+  .readerCompact .pdfToolbar form { width: 100%; min-width: 0; }
+  .readerCompact .pdfToolbar input { flex: 1; width: auto; min-width: 0; font-size: 16px; }
+  .readerCompact .libraryFilter input, .readerCompact .chatControls textarea { font-size: 16px; }
+  .readerCompact .pageTools button, .readerCompact .pdfToolbar form button { min-height: 44px; min-width: 44px; }
+  .readerCompact .readingStatus { padding: 8px 12px; }
+
+  .libraryDrawer {
+    position: fixed;
+    inset: auto 0 0;
+    margin: 0 auto;
+    width: min(100%, 520px);
+    max-width: none;
+    max-height: min(82vh, 680px);
+    max-height: min(82dvh, 680px);
+    padding: 0;
+    border: 1px solid var(--c-line-strong);
+    border-radius: var(--r-panel) var(--r-panel) 0 0;
+    background: var(--c-surface);
+    color: var(--c-text);
+  }
+  .libraryDrawer[open] { display: flex; }
+  .libraryDrawer::backdrop { background: rgba(15, 25, 40, .46); }
+  .readerShell .libraryDrawer .library {
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    min-height: 0;
+    display: flex;
+    max-height: none;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    border: 0;
+    overflow: hidden;
+  }
+  .libraryDrawer .libraryHeading { display: flex; margin: 0; flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+  .libraryDrawer .libraryClose { margin-inline-start: auto; min-height: 44px; }
+  .libraryDrawer .uploadBtn { min-height: 44px; display: inline-flex; align-items: center; }
+  .libraryDrawer .libraryList { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  .libraryDrawer .outline { display: block; }
+  .libraryDrawer :is(.removePaper, .outline button) { min-height: 44px; }
+}

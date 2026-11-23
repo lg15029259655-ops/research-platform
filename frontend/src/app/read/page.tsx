@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { type CSSProperties, type KeyboardEvent, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type KeyboardEvent, type ReactNode, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { API, apiJson } from "@/lib/api";
 import JobProgress from "@/components/jobs/JobProgress";
 import ThinkingTrail from "@/components/reader/ThinkingTrail";
@@ -15,7 +15,10 @@ import { tabGroup } from "@/lib/tabs";
 import { useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import "./enhancements.css";
 
-const PdfPane = dynamic(() => import("@/components/PdfPane"), { ssr: false });
+const PdfPane = dynamic(() => import("@/components/PdfPane"), {
+  ssr: false,
+  loading: () => <p className="pdfPaneLoading" role="status">正在打开 PDF…</p>,
+});
 const MindMapPanel = dynamic(() => import("@/components/mindmap/MindMapPanel"));
 const PaperExperimentsPanel = dynamic(() => import("@/components/experiment-map/PaperExperimentsPanel"));
 const ReadingMarkdown = lazy(() => import("@/components/reader/ReadingMarkdown"));
@@ -24,6 +27,26 @@ type Message = { id: string; role: string; content: string; reading_unit_id: str
 type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean; source_matches?: boolean };
 type Action = "START" | "NEXT" | "NAVIGATE" | "FIGURE" | "WHY_DESIGN" | "EVIDENCE" | "QUESTION";
 type Mode = "split" | "pdf" | "ai";
+const compactQuery = "(max-width: 760px)";
+const compactModes = ["pdf", "ai"] as const;
+const desktopModes = ["split", "pdf", "ai"] as const;
+
+function subscribeToViewport(listener: () => void) {
+  const media = window.matchMedia(compactQuery);
+  media.addEventListener("change", listener);
+  return () => media.removeEventListener("change", listener);
+}
+
+function RetainedPane({ active, compact, panel, className, pdfMode, style, children }: {
+  active: boolean; compact: boolean; panel: "pdf" | "ai"; className: string;
+  pdfMode?: Mode; style?: CSSProperties; children: ReactNode;
+}) {
+  const [visited, setVisited] = useState(active);
+  useEffect(() => { if (active) setVisited(true); }, [active]);
+  return <div className={className} id={`reader-pane-${panel}`} hidden={!active}
+    role={compact ? "tabpanel" : undefined} aria-labelledby={compact ? `reader-mode-${panel}` : undefined}
+    data-pdf-mode={pdfMode} style={style}>{(active || visited) && children}</div>;
+}
 const parseStages: Record<string, string> = {
   uploaded: "正在读取 PDF…", reading: "正在提取每页文字…", structure: "正在识别论文章节…",
   figures: "正在定位主文 Figure 和 Table…", manifest: "正在建立阅读目录…", images: "正在提取页面图像…",
@@ -63,8 +86,15 @@ export default function ReadPage() {
   const [addingToSynthesis, setAddingToSynthesis] = useState(false);
   const [stream, setStream] = useState("");
   const [error, setError] = useState("");
-  const [mode, setMode] = useState<Mode>("split");
-  const [libraryOpen, setLibraryOpen] = useState(true);
+  const compact = useSyncExternalStore(subscribeToViewport, () => window.matchMedia(compactQuery).matches, () => false);
+  const [desktopMode, setDesktopMode] = useState<Mode>("split");
+  const [compactMode, setCompactMode] = useState<"pdf" | "ai" | null>(null);
+  const mode = compact ? compactMode ?? (desktopMode === "ai" ? "ai" : "pdf") : desktopMode;
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const libraryDrawer = useRef<HTMLDialogElement>(null);
+  const libraryToggle = useRef<HTMLButtonElement>(null);
   const [pdfWidth, setPdfWidth] = useState(38);
   const [activeHeading, setActiveHeading] = useState("");
   const [page, setPage] = useState(1);
@@ -82,8 +112,15 @@ export default function ReadPage() {
   const [experimentsStartedAt, setExperimentsStartedAt] = useState<number | null>(null);
   const [experimentsProgress, setExperimentsProgress] = useState<JobProgressData | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const lastPositionedChat = useRef<{ id: string; count: number } | null>(null);
   const followLatest = useRef(true);
-  const modeTabs = tabGroup(["split", "pdf", "ai"] as const, mode, setMode);
+  const showPdf = readerTab === "read" && mode !== "ai";
+  const showChat = readerTab === "read" && mode !== "pdf";
+  const modes = compact ? compactModes : desktopModes;
+  const modeTabs = tabGroup<Mode>(modes, mode, (next) => {
+    if (compact) setCompactMode(next === "ai" ? "ai" : "pdf");
+    else setDesktopMode(next);
+  });
   const readerTabs = tabGroup(["read", "mindmap", "experiments"] as const, readerTab, setReaderTab);
   // 任务请求的 in-flight 令牌。pending 与同页其它请求共用，不能拿来判重；
   // abort 会顺带取消服务端任务，切论文时旧结果不会串到新论文上。
@@ -216,23 +253,48 @@ export default function ReadPage() {
   }, [paper?.id, paper?.status, pending, loadList, loadPaper]);
 
   useEffect(() => {
+    if (!compact) setDrawerOpen(false);
+  }, [compact]);
+
+  useEffect(() => {
+    if (!showChat || !paper) return;
     const container = messagesRef.current;
+    const count = paper.messages?.length ?? 0;
+    if (!container || (lastPositionedChat.current?.id === paper.id && lastPositionedChat.current.count === count)) return;
+    lastPositionedChat.current = { id: paper.id, count };
     const assistants = container?.querySelectorAll<HTMLElement>(".bubble.assistant");
     const latest = assistants?.[assistants.length - 1];
-    if (container && latest) {
+    if (latest) {
       container.scrollTop += latest.getBoundingClientRect().top - container.getBoundingClientRect().top - 12;
       followLatest.current = false;
     }
-  }, [paper?.id, paper?.messages?.length]);
+  }, [showChat, paper?.id, paper?.messages?.length]);
   useEffect(() => {
     const container = messagesRef.current;
     // 思考轨迹也在对话流里滚动，所以它增长时同样跟随到底部。
-    if (container && (stream || thinking) && followLatest.current) container.scrollTop = container.scrollHeight;
-  }, [stream, thinking]);
+    if (showChat && container && (stream || thinking) && followLatest.current) container.scrollTop = container.scrollHeight;
+  }, [showChat, stream, thinking]);
+
+  function toggleLibrary() {
+    if (!compact) { setSidebarOpen((current) => !current); return; }
+    const drawer = libraryDrawer.current;
+    if (!drawer) return;
+    if (drawer.open) drawer.close();
+    else {
+      drawer.showModal();
+      drawer.querySelector<HTMLButtonElement>(".libraryClose")?.focus();
+      setDrawerOpen(true);
+    }
+  }
+
+  function closeLibraryDrawer() {
+    libraryDrawer.current?.close();
+  }
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file || !ready) return;
+    closeLibraryDrawer();
     setPending(true); setError(""); setParseStage("正在上传 PDF…");
     const origin = activePaper.current;
     try {
@@ -358,7 +420,9 @@ export default function ReadPage() {
   function jumpTo(unitId: string) {
     const unit = paper?.units?.find((item) => item.id === unitId);
     if (unit?.page_start) changePdfPage(unit.page_start);
-    setMode("split"); setReaderTab("read");
+    if (compact) setCompactMode("pdf");
+    else setDesktopMode("split");
+    setReaderTab("read");
   }
 
   async function act(action: Action, message?: string) {
@@ -428,6 +492,7 @@ export default function ReadPage() {
   }
 
   function selectPaper(id: string) {
+    closeLibraryDrawer();
     if (id === paperParam && paper) return;
     if (id === selectedId && openingPaper) return;
     if (id === selectedId && !paper && !openingPaper) {
@@ -484,16 +549,69 @@ export default function ReadPage() {
   const figureIndex = current?.kind === "FIGURE" ? figures.findIndex((unit) => unit.id === current.id) + 1 : 0;
   const nextLabel = !current ? "开始精读 · 题目与摘要" : next?.kind === "FIGURE" ? `进入 ${next.heading}` : next?.kind === "RECAP" ? "全文总结" : next ? next.kind === "DISCUSSION" ? "进入 Discussion" : "下一部分" : "已读完";
   const readerLoading = openingPaper || (!!selectedId && !paper && !error) || (!paperParam && !workspace && !workspaceError);
-  return <main id="main" className={`reader ${libraryOpen ? "" : "libraryClosed"}`}>
-    {libraryOpen && <aside className="library">
-      <div className="libraryHeading"><span>论文库</span><label className="uploadBtn" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, libraryUploadRef.current)}>+ 上传 PDF<input ref={libraryUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending} hidden /></label></div>
-      <div className="libraryList">{libraryError && <button className="quietButton" onClick={() => void loadList().catch(() => {})}>重试读取论文库</button>}{!ready ? (!libraryError && <p className="emptyLibrary" role="status">正在读取论文库…</p>) : papers.length ? papers.map((item) => <div className="paperRow" key={item.id}><button className={`paperItem ${paper?.id === item.id ? "selected" : ""}`} disabled={!!parseStage} onClick={() => selectPaper(item.id)}><strong>{item.title}</strong><small>{item.original_filename}</small></button><button className="removePaper" title="删除论文" aria-label={`删除 ${item.title}`} onClick={() => removePaper(item.id)}>×</button></div>) : <p className="emptyLibrary">上传第一篇 PDF，开始建立您的论文库。</p>}
-      {paper && <div className="outline"><strong>论文目录</strong>{units.map((unit) => <button key={unit.id} className={current?.id === unit.id ? "active" : ""} disabled={pending} aria-busy={pending} onClick={() => { if (unit.page_start) changePdfPage(unit.page_start); act("NAVIGATE", unit.id); }}>{unit.heading}</button>)}</div>}</div>
-      <div className="libraryFoot">上传的 PDF 保存在当前服务端</div>
-    </aside>}
+  const libraryOpen = compact ? drawerOpen : sidebarOpen;
+  const libraryTerm = libraryQuery.trim().toLocaleLowerCase();
+  const visiblePapers = papers.filter((item) => !libraryTerm
+    || [item.title, item.original_filename].some((value) => value?.toLocaleLowerCase().includes(libraryTerm)));
+  const libraryContents = <>
+    <div className="libraryHeading">
+      <strong id="reader-library-title">论文库</strong>
+      <label className="uploadBtn" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, libraryUploadRef.current)}>
+        ＋ 上传 PDF<input ref={libraryUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden />
+      </label>
+      {compact && <button className="quietButton libraryClose" type="button" aria-label="关闭论文库" onClick={closeLibraryDrawer}>关闭论文库</button>}
+    </div>
+    {papers.length > 0 && <div className="libraryFilter">
+      <input type="search" value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)}
+        placeholder="搜索题名或文件名" aria-label="搜索论文库" />
+    </div>}
+    <div className="libraryList">
+      {libraryError && <button className="quietButton" onClick={() => void loadList().catch(() => {})}>重试读取论文库</button>}
+      {!ready ? (!libraryError && <p className="emptyLibrary" role="status">正在读取论文库…</p>)
+        : visiblePapers.length ? visiblePapers.map((item) => <div className="paperRow" key={item.id}>
+          <button className={`paperItem ${selectedId === item.id ? "selected" : ""}`} disabled={!!parseStage}
+            aria-current={selectedId === item.id ? "true" : undefined} onClick={() => selectPaper(item.id)}>
+            <strong>{item.title}</strong><small>{item.original_filename}</small>
+          </button>
+          <button className="removePaper" title="删除论文" aria-label={`删除 ${item.title}`} onClick={() => removePaper(item.id)}>×</button>
+        </div>)
+        : <p className="emptyLibrary" role="status">{libraryTerm ? "没有匹配的论文。试试换个关键词。" : "上传第一篇 PDF，开始建立您的论文库。"}</p>}
+      {paper && !libraryTerm && <div className="outline">
+        <strong>当前论文目录</strong>
+        {units.map((unit) => <button key={unit.id} className={current?.id === unit.id ? "active" : ""} disabled={pending}
+          onClick={() => { closeLibraryDrawer(); if (unit.page_start) changePdfPage(unit.page_start); act("NAVIGATE", unit.id); }}>{unit.heading}</button>)}
+      </div>}
+    </div>
+    <div className="libraryFoot">上传的 PDF 保存在当前服务端</div>
+  </>;
+  return <main id="main" className={`reader ${compact ? "readerCompact" : ""} ${!libraryOpen ? "libraryClosed" : ""}`}>
+    {compact ? <dialog id="reader-library" ref={libraryDrawer} className="libraryDrawer" aria-labelledby="reader-library-title"
+      onClose={() => { setDrawerOpen(false); libraryToggle.current?.focus({ preventScroll: true }); }}
+      onClick={(event) => { if (event.target === event.currentTarget) closeLibraryDrawer(); }}>
+      <div className="library">{libraryContents}</div>
+    </dialog> : sidebarOpen && <aside id="reader-library" className="library" aria-labelledby="reader-library-title">{libraryContents}</aside>}
     <section className="workspace">
-      <header className="readerTop"><div className="readerTitle"><button className="libraryToggle" onClick={() => setLibraryOpen((open) => !open)} aria-label={libraryOpen ? "收起论文库" : "展开论文库"} title={libraryOpen ? "收起论文库" : "展开论文库"}><svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button><div><span className="sectionLabel">AI DEEP READING</span><h1>{(paper?.id === selectedId && paper.title) || (readerLoading ? "正在打开精读" : "选择或上传一篇论文")}</h1></div></div>{paper?.status === "parsed" && readerTab === "read" && <div className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">{(["split", "pdf", "ai"] as const).map((item) => <button key={item} {...modeTabs.item(item)}>{item === "split" ? "左右分屏" : item === "pdf" ? "仅 PDF" : "仅 AI"}</button>)}</div>}</header>
-      {paper?.status === "parsed" && <div className="readerSubnav"><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">已选入综合 · 查看 ↗</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
+      <header className="readerTop">
+        <div className="readerTitle">
+          <button type="button" className="libraryToggle" ref={libraryToggle} onClick={toggleLibrary}
+            aria-expanded={libraryOpen} aria-controls={compact || sidebarOpen ? "reader-library" : undefined} aria-haspopup={compact ? "dialog" : undefined}
+            aria-label={libraryOpen ? "收起论文库" : "展开论文库"}>
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+            <span className="libraryToggleText">论文库</span>
+          </button>
+          <div>
+            {!compact && <span className="sectionLabel">AI DEEP READING</span>}
+            <h1 title={paper?.title}>{paper?.title || (readerLoading ? "正在打开精读" : "选择或上传一篇论文")}</h1>
+          </div>
+        </div>
+        {paper?.status === "parsed" && readerTab === "read" && <div className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">
+          {modes.map((item) => <button key={item} type="button" {...modeTabs.item(item)} id={`reader-mode-${item}`}
+            aria-controls={item === "split" ? "reader-pane-pdf reader-pane-ai" : `reader-pane-${item}`}>
+            {item === "split" ? "左右分屏" : item === "pdf" ? (compact ? "原文 PDF" : "仅 PDF") : (compact ? "AI 讲解" : "仅 AI")}
+          </button>)}
+        </div>}
+      </header>
+      {paper?.status === "parsed" && <div className="readerSubnav"><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">{compact ? "查看待综合 ↗" : "已选入综合 · 查看 ↗"}</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
       {error && <div className="alert" role="alert">{error}{selectedId && !paper && !openingPaper && <button className="quietButton" onClick={() => selectPaper(selectedId)}>重试打开论文</button>}</div>}
       <JobProgress startedAt={chatStartedAt} hint=""
         title={stream ? "正在生成精读回复" : thinking ? "正在分析原文" : "正在等待精读回复"}
@@ -502,23 +620,24 @@ export default function ReadPage() {
       {paper?.warning && <div className="alert" role="status">{paper.warning}</div>}
       {needsReplacement && <div className="alert" role="status">{paper.source_matches === false ? "当前 PDF 与保存的阅读内容无法确认对应，已暂停全文分析。可重新识别当前文件，或上传原文件。" : "当前 PDF 文件无法读取或重新识别失败。重新上传后会保留旧精读记录和综合结果，请核对其与原文的对应关系。"}{paper.source_matches === false && <button type="button" onClick={reparse} disabled={pending} className="quietButton">重新识别当前 PDF</button>}<label className="quietButton" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>重新上传 PDF<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label></div>}
       {needsReparse && <div className="alert" role="status">这篇 PDF 的标题或章节可能识别错误，会影响 AI 讲解与文献对比。<button type="button" onClick={reparse} disabled={pending} aria-busy={pending} className="quietButton">重新识别当前 PDF</button></div>}
-      {readerLoading && !parseStage ? <div className="welcome" role="status" aria-busy="true"><h2>正在打开论文…</h2></div> : !paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || (openingPaper ? "正在打开论文…" : "让阅读从原文开始")}</h2><p>上传本地 PDF 后，左侧查看原文，右侧按科学问题和证据链逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
+      {readerLoading && !parseStage ? <div className="welcome" role="status" aria-busy="true"><h2>正在打开论文…</h2></div> : !paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || (openingPaper ? "正在打开论文…" : "让阅读从原文开始")}</h2><p>上传 PDF 后，可查看原文并按阅读单元逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> :
-      readerTab === "mindmap" ? <>
+      <>
+      {readerTab === "mindmap" && <>
         {mindmapBusy && <JobProgress title="正在生成行文导图" stageLabel={mindmapStage} progress={mindmapProgress} startedAt={mindmapStartedAt} hint="可在这篇论文内切换视图；离开论文会停止任务" onCancel={() => mindmapAbort.current?.abort()} />}
         <MindMapPanel mindmap={mindmap} pending={mindmapBusy} onJump={jumpTo} />
-      </> :
-      readerTab === "experiments" ? <>
+      </>}
+      {readerTab === "experiments" && <>
         {experimentsBusy && <JobProgress title="正在提取论文实验链" stageLabel={experimentsStage} progress={experimentsProgress} startedAt={experimentsStartedAt} hint="可在这篇论文内切换视图；离开论文会停止任务" onCancel={() => experimentsAbort.current?.abort()} />}
         <PaperExperimentsPanel payload={experiments} pending={experimentsBusy} onJump={jumpTo} />
-      </> :
-      <div className="split">
-        {mode !== "ai" && <div className="pdfColumn" data-pdf-mode={mode} style={{ "--pdf-w": `${pdfWidth}%` } as CSSProperties}><PdfPane paperId={paper.id} page={page} totalPages={paper.page_count} onPageChange={changePdfPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" role="separator" aria-orientation="vertical" tabIndex={0} aria-valuenow={Math.round(pdfWidth)} aria-valuemin={30} aria-valuemax={70} aria-label="调整 PDF 与 AI 面板宽度" onKeyDown={(e) => { let next = pdfWidth; if (e.key === "ArrowLeft") next = Math.max(30, pdfWidth - 2); else if (e.key === "ArrowRight") next = Math.min(70, pdfWidth + 2); else if (e.key === "Home") next = 30; else if (e.key === "End") next = 70; else return; e.preventDefault(); setPdfWidth(next); window.localStorage.setItem("reader-pdf-width", String(next)); }} onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</div>}
-        {mode !== "pdf" && <div className="chatColumn"><div className="readingStatus"><span>当前阅读位置</span><strong>{activeHeading || current?.heading || "尚未开始"}</strong><small>阅读进度已保存；提问不会推进。</small>{figureIndex > 0 && <div className="figureProgress">Figure {figureIndex} / {figures.length}<div>{figures.map((unit, i) => <span key={unit.id} className={i < figureIndex ? "filled" : ""}>●</span>)}</div></div>}</div>
+      </>}
+      <div className="split" key={paper.id} hidden={readerTab !== "read"}>
+        <RetainedPane active={showPdf} compact={compact} panel="pdf" className="pdfColumn" pdfMode={mode} style={{ "--pdf-w": `${pdfWidth}%` } as CSSProperties}><PdfPane paperId={paper.id} page={page} totalPages={paper.page_count} onPageChange={changePdfPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" role="separator" aria-orientation="vertical" tabIndex={0} aria-valuenow={Math.round(pdfWidth)} aria-valuemin={30} aria-valuemax={70} aria-label="调整 PDF 与 AI 面板宽度" onKeyDown={(e) => { let next = pdfWidth; if (e.key === "ArrowLeft") next = Math.max(30, pdfWidth - 2); else if (e.key === "ArrowRight") next = Math.min(70, pdfWidth + 2); else if (e.key === "Home") next = 30; else if (e.key === "End") next = 70; else return; e.preventDefault(); setPdfWidth(next); window.localStorage.setItem("reader-pdf-width", String(next)); }} onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</RetainedPane>
+        <RetainedPane active={showChat} compact={compact} panel="ai" className="chatColumn"><div className="readingStatus"><span>当前阅读位置</span><strong>{activeHeading || current?.heading || "尚未开始"}</strong><small>阅读进度已保存；提问不会推进。</small>{figureIndex > 0 && <div className="figureProgress">Figure {figureIndex} / {figures.length}<div>{figures.map((unit, i) => <span key={unit.id} className={i < figureIndex ? "filled" : ""}>●</span>)}</div></div>}</div>
           <div className="messages" ref={messagesRef} onScroll={(event) => { const box = event.currentTarget; followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }}>{!paper.messages?.length && !stream && !thinking && <div className="chatIntro">点击“开始精读”，先读题目与摘要。之后每次只推进一个阅读单元。</div>}{paper.messages?.map((item) => <div key={item.id} className={`bubble ${item.role}`}><span>{item.role === "user" ? "你" : "精读助手"}{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "FIGURE" && <em className={item.visual_verified ? "verified" : "unverified"}>{item.visual_verified ? "视觉解析已完成" : "基于正文和图注，图像未核验"}</em>}</span>{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "RECAP" ? <SummaryCards content={item.content} /> : <div className="markdownBody"><Markdown content={item.content} /></div>}</div>)}<ThinkingTrail text={thinking} active={pending && !!thinking.trim()} />{stream && <div className="bubble assistant"><span>{chatStartedAt === null ? "精读助手 · 回复已保存" : "精读助手 · 正在生成"}</span><div className="markdownBody streamText">{stream}</div></div>}</div>
           <div className="chatControls"><div className="quickActions"><button disabled={pending || (!next && !!current)} aria-busy={pending} onClick={() => act(current ? "NEXT" : "START")}>{nextLabel}</button>{current?.kind === "FIGURE" && <button disabled={pending} aria-busy={pending} onClick={() => act("FIGURE")}>解释这张图</button>}<button disabled={pending} aria-busy={pending} onClick={() => act("WHY_DESIGN")}>为什么这样设计？</button><button disabled={pending} aria-busy={pending} onClick={() => act("EVIDENCE")}>这个结果说明什么？</button></div><form onSubmit={(e) => { e.preventDefault(); if (draft.trim()) act("QUESTION", draft.trim()); }}><textarea value={draft} onChange={(e) => setDraft(e.target.value || null)} placeholder="提出你的科研问题…" aria-label="提出你的科研问题" rows={2} disabled={pending} /><button type="submit" disabled={pending || !draft.trim()} aria-busy={pending}>{pending ? "生成中" : "发送 ↗"}</button></form>{draft && <small className="tabDraftNote">提问草稿 · 当前标签页</small>}</div>
-        </div>}
-      </div>}
+        </RetainedPane>
+      </div></>}
     </section>
   </main>;
 }
