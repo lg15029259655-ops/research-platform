@@ -635,21 +635,34 @@ def smoke(browser, frontend, backend):
     # Exercise the homepage search without a dependency on OpenAlex.
     page.locator(".navBrand").click()
     term = "MedRead navigation smoke"
+    expired_pages = []
 
     def search_fixture(route):
         query = parse_qs(urlsplit(route.request.url).query)
         number = int(query["page"][0])
+        if number == 2 and not expired_pages:
+            assert query["snapshot"] == ["first-batch"]
+            expired_pages.append(number)
+            route.fulfill(status=409, json={"detail": "当前检索结果已有更新，请点击「刷新结果」后再加载更多。"})
+            return
+        if number == 2:
+            assert query["snapshot"] == ["refreshed-batch"]
         item = papers[number - 1]
         work = {"openalex_id": f"W{number}", "title": item["title"],
                 "authors": [], "year": 2020, "journal": "", "doi": "", "abstract": "",
                 "citation_count": 0, "oa_pdf_url": None}
-        route.fulfill(json={"items": [work], "count": 2, "page": number, "mode": query["mode"][0]})
+        route.fulfill(json={"items": [work], "count": 2, "page": number, "mode": query["mode"][0],
+                            "snapshot": "refreshed-batch" if expired_pages else "first-batch"})
 
     context.route(re.compile(rf"^{re.escape(backend)}/api/research/discover[?]"), search_fixture)
     page.get_by_role("search").get_by_role("textbox").fill(term)
     page.get_by_role("search").get_by_role("button", name="开始检索").click()
     expect(page.get_by_role("textbox", name="论文检索")).to_have_value(term)
     expect(page.locator(".workCard")).to_have_count(1)
+    page.get_by_role("button", name="加载更多论文").click()
+    expect(page.get_by_role("alert").filter(has_text="当前检索结果已有更新")).to_be_visible()
+    expect(page.locator(".workCard")).to_have_count(1)
+    page.get_by_role("button", name="刷新结果").click()
     page.get_by_role("button", name="加载更多论文").click()
     expect(page.locator(".workCard")).to_have_count(2)
     page.locator(".researchNav").get_by_role("link", name="深度精读").click()

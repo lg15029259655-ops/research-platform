@@ -14,6 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select, tuple_, update
+from sqlalchemy.dialects.sqlite import insert
 
 from .auth import current_owner
 from .db import SessionLocal
@@ -21,6 +22,7 @@ from .models import Paper, ReadingUnit, ResearchArtifact, ResearchWorkspace, Des
 from .workspace import get_or_create, job_workspace_conditions, require_job_context, workspace_for_write
 from .papers import owned_paper, paper_data, paper_source_matches, pdf_is_readable, process_paper
 from .services.openalex_service import (
+    DISCOVERY_PAGE_SIZE, SEMANTIC_RESULT_LIMIT,
     DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, lineage_for_work, search_works,
 )
 from . import config
@@ -95,15 +97,54 @@ async def cached_discovery(key: str, kind: str, query: str, mode: str, page: int
         raise
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
-        row = db.get(DiscoveryCache, key)
-        if row is None:
-            row = DiscoveryCache(cache_key=key, kind=kind, query=query, mode=mode,
-                                 page=page, payload_json="{}")
-            db.add(row)
-        row.payload_json = json.dumps(result, ensure_ascii=False)
-        row.fetched_at = now
+        payload = json.dumps(result, ensure_ascii=False)
+        db.execute(insert(DiscoveryCache).values(
+            cache_key=key, kind=kind, query=query, mode=mode, page=page, payload_json=payload, fetched_at=now,
+        ).on_conflict_do_update(index_elements=[DiscoveryCache.cache_key],
+                                set_={"payload_json": payload, "fetched_at": now}))
         db.commit()
     return {**result, "cached": False, "fetched_at": now.isoformat()}
+
+
+SEMANTIC_BATCH = "semantic-batch"
+
+
+def read_saved_discovery(kind: str, query: str, mode: str, page: int = 1) -> dict | None:
+    with SessionLocal() as db:
+        cached = db.get(DiscoveryCache, cache_key(kind, query, mode, page))
+        if cached is None:
+            return None
+        return {**json.loads(cached.payload_json), "cached": True, "fetched_at": cache_time(cached.fetched_at)}
+
+
+def semantic_page(batch: dict, page: int) -> dict:
+    start = (page - 1) * DISCOVERY_PAGE_SIZE
+    return {**batch, "items": batch["items"][start:start + DISCOVERY_PAGE_SIZE],
+            "page": page, "snapshot": batch["fetched_at"]}
+
+
+async def semantic_discovery(query: str, page: int, refresh: bool = False, snapshot: str | None = None) -> dict:
+    mode = "semantic"
+    if snapshot and not refresh:
+        if snapshot == "legacy":
+            legacy = read_saved_discovery("search", query, mode, page)
+            if legacy is not None:
+                return {**legacy, "snapshot": "legacy"}
+        else:
+            batch = read_saved_discovery(SEMANTIC_BATCH, query, mode)
+            if batch is not None and batch["fetched_at"] == snapshot:
+                return semantic_page(batch, page)
+        raise HTTPException(409, "当前检索结果已有更新，请点击「刷新结果」后再加载更多。")
+
+    try:
+        batch = await cached_discovery(cache_key(SEMANTIC_BATCH, query, mode), SEMANTIC_BATCH, query, mode, 1,
+                                       lambda: search_works(query, per_page=SEMANTIC_RESULT_LIMIT), refresh)
+    except DiscoveryError:
+        legacy = read_saved_discovery("search", query, mode, page)
+        if legacy is not None:
+            return {**legacy, "snapshot": "legacy", "stale": True}
+        raise
+    return semantic_page(batch, page)
 
 
 def route_research(title: str, abstract: str = "", field: str = "") -> dict[str, str]:
@@ -168,15 +209,23 @@ def classify(title: str, abstract: str = "", owner: str = Owner):
     return route_research(title[:500], abstract[:4000])
 
 
-@router.get("/discover")
-async def discover(q: str, page: int = 1, mode: str = "semantic", refresh: bool = False, owner: str = Owner):
+def validate_discovery_query(q: str, page: int, mode: str) -> None:
     if not q.strip() or len(q) > 500 or page < 1 or page > 100 or mode not in {"semantic", "keyword"}:
         raise HTTPException(422, "请输入有效的检索词")
-    if mode == "semantic" and page > 5:
+    if mode == "semantic" and page * DISCOVERY_PAGE_SIZE > SEMANTIC_RESULT_LIMIT:
         raise HTTPException(422, "语义检索最多展示 50 篇，请改用关键词检索")
+
+
+@router.get("/discover")
+async def discover(q: str, page: int = 1, mode: str = "semantic", refresh: bool = False,
+                   snapshot: str | None = Query(default=None, max_length=64), owner: str = Owner):
+    validate_discovery_query(q, page, mode)
     try:
-        result = await cached_discovery(cache_key("search", q, mode, page), "search", q.strip(), mode, page,
-            lambda: search_works(q.strip(), page, mode=mode), refresh)
+        if mode == "semantic":
+            result = await semantic_discovery(q.strip(), page, refresh, snapshot if page > 1 else None)
+        else:
+            result = await cached_discovery(cache_key("search", q, mode, page), "search", q.strip(), mode, page,
+                lambda: search_works(q.strip(), page, mode=mode), refresh)
     except DiscoveryRateLimited as exc:
         raise HTTPException(429, "OpenAlex 检索额度暂时耗尽。可稍后重试；如有 OpenAlex API Key，可填入后端 OPENALEX_API_KEY。") from exc
     except DiscoveryError as exc:
@@ -190,14 +239,16 @@ async def discover(q: str, page: int = 1, mode: str = "semantic", refresh: bool 
 @router.get("/discover/cached")
 def discover_cached(q: str, page: int = 1, mode: str = "semantic", owner: str = Owner):
     """Restore a previous public search without contacting OpenAlex."""
-    if not q.strip() or len(q) > 500 or page < 1 or page > 100 or mode not in {"semantic", "keyword"}:
-        raise HTTPException(422, "请输入有效的检索词")
-    with SessionLocal() as db:
-        cached = db.get(DiscoveryCache, cache_key("search", q, mode, page))
-        if cached is None:
+    validate_discovery_query(q, page, mode)
+    batch = read_saved_discovery(SEMANTIC_BATCH, q, mode) if mode == "semantic" else None
+    if batch is not None:
+        result = semantic_page(batch, page)
+    else:
+        result = read_saved_discovery("search", q, mode, page)
+        if result is None:
             raise HTTPException(404, "暂无已保存的检索结果")
-        result = {**json.loads(cached.payload_json), "cached": True,
-                  "fetched_at": cache_time(cached.fetched_at)}
+        if mode == "semantic":
+            result["snapshot"] = "legacy"
     for item in result["items"]:
         item.update(route_research(item["title"], item["abstract"], item.get("field", "")))
     return result
@@ -562,9 +613,7 @@ async def execute_novelty(owner: str, query: str, *, emit=None, timeout: float |
     try:
         if emit is not None:
             await emit("stage", {"stage": "searching", "label": "检索相似研究"})
-        found = await cached_discovery(cache_key("search", query, "semantic", 1),
-            "search", query, "semantic", 1,
-            lambda: search_works(query, per_page=10))
+        found = await semantic_discovery(query, 1)
         works = found["items"]
         if emit is not None:
             await emit("stage", {"stage": "analyzing", "label": "解读相似度与新角度"})

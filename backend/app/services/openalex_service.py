@@ -10,6 +10,8 @@ import httpx
 
 API = "https://api.openalex.org"
 WORK_ID = re.compile(r"^W\d+$")
+DISCOVERY_PAGE_SIZE = 10
+SEMANTIC_RESULT_LIMIT = 50
 
 
 class DiscoveryError(Exception):
@@ -83,7 +85,7 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any
     raise DiscoveryError("文献检索服务暂时不可用，请稍后重试")
 
 
-async def search_works(query: str, page: int = 1, per_page: int = 10,
+async def search_works(query: str, page: int = 1, per_page: int = DISCOVERY_PAGE_SIZE,
                        mode: str = "semantic") -> dict[str, Any]:
     if mode not in {"semantic", "keyword"}:
         raise DiscoveryError("无效的检索模式")
@@ -92,7 +94,7 @@ async def search_works(query: str, page: int = 1, per_page: int = 10,
     if mode == "semantic":
         # OpenAlex semantic search does not support topic filters. Filter its
         # bounded 50-result candidate set locally before paginating.
-        data = await _get("/works", {search_mode: query[:2000], "page": 1, "per_page": 50})
+        data = await _get("/works", {search_mode: query[:2000], "page": 1, "per_page": SEMANTIC_RESULT_LIMIT})
         works = [work for work in data.get("results", []) if any(
             str((topic.get("domain") or {}).get("id", "")).rsplit("/", 1)[-1] in {"1", "4"}
             for topic in (work.get("topics") or [])

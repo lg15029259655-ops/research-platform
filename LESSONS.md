@@ -675,3 +675,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: discovery, reading and synthesis all downloaded the full library list, including abstracts and image counts unused by their list views.
 - Action: add an opt-in summary that projects only the displayed fields. Revalidate it with a private, owner-scoped ETag and a common browser deadline. Keep the full response available for existing clients.
 - Verification: the backend returned an empty 304 for the same content, rejected reuse of another owner's validator, and returned a new body and ETag after a parse status or warning change. The seeded library response dropped from 1,842 to 773 bytes. At 390px, Chrome and Edge recorded 200, 304 and 304 when navigating between reading, synthesis and discovery, with their library views rendering throughout. Full navigation smoke, production build, source preflight, 152 backend tests and 13 frontend tests passed.
+
+## L-20261123-34 — Paginate one semantic search batch
+
+- Evidence: OpenAlex returned the same up-to-50 semantic candidates for each requested page. The app fetched those candidates again for every cache miss and could combine pages from searches made at different times.
+- Action: store one filtered batch and slice it into pages. A page request carries the batch identifier so a refresh cannot silently mix results. Keep existing saved pages available offline and leave keyword pagination on its original path.
+- Verification: a controlled backend test verified one upstream call across three pages, a fresh batch after refresh, a conflict for the older identifier, and offline fallback for both batch and legacy cache rows. At 390px, Edge kept the displayed first page when its batch changed, refreshed explicitly, and appended the next page from the new batch. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.

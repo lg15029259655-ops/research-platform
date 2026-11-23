@@ -18,7 +18,7 @@ type Work = { openalex_id: string; title: string; authors: string[]; year: numbe
   doi: string; abstract: string; citation_count: number; oa_pdf_url: string | null;
   domain?: string; study_type?: string; related_ids?: string[]; reference_ids?: string[] };
 type Paper = { id: string; title: string; openalex_id: string | null; status: string };
-type Search = { items: Work[]; count: number; page: number; mode: "semantic" | "keyword"; cached?: boolean; stale?: boolean; fetched_at?: string };
+type Search = { items: Work[]; count: number; page: number; mode: "semantic" | "keyword"; cached?: boolean; stale?: boolean; fetched_at?: string; snapshot?: string };
 type Graph = { nodes: Work[]; links: { source: string; target: string; relation: string }[]; cached?: boolean; fetched_at?: string };
 
 const domains: Record<string, string> = { biomed: "生物科学", review: "综述", general: "领域待确认" };
@@ -171,8 +171,11 @@ export default function DiscoverPage() {
     setTopicConfirmation(null);
     try {
       const next = term.trim();
+      const params = new URLSearchParams({ q: next, page: String(page), mode: searchMode });
+      if (bypassCache) params.set("refresh", "true");
+      if (page > 1 && result.snapshot) params.set("snapshot", result.snapshot);
       const data = await lookup<Search>(
-        `/api/research/discover?q=${encodeURIComponent(next)}&page=${page}&mode=${searchMode}${bypassCache ? "&refresh=true" : ""}`,
+        `/api/research/discover?${params}`,
         controller, 30000, "检索超时，请重试。");
       if (searchVersion.current !== version) return;
       window.localStorage.setItem("medread-search-mode", searchMode);

@@ -1,3 +1,5 @@
+import json
+
 import pymupdf
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -421,6 +423,67 @@ def test_discovery_cache_refresh_and_offline_fallback(monkeypatch):
                     db.delete(row)
                     db.commit()
             clean(client)
+
+
+def test_semantic_pages_share_one_batch_and_stop_if_refreshed(monkeypatch):
+    from uuid import uuid4
+
+    calls = []
+    async def fake_search(query, page=1, per_page=10):
+        calls.append((query, page, per_page))
+        if len(calls) == 3:
+            raise DiscoveryRateLimited("quota")
+        return {"items": [{"openalex_id": f"W{len(calls) * 100 + index}", "title": f"Study {index}",
+                           "abstract": "", "field": "Biology"} for index in range(23)],
+                "count": 23, "page": page, "mode": "semantic"}
+
+    monkeypatch.setattr("app.research.search_works", fake_search)
+    q = f"semantic page fixture {uuid4()}"
+    path = "/api/research/discover"
+    with TestClient(app) as client:
+        first = client.get(path, params={"q": q}).json()
+        second = client.get(path, params={"q": q, "page": 2, "snapshot": first["snapshot"]}).json()
+        last = client.get(path + "/cached", params={"q": q, "page": 3}).json()
+        assert calls == [(q, 1, 50)]
+        assert first["items"][0]["openalex_id"] == "W100"
+        assert second["items"][0]["openalex_id"] == "W110"
+        assert len(last["items"]) == 3 and last["count"] == 23
+        assert first["snapshot"] == second["snapshot"] == last["snapshot"]
+
+        refreshed = client.get(path, params={"q": q, "refresh": True}).json()
+        assert refreshed["snapshot"] != first["snapshot"]
+        assert client.get(path, params={"q": q, "page": 2, "snapshot": first["snapshot"]}).status_code == 409
+        second = client.get(path, params={"q": q, "page": 2, "snapshot": refreshed["snapshot"]}).json()
+        assert second["items"][0]["openalex_id"] == "W210"
+        assert len(calls) == 2
+        stale = client.get(path, params={"q": q, "refresh": True}).json()
+        assert stale["snapshot"] == refreshed["snapshot"] and stale["stale"]
+
+
+def test_semantic_cache_keeps_existing_pages_when_offline(monkeypatch):
+    from app.models import DiscoveryCache
+    from app.research import cache_key
+    from uuid import uuid4
+
+    q = f"legacy semantic fixture {uuid4()}"
+    with SessionLocal() as db:
+        old = {"items": [{"openalex_id": "W123", "title": "Existing result",
+                          "abstract": "", "field": "Biology"}], "count": 15, "page": 1, "mode": "semantic"}
+        db.add(DiscoveryCache(cache_key=cache_key("search", q, "semantic"), kind="search",
+                              query=q, mode="semantic", page=1, payload_json=json.dumps(old)))
+        db.commit()
+
+    async def offline(*_args, **_kwargs):
+        raise DiscoveryRateLimited("quota")
+
+    monkeypatch.setattr("app.research.search_works", offline)
+    path = "/api/research/discover"
+    with TestClient(app) as client:
+        restored = client.get(path + "/cached", params={"q": q}).json()
+        assert restored["snapshot"] == "legacy"
+        assert restored["items"][0]["title"] == "Existing result"
+        assert client.get(path, params={"q": q}).json()["stale"]
+        assert client.get(path, params={"q": q, "page": 2, "snapshot": "legacy"}).status_code == 409
 
 
 def test_metadata_is_not_fulltext_and_owner_isolation(monkeypatch, tmp_path):
