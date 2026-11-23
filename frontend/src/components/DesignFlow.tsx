@@ -22,9 +22,11 @@ function StageIcon({ kind, name, stage = false }: { kind: ExperimentCategory; na
   return <span aria-hidden="true" className={`er-symbol er-illustration er-illustration-${kind}`} />;
 }
 
-export default function DesignFlow({ design, artifactId, onSelectNode, onExpandNode, onAddStep, onRemoveStep, resumeStage, onResumeStage, busy = false, readOnly = false }: { design: Design; artifactId: string; onSelectNode?: (id: string) => void; onExpandNode?: (id: string) => void; onAddStep?: (id: string, step: Step, requestId: string) => Promise<void>; onRemoveStep?: (id: string, index: number) => Promise<void>; resumeStage?: string; onResumeStage?: () => void; busy?: boolean; readOnly?: boolean }) {
+export default function DesignFlow({ design, artifactId, onSelectNode, onExpandNode, onAddStep, onRemoveStep, linkedStage, resumeStage, onResumeStage, busy = false, readOnly = false }: { design: Design; artifactId: string; onSelectNode?: (id: string) => void; onExpandNode?: (id: string) => void; onAddStep?: (id: string, step: Step, requestId: string) => Promise<void>; onRemoveStep?: (id: string, index: number) => Promise<void>; linkedStage?: string; resumeStage?: string; onResumeStage?: () => void; busy?: boolean; readOnly?: boolean }) {
   const [savedStage, setExpanded] = useTabDraft<string>(artifactId ? designStageKey(artifactId) : null);
-  const expanded = design.nodes.some((node) => node.id === savedStage) ? savedStage : null;
+  const [followingLink, setFollowingLink] = useState(true);
+  const selectedStage = followingLink && linkedStage ? linkedStage : savedStage;
+  const expanded = design.nodes.some((node) => node.id === selectedStage) ? selectedStage : null;
   const [insight, setInsight] = useState<"review" | "outcomes" | null>(null);
   const draftKey = expanded && artifactId && !readOnly ? `design-stage-draft:${JSON.stringify([artifactId, expanded])}` : null;
   const [draft, setDraft] = useTabDraft<StageDraft>(draftKey);
@@ -47,6 +49,9 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
       block: "center",
     });
   }
+  useLayoutEffect(() => {
+    if (linkedStage) focusStage(linkedStage);
+  }, [linkedStage]);
   useLayoutEffect(() => {
     if (!expanded || focusStageOnOpen.current !== expanded) return;
     focusStageOnOpen.current = null;
@@ -101,7 +106,10 @@ export default function DesignFlow({ design, artifactId, onSelectNode, onExpandN
     finally { setSaving(false); }
   }
   const names = new Map(design.nodes.map(n => [n.id, n.label]));
-  function select(id: string | null) { setExpanded(id); setInsight(null); setAdding(null); setSaveFailure(null); }
+  function select(id: string | null) {
+    if (linkedStage) setFollowingLink(false);
+    setExpanded(id); setInsight(null); setAdding(null); setSaveFailure(null);
+  }
   function jump(id: string) {
     if (!stageButtons.current.has(id)) return;
     if (expanded === id) focusStage(id);

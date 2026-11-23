@@ -31,7 +31,7 @@ type Design = { goal: string; change_summary: string; constraints: string[]; nod
 type Artifact<T> = { id: string; payload: T; created_at: string };
 type VersionEntry = { version_id: string; number: number; action: string; artifact_id: string };
 type DesignVersion = VersionEntry & { payload: Design; changes: { added: string[]; removed: string[]; modified: string[] } };
-type StageVersionNotice = { version: DesignVersion; stage: string | null; inactive: boolean };
+type StageVersionNotice = { version: DesignVersion; stage: string; inactive: boolean };
 type SavedDesign = { id: string; created_at: string; number: number; action: string; goal: string };
 const actions = [["causality", "加强因果"], ["cost", "降低成本"], ["simplify", "简化方案"], ["mechanism", "增加机制"], ["application", "增强应用意义"]];
 const actionLabels: Record<string, string> = {generate: "生成方案", manual: "手动编辑", node: "局部修改", causality: "加强因果",
@@ -43,6 +43,12 @@ type DesignView = "novelty" | "canvas";
 
 function designView(value: string | null): DesignView | null {
   return value === "novelty" || value === "canvas" ? value : null;
+}
+
+function designVersionHref(id: string, stage?: string) {
+  const params = new URLSearchParams({ version: id });
+  if (stage) params.set("stage", stage);
+  return `/design?${params}`;
 }
 
 function updateDesignUrl(params: URLSearchParams) {
@@ -87,11 +93,12 @@ async function restoreSavedVersion(
 }
 
 export default function DesignPage() {
-  const historical = useSearchParams().get("version");
-  return historical ? <DesignPreview key={historical} id={historical} /> : <DesignWorkspace />;
+  const params = useSearchParams();
+  const historical = params.get("version");
+  return historical ? <DesignPreview key={historical} id={historical} stage={params.get("stage")} /> : <DesignWorkspace />;
 }
 
-function DesignPreview({ id }: { id: string }) {
+function DesignPreview({ id, stage }: { id: string; stage: string | null }) {
   const router = useRouter();
   const { workspace, refresh } = useWorkspace();
   const [version, setVersion] = useState<DesignVersion | null>(null);
@@ -102,13 +109,14 @@ function DesignPreview({ id }: { id: string }) {
   const [saving, setSaving] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const active = useRef(false);
+  const linkedStage = version?.payload.nodes.some((node) => node.id === stage) ? stage ?? undefined : undefined;
   useEffect(() => {
     active.current = true;
     return () => { active.current = false; };
   }, []);
   useEffect(() => {
-    if (version) titleRef.current?.focus();
-  }, [version]);
+    if (version && !linkedStage) titleRef.current?.focus();
+  }, [version, linkedStage]);
   useEffect(() => {
     const controller = new AbortController();
     setLoadError("");
@@ -162,7 +170,8 @@ function DesignPreview({ id }: { id: string }) {
             <div key={label}><h3>{label}</h3><ul>{values.map((value, index) => <li key={index}>{value}</li>)}</ul></div>)}
         </details>
       </section>
-      <DesignFlow design={design} artifactId={id} readOnly />
+      {stage && !linkedStage && <p className="workspaceLoading" role="status">这个版本中没有链接指向的阶段。</p>}
+      <DesignFlow key={linkedStage ?? ""} design={design} artifactId={id} linkedStage={linkedStage} readOnly />
     </> : loadError ? <div className="researchError" role="alert">{loadError} <button className="quietButton" onClick={() => setAttempt((count) => count + 1)}>重试读取版本</button></div>
       : <p className="workspaceLoading" role="status">正在读取设计版本…</p>}
   </PageMain>;
@@ -428,10 +437,10 @@ function DesignWorkspace() {
     if (openStage && version.payload.nodes.some((node) => node.id === openStage)) {
       writeTabDraft(designStageKey(version.artifact_id), openStage);
     }
-    if (active.current) await checkStageVersion(version, openStage === id ? id : null, submitter);
+    if (active.current) await checkStageVersion(version, id, submitter);
   }
 
-  async function checkStageVersion(version: DesignVersion, stage: string | null, submitter = document.activeElement) {
+  async function checkStageVersion(version: DesignVersion, stage: string, submitter = document.activeElement) {
     setCheckingStageVersion(true);
     try {
       const current = await refresh(true).catch(() => null);
@@ -442,7 +451,8 @@ function DesignWorkspace() {
       }
       setStageVersionNotice(null);
       const viewingCanvas = new URLSearchParams(window.location.search).get("view") !== "novelty";
-      if (viewingCanvas && stage && (document.activeElement === submitter || document.activeElement === document.body)) {
+      const openStage = readTabDraft<string>(designStageKey(version.artifact_id));
+      if (viewingCanvas && openStage === stage && (document.activeElement === submitter || document.activeElement === document.body)) {
         setSavedStageFocus({ artifactId: version.artifact_id, stage });
       }
       setLoadedVersion(version);
@@ -454,7 +464,7 @@ function DesignWorkspace() {
     <div className="pageIntro"><div className="eyebrow">04 / DESIGN</div><h1>让研究想法成为可检验的方案。</h1><p>结合文献线索和研究条件，设计可展开的实验路线，并逐步检查对照、指标与可能结果。</p></div>
     <SavedHistory<SavedDesign> title="设计历史" endpoint="/api/research/design/history" workspaceId={workspace?.workspace_id}
       currentId={currentDesignId} viewingId={currentDesignId}
-      href={(entry) => `/design?version=${encodeURIComponent(entry.id)}`}
+      href={(entry) => designVersionHref(entry.id)}
       label={(entry) => entry.goal || "已保存的研究设计"}
       metadata={(entry) => `V${entry.number} · ${actionLabels[entry.action] || entry.action}`} />
     {workspace?.design_idea && workspace.design_idea.trim() === idea.trim() && (workspace.research_gap || typeof pinnedSource === "string") && (!workspace.gap_context.question || workspace.gap_context.question === workspace.design_idea) && <details className="di-origin" open><summary>研究起点 · 来自文献综合</summary>{workspace.research_gap && <p><b>研究空白：</b>{workspace.research_gap}</p>}<p><b>当前问题：</b>{workspace.design_idea}</p><p>这是第三部分的综合线索，请结合对应论文原文核对；不是已独立证实的实验事实。</p><Link className="quietButton" href={typeof pinnedSource === "string" ? sourceHref(pinnedSource) : "/synthesis?view=gaps"}>返回研究空白查看依据 ↗</Link></details>}
@@ -474,7 +484,7 @@ function DesignWorkspace() {
           onClick={() => void checkStageVersion(stageVersionNotice.version, stageVersionNotice.stage)}>
           {checkingStageVersion ? "正在核对…" : "核对当前版本"}
         </button>}
-        <Link className="quietButton" href={`/design?version=${encodeURIComponent(stageVersionNotice.version.artifact_id)}`}>查看已保存版本</Link>
+        <Link className="quietButton" href={designVersionHref(stageVersionNotice.version.artifact_id, stageVersionNotice.stage)}>查看已保存阶段</Link>
       </div>
     </div>}
     {resultPending && <JobResultNotice failed={resultReadFailed} onRetry={retryResult} onDismiss={() => dismiss(job)} />}

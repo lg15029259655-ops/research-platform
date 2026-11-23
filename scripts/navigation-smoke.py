@@ -358,7 +358,9 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
     saved_notice = page.get_by_role("status").filter(has_text="暂时无法确认工作区当前版本")
     expect(saved_notice).to_be_visible()
     receipt = context.request.get(receipt_url).json()
-    expect(page.get_by_role("link", name="查看已保存版本", exact=True)).to_have_attribute("href", f"/design?version={receipt['id']}")
+    saved_stage_id = receipt["payload"]["nodes"][0]["id"]
+    deep_link = f"/design?{urlencode({'version': receipt['id'], 'stage': saved_stage_id})}"
+    expect(page.get_by_role("link", name="查看已保存阶段", exact=True)).to_have_attribute("href", deep_link)
     retry = page.get_by_role("button", name="核对当前版本", exact=True)
     retry.focus()
     retry.press("Enter")
@@ -371,6 +373,22 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
     assert len(context.request.get(history_url).json()["items"]) == initial_count + 1
     assert sum(step["name"] == "Check saved input" for node in receipt["payload"]["nodes"]
                for step in node.get("steps", [])) == 1
+    historical = context.new_page()
+    historical.emulate_media(reduced_motion="reduce")
+    historical.goto(frontend + deep_link)
+    stage_group = historical.locator(f"[id={json.dumps(f'er-node-{saved_stage_id}')}]")
+    stage_heading = stage_group.locator(".er-stage-main")
+    expect(stage_heading).to_be_focused()
+    expect(stage_heading).to_have_attribute("aria-expanded", "true")
+    expect(stage_group.get_by_role("heading", name="Check saved input")).to_be_visible()
+    expect(stage_group.get_by_role("button", name="编辑阶段", exact=True)).to_have_count(0)
+    assert historical.evaluate("key => sessionStorage.getItem(key)", f"medread-draft:design-stage:{receipt['id']}") is None
+    stage_heading.press("Enter")
+    expect(stage_heading).to_have_attribute("aria-expanded", "false")
+    historical.goto(f"{frontend}/design?{urlencode({'version': receipt['id'], 'stage': 'missing-stage'})}")
+    expect(historical.get_by_role("status").filter(has_text="没有链接指向的阶段")).to_be_visible()
+    expect(historical.locator(".er-stage-main[aria-expanded=true]")).to_have_count(0)
+    historical.close()
     page.get_by_role("button", name="撤回上一版本").click()
     expect(page.locator(".versionBar strong")).to_have_text(version_label)
     assert context.request.get(workspace_url).json()["design_version_id"] == base_id
