@@ -816,6 +816,25 @@ def compact_reading(browser, frontend, backend):
     assert page.evaluate(
         "() => { const reader = document.querySelector('.reader'); return reader.scrollWidth <= reader.clientWidth + 2; }"
     )
+    page.set_viewport_size({"width": 320, "height": 256})
+    library_toggle.click()
+    close = drawer.get_by_role("button", name="关闭论文库", exact=True)
+    expect(close).to_be_focused()
+    search.fill("")
+    last_paper = drawer.locator(".paperItem").last
+    last_paper.scroll_into_view_if_needed()
+    expect(last_paper).to_be_in_viewport(ratio=0.9)
+    expect(close).to_be_in_viewport(ratio=1)
+    assert drawer.locator(".library").evaluate("(element) => element.scrollTop > 0")
+    upload = drawer.get_by_role("button", name="上传 PDF")
+    expect(upload).to_be_in_viewport(ratio=1)
+    upload_box, close_box = upload.bounding_box(), close.bounding_box()
+    assert upload_box["x"] + upload_box["width"] <= close_box["x"]
+    assert last_paper.bounding_box()["y"] >= close_box["y"] + close_box["height"]
+    page.keyboard.press("Escape")
+    expect(drawer).to_have_count(0)
+    expect(library_toggle).to_be_focused()
+
     page.set_viewport_size({"width": 768, "height": 1024})
     expect(page.get_by_role("tab", name="左右分屏", exact=True)).to_have_attribute("aria-selected", "true")
     assert page.evaluate(
