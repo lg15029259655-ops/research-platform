@@ -112,6 +112,7 @@
 }
 .pdfToolbar .pageTools { flex-wrap: wrap; min-width: 0; }
 .pdfPaneLoading { margin: auto; padding: 20px; color: var(--c-text-soft); }
+.pdfSearchStatus { margin: 0; padding: 5px 10px; color: var(--c-text-mid); font-size: var(--fs-caption); }
 
 @media (max-width: 760px) {
   .readerShell .readerCompact { display: flex; overflow: auto; }

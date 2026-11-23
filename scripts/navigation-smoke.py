@@ -281,6 +281,40 @@ def shared_selection(browser, frontend, backend):
     context.close()
 
 
+def pdf_search_recovery(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    assert context.request.get(f"{backend}/api/session").ok
+    paper_id = context.request.get(f"{backend}/api/workspace").json()["core_paper_id"]
+    detail = f"{backend}/api/papers/{paper_id}"
+    context.route(f"{detail}/file", lambda route: route.fulfill(status=503, body="Temporarily unavailable"), times=1)
+    page.goto(f"{frontend}/read?paper={paper_id}")
+    page.get_by_role("button", name="重试打开 PDF").click()
+    expect(page.locator(".pdfCanvas canvas")).to_be_visible()
+    search_box = page.get_by_role("textbox", name="在 PDF 内搜索文字")
+    page_number = page.locator(".pageTools span").first
+    position = page_number.inner_text()
+    delayed = []
+    old_search = f"{detail}/search?q=previous"
+    context.route(old_search, lambda route: delayed.append(route), times=1)
+    search_box.fill("previous")
+    with page.expect_request(old_search):
+        search_box.press("Enter")
+    expect(page.get_by_text("正在搜索 PDF…", exact=True)).to_be_visible()
+    search_box.fill("no-match-recovery-probe")
+    delayed[0].fulfill(json=[{"page": 2, "snippet": "Old search result"}])
+    expect(page.locator(".searchHits")).to_have_count(0)
+    expect(page_number).to_have_text(position)
+    next_search = f"{detail}/search?q=no-match-recovery-probe"
+    context.route(next_search, lambda route: route.abort("internetdisconnected"), times=1)
+    search_box.press("Enter")
+    expect(page.get_by_role("alert").filter(has_text="连接中断")).to_be_visible()
+    page.get_by_role("button", name="重试搜索", exact=True).click()
+    expect(page.get_by_text("没有找到匹配文字。", exact=True)).to_be_visible()
+    expect(page_number).to_have_text(position)
+    context.close()
+
+
 def compact_reading(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844}, has_touch=True)
     page = context.new_page()
@@ -811,6 +845,7 @@ if __name__ == "__main__":
             background_jobs(browser, args.frontend, args.backend)
             reload_before_job_confirmation(browser, args.frontend, args.backend)
             manual_design_draft(browser, args.frontend, args.backend)
+            pdf_search_recovery(browser, args.frontend, args.backend)
             compact_reading(browser, args.frontend, args.backend)
             shared_selection(browser, args.frontend, args.backend)
             reader_reparse(browser, args.frontend, args.backend)
