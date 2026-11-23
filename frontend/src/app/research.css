@@ -110,6 +110,27 @@
 @media(max-width:680px){.researchPage{padding:22px 14px 76px}.graphToolbar{display:block}.graphCounts{margin-top:10px}.networkFoot{align-items:flex-start;flex-direction:column}.graphAside{max-height:none}}
 @media(prefers-reduced-motion:reduce){.loadingPulse{animation:none}.workCard, .primaryButton, .searchBox button, .searchModes button, .evidenceNode, .gapStepItems button{transition:none}}
 
+.evidenceDrawer {
+  height: 100dvh;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  scroll-padding-block-start: 64px;
+}
+.drawerHead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  gap: 8px;
+  padding-block-end: 8px;
+  background: var(--c-surface);
+}
+.drawerHead button {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  line-height: 1;
+}
+
 /* The novelty map needs readable documents, not anonymous numbered dots. */
 
 .floatingBusy{position:fixed;right:24px;bottom:22px;z-index:90;display:flex;align-items:center;gap:10px;max-width:min(430px,calc(100vw - 32px));padding:13px 17px;border:1px solid var(--c-line-strong);border-radius:var(--r-1);background:var(--c-surface);color:var(--c-primary);box-shadow:var(--sh-2);font-size:12px;font-weight:700}.floatingBusy .loadingPulse{flex:none}@media(max-width:680px){.floatingBusy{left:16px;right:16px;bottom:16px;max-width:none}}

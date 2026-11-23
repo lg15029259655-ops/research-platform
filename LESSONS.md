@@ -826,3 +826,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: shrinking the desktop split view while the question field had focus hid the AI pane and dropped focus to the document body. Widening the window while the compact library was open had the same effect when the dialog was replaced by the sidebar.
 - Action: remember the reader control that held focus and check whether it is still visible after the layout commits. If it disappeared and focus was lost, focus the active reading tab or the library toggle. Leave an input alone while it remains visible.
 - Verification: Chrome and Edge on both appearances moved focus to the visible PDF tab at 320px, switched back to the question and confirmed the draft was intact, retained focus on that field across visible layout changes, and returned focus to the library toggle when the dialog became a sidebar. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
+
+## L-20261123-58 — Keep the evidence drawer close control visible while reading
+
+- Evidence: at 320 × 256 CSS pixels, scrolling the design-stage drawer to the end moved its close control completely above the viewport.
+- Action: keep the top row sticky in the shared drawer, reserve scroll padding for focused content, and center the close symbol within its existing target. Size the drawer to the dynamic viewport and contain its overscroll. Use the same behavior on both appearances.
+- Verification: Chrome and Edge on both appearances scrolled the design-stage and evidence drawers to the end at 320 × 256. The close control remained visible, the final citation link was reachable, and Escape restored the original focus. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.

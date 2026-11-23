@@ -17,7 +17,7 @@ export default function EvidenceDrawer({ title, eyebrow, children, onClose, acti
   useFocusTrap(rootRef, closeRef);
 
   return <aside ref={rootRef} className="evidenceDrawer" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
-    <div className="drawerHead"><span>{eyebrow || "证据详情"}</span><button onClick={onClose} aria-label="关闭详情">×</button></div>
+    <div className="drawerHead"><span>{eyebrow || "证据详情"}</span><button type="button" onClick={onClose} aria-label="关闭详情">×</button></div>
     <h3>{title}</h3><div className="drawerBody">{children}</div>
     {action && <button className="drawerAction" onClick={action.onClick}>{action.label}</button>}
   </aside>;
