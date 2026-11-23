@@ -675,11 +675,15 @@ def limit_node_revision(before: dict, after: dict, target: str) -> dict:
     return after
 
 
-def version_data(version: DesignVersion, artifact: ResearchArtifact) -> dict:
+def version_summary(version: DesignVersion) -> dict:
     return {"version_id": version.id, "number": version.version_number, "action": version.action,
-            "parent_version_id": version.parent_version_id,
-            "changes": json.loads(version.changed_nodes_json), "artifact_id": artifact.id,
-            "payload": json.loads(artifact.payload_json), "created_at": version.created_at.isoformat()}
+            "parent_version_id": version.parent_version_id, "artifact_id": version.artifact_id,
+            "created_at": version.created_at.isoformat()}
+
+
+def version_data(version: DesignVersion, artifact: ResearchArtifact) -> dict:
+    return {**version_summary(version), "changes": json.loads(version.changed_nodes_json),
+            "payload": json.loads(artifact.payload_json)}
 
 
 def preserve_step_illustrations(previous: dict, revised: dict) -> None:
@@ -903,25 +907,20 @@ async def design(request: DesignRequest, owner: str = Owner):
 
 
 @router.get("/design/versions")
-def design_versions(artifact_id: str | None = None, goal: str | None = None, owner: str = Owner):
+def design_versions(artifact_id: str | None = None, goal: str | None = None, summary: bool = False, owner: str = Owner):
     with SessionLocal() as db:
         workspace = get_or_create(db, owner)
-        query = select(DesignVersion).where(
+        query = select(DesignVersion).join(ResearchArtifact, ResearchArtifact.id == DesignVersion.artifact_id).where(
             DesignVersion.owner_id == owner, DesignVersion.workspace_id == workspace.id)
-        # 默认只回最近 20 条（版本历史列表）。但 workspace.design_version_id 可能指向更老的版本，
-        # 前端据此还原沙盘时会在 20 条里找不到 → 画布空白。允许按 artifact_id 精确取那一条。
         if artifact_id:
             query = query.where(DesignVersion.artifact_id == artifact_id)
-        rows = db.scalars(query.order_by(DesignVersion.version_number.desc()).limit(1 if artifact_id else 200)).all()
-        result = []
-        for row in rows:
-            artifact = db.get(ResearchArtifact, row.artifact_id)
-            if goal is not None and not artifact_id and json.loads(artifact.payload_json).get("goal", "").strip() != goal.strip():
-                continue
-            result.append(version_data(row, artifact))
-            if len(result) == (1 if artifact_id else 20):
-                break
-        return result
+        elif goal is not None:
+            saved_goal = func.coalesce(func.json_extract(ResearchArtifact.payload_json, "$.goal"), "")
+            query = query.where(func.trim(saved_goal, " \t\r\n\v\f\u3000") == goal.strip())
+        query = query.order_by(DesignVersion.version_number.desc(), DesignVersion.id.desc()).limit(1 if artifact_id else 20)
+        if summary:
+            return [version_summary(version) for version in db.scalars(query)]
+        return [version_data(version, artifact) for version, artifact in db.execute(query.add_columns(ResearchArtifact))]
 
 
 class RestoreDesign(BaseModel):

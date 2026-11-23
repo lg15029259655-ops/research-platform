@@ -108,9 +108,17 @@ def background_jobs(browser, frontend, backend):
 def manual_design_draft(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
+    summary_url = re.compile(rf"^{re.escape(backend)}/api/research/design/versions\?summary=true")
+    held = []
+    context.route(summary_url, lambda route: held.append(route), times=1)
     page.goto(f"{frontend}/design")
     editor = page.locator(".design-step-editor")
     editor.get_by_role("button", name="手动添加或删除实验步骤").click()
+    assert held, "The current canvas should load while its version list is pending"
+    held[0].fulfill(status=503, json={})
+    page.get_by_role("button", name="重试版本列表").click()
+    expect(page.get_by_role("button", name="重试版本列表")).to_have_count(0)
+    expect(editor).to_be_visible()
     step = editor.get_by_label("新步骤名称")
     notes = editor.get_by_label("目的或操作说明（可选）")
     step.fill("Review the baseline evidence")

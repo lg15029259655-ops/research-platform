@@ -26,8 +26,8 @@ type Design = { goal: string; change_summary: string; constraints: string[]; nod
   edges: { source: string; target: string; label: string }[]; controls: string[]; readouts: string[]; assumptions: string[];
   input_constraints?: string; research_origin?: { research_gap?: string; synthesis_id?: string | null; selected_papers?: {paper_id: string; title: string}[] } };
 type Artifact<T> = { id: string; payload: T; created_at: string };
-type DesignVersion = { version_id: string; number: number; action: string; artifact_id: string;
-  payload: Design; changes: { added: string[]; removed: string[]; modified: string[] } };
+type VersionEntry = { version_id: string; number: number; action: string; artifact_id: string };
+type DesignVersion = VersionEntry & { payload: Design; changes: { added: string[]; removed: string[]; modified: string[] } };
 type SavedDesign = { id: string; created_at: string; number: number; action: string; goal: string };
 const actions = [["causality", "加强因果"], ["cost", "降低成本"], ["simplify", "简化方案"], ["mechanism", "增加机制"], ["application", "增强应用意义"]];
 const actionLabels: Record<string, string> = {generate: "生成方案", manual: "手动编辑", node: "局部修改", causality: "加强因果",
@@ -135,7 +135,10 @@ function DesignWorkspace() {
   const setConstraints = (value: string) => editDraft({ constraints: value });
   const [novelty, setNovelty] = useState<Novelty | null>(null);
   const [noveltyReady, setNoveltyReady] = useState(false);
-  const [design, setDesign] = useState<Design | null>(null);
+  const [loadedVersion, setLoadedVersion] = useState<DesignVersion | null>(null);
+  const currentDesignId = workspace?.design_version_id;
+  const activeVersion = loadedVersion?.artifact_id === currentDesignId ? loadedVersion : null;
+  const design = activeVersion?.payload;
   const constraints = typeof formDraft?.constraints === "string" ? formDraft.constraints
     : (design?.goal.trim() === idea.trim() ? design?.input_constraints || "" : "");
   const [tab, setTab] = useState<"novelty" | "canvas">("novelty");
@@ -146,18 +149,17 @@ function DesignWorkspace() {
   const formDisabled = !draftKey || running;
   const [error, setError] = useState("");
   const [taskCanceled, setTaskCanceled] = useState(false);
-  const [versions, setVersions] = useState<DesignVersion[]>([]);
-  const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+  const [versionList, setVersionList] = useState<{ goal: string; entries: VersionEntry[] } | null>(null);
+  const [versionListError, setVersionListError] = useState(false);
+  const [versionListAttempt, setVersionListAttempt] = useState(0);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [nodeInstruction, setNodeInstruction] = useState("");
   const [selectedChange, setSelectedChange] = useState<{label: string; kind: string} | null>(null);
-  const [restoredDesignId, setRestoredDesignId] = useState<string | null>(null);
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [noveltyError, setNoveltyError] = useState("");
   const [designError, setDesignError] = useState("");
   const currentNoveltyId = workspace?.novelty_id;
-  const currentDesignId = workspace?.design_version_id;
-  const restoringDesign = !!currentDesignId && restoredDesignId !== currentDesignId && !designError;
+  const restoringDesign = !!currentDesignId && !activeVersion && !designError;
   const restoringNovelty = !!currentNoveltyId && !noveltyReady && !noveltyError;
   const active = useRef(false);
   const workspaceTabs = tabGroup(["novelty", "canvas"] as const, tab, setTab);
@@ -182,24 +184,29 @@ function DesignWorkspace() {
   }, [currentNoveltyId, savedIdea, restoreAttempt]);
   useEffect(() => {
     setDesignError("");
-    if (!savedIdea) { setVersions([]); setDesign(null); setCurrentVersion(null); setRestoredDesignId(null); return; }
+    if (!currentDesignId || !savedIdea) { setLoadedVersion(null); return; }
+    if (activeVersion) return;
     const controller = new AbortController();
-    const options = { signal: controller.signal };
-    async function restoreDesign() {
-      const rows = await apiJson<DesignVersion[]>(`/api/research/design/versions?goal=${encodeURIComponent(savedIdea)}`, options);
+    apiJson<DesignVersion[]>(`/api/research/design/versions?artifact_id=${encodeURIComponent(currentDesignId)}`, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]), cache: "no-store",
+    }).then(([version]) => {
       if (controller.signal.aborted) return;
-      const match = rows.find((item) => item.artifact_id === currentDesignId);
-      const version = match || (currentDesignId ? (await apiJson<DesignVersion[]>(`/api/research/design/versions?artifact_id=${currentDesignId}`, options))[0] : undefined);
-      if (controller.signal.aborted) return;
-      setVersions(version && !match ? [...rows, version] : rows);
-      if (currentDesignId && version?.payload.goal.trim() !== savedIdea.trim()) throw new Error("找不到对应的设计版本");
-      setDesign(version?.payload || null);
-      setCurrentVersion(version?.version_id || null);
-      setRestoredDesignId(currentDesignId || null);
-    }
-    void restoreDesign().catch(() => { if (!controller.signal.aborted) setDesignError("暂时无法读取已保存的设计版本"); });
+      if (version?.payload.goal.trim() !== savedIdea.trim()) throw new Error("找不到对应的设计版本");
+      setLoadedVersion(version);
+    }).catch(() => { if (!controller.signal.aborted) setDesignError("暂时无法读取已保存的设计版本"); });
     return () => controller.abort();
   }, [currentDesignId, savedIdea, restoreAttempt]);
+  useEffect(() => {
+    setVersionListError(false);
+    if (!currentDesignId || !savedIdea) { setVersionList(null); return; }
+    const controller = new AbortController();
+    apiJson<VersionEntry[]>(`/api/research/design/versions?summary=true&goal=${encodeURIComponent(savedIdea)}`, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]), cache: "no-store",
+    }).then((entries) => {
+      if (!controller.signal.aborted) setVersionList({ goal: savedIdea, entries });
+    }).catch(() => { if (!controller.signal.aborted) setVersionListError(true); });
+    return () => controller.abort();
+  }, [currentDesignId, savedIdea, versionListAttempt]);
   useEffect(() => {
     if (tab === "novelty" && !shownNovelty && shownDesign && !restoringNovelty && !busy && !error) setTab("canvas");
   }, [shownNovelty, shownDesign, tab, restoringNovelty, busy, error]);
@@ -252,9 +259,8 @@ function DesignWorkspace() {
       if (job.kind === "novelty") {
         setNovelty(result.payload as Novelty); setTab("novelty");
       } else {
-        setDesign(result.payload as Design); setTab("canvas");
-        const version = result.version;
-        if (version) { setVersions((items) => [version, ...items]); setCurrentVersion(version.version_id); }
+        if (result.version) setLoadedVersion(result.version);
+        setTab("canvas");
       }
     }).catch(() => {
       if (!disposed) setError("结果已保存，请重新打开本页读取。");
@@ -280,19 +286,21 @@ function DesignWorkspace() {
       node_id: nodeId, instruction, regenerate: force,
     }, { draft: { idea, constraints, key: draftKey } });
   }
-  async function restoreVersion(version: DesignVersion) {
+  async function restoreVersion(version: VersionEntry) {
     setBusy(true); setError("");
     try { const current = workspace ?? await refresh(true);
       const restored = await postJson<DesignVersion>(`/api/research/design/versions/${version.version_id}/restore`, { expected_updated_at: current.updated_at });
-      setDesign(restored.payload); setCurrentVersion(restored.version_id); await refresh(); }
+      setLoadedVersion(restored); await refresh(true); }
     catch (e) { setError(e instanceof Error ? e.message : "版本恢复失败"); }
     finally { setBusy(false); }
   }
-  const scopedVersions = Array.from(new Map(versions.filter((item) =>
-    item.payload.goal.trim() === design?.goal.trim()).map((item) => [item.version_id, item])).values())
+  const scopedVersions = Array.from(new Map([
+    ...(versionList?.goal === savedIdea ? versionList.entries : []),
+    ...(activeVersion ? [activeVersion] : []),
+  ].map((item) => [item.version_id, item])).values())
     .sort((a, b) => a.number - b.number);
+  const currentVersion = activeVersion?.version_id;
   const activeIndex = scopedVersions.findIndex((item) => item.version_id === currentVersion);
-  const activeVersion = scopedVersions[activeIndex];
   const displayVersion = activeVersion?.number ?? 1;
   const priorVersion = activeIndex > 0 ? scopedVersions[activeIndex - 1] : null;
   const nodeDetail = design?.nodes.find((item) => item.id === selectedNode);
@@ -330,7 +338,7 @@ function DesignWorkspace() {
     if (!activeVersion || !shownDesign) throw new Error("当前版本尚未加载");
     const draft = { ...shownDesign, nodes: shownDesign.nodes.map(node => node.id === id ? { ...node, steps } : node) };
     const result = await postJson<{payload: Design; version: DesignVersion}>("/api/research/design/manual", { artifact_id: activeVersion.artifact_id, design: draft });
-    setDesign(result.payload); setVersions(items => [result.version, ...items]); setCurrentVersion(result.version.version_id);
+    setLoadedVersion(result.version);
     await refresh().catch(() => {});
   }
   return <main id="main" className="researchPage">
@@ -344,6 +352,7 @@ function DesignWorkspace() {
     {!workspace && !workspaceError && <p className="workspaceLoading" role="status">正在读取研究问题…</p>}
     {(restoringDesign || restoringNovelty) && <p className="workspaceLoading" role="status">正在恢复上次研究结果…</p>}
     {(designError || noveltyError) && <div className="researchError" role="alert">{[noveltyError, designError].filter(Boolean).join("；")} <button className="quietButton" onClick={() => setRestoreAttempt((count) => count + 1)}>重试</button></div>}
+    {tab === "canvas" && shownDesign && versionListError && <p className="researchError" role="alert">暂时无法读取版本列表。 <button className="quietButton" onClick={() => setVersionListAttempt((count) => count + 1)}>重试版本列表</button></p>}
     {!!workspace && !idea.trim() && !shownNovelty && !shownDesign && !busy && <section className="startGuide" aria-label="科研设计使用引导"><div className="startGuideIntro"><span>START HERE</span><h2>把一个想法，推进为可核验的研究路径。</h2><p>先填入自己的研究问题。你可以检索相似研究，也可以直接生成设计草稿；两项结果会清楚标注证据范围。</p><div className="sampleIdeas"><b>试一个示例</b>{["如何降低肿瘤单细胞测序的样本与计算成本？", "如何验证候选基因对肿瘤细胞迁移的影响？", "如何研究代谢通路与肿瘤免疫微环境的关系？"].map((sample) => <button key={sample} disabled={running} onClick={() => { setIdea(sample); document.getElementById("idea")?.focus(); }}>{sample} ↗</button>)}</div></div><div className="startGuideSteps"><div><b>01</b><strong>提出问题</strong><small>明确对象、变量与目标</small></div><div><b>02</b><strong>核对相似研究</strong><small>基于摘要做定性扫描</small></div><div><b>03</b><strong>搭建设计草稿</strong><small>检查对照、读数与假设</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {taskCanceled && <p className="workspaceLoading" role="status">任务已取消。</p>}
