@@ -977,13 +977,16 @@ def evidence_source_navigation(browser, frontend, backend):
     reference = {"paper_id": paper_id, "unit_id": "fixture", "section": "Results",
                  "page": target, "page_start": target, "page_end": target, "snippet": "Example citation.",
                  "quote_verified": True, "file_version": paper["file_version"]}
-    result["payload"]["controversies"] = [{
-        "claim": "Evidence navigation check", "reason": "Compare source versions", "stance": "SUPPORTS",
-        "paper_ids": [paper_id], "evidence_refs": [reference, {**reference, "page": None, "page_end": target + 1}],
-    }]
+    result["payload"]["controversies"] = [
+        {"claim": "Different evidence check", "reason": "Another claim", "stance": "INSUFFICIENT",
+         "paper_ids": [paper_id]},
+        {"claim": "Evidence navigation check", "reason": "Compare source versions", "stance": "SUPPORTS",
+         "paper_ids": [paper_id], "evidence_refs": [reference, {**reference, "page": None, "page_end": target + 1}]},
+    ]
     context.route(view_url, lambda route: route.fulfill(json=result))
     page.goto(f"{frontend}/synthesis?view=evidence")
-    page.get_by_role("button", name=re.compile("Evidence navigation check")).click()
+    claim = page.get_by_role("button", name=re.compile("^Evidence navigation check"))
+    claim.click()
     expect(page.get_by_role("link", name=f"从第 {target} 页开始核对 ↗")).to_be_visible()
     link = page.get_by_role("link", name=f"打开原文第 {target} 页 ↗")
     params = parse_qs(urlsplit(link.get_attribute("href")).query)
@@ -999,6 +1002,8 @@ def evidence_source_navigation(browser, frontend, backend):
     expect(page.get_by_text("让阅读从原文开始")).to_have_count(0)
     assert parse_qs(urlsplit(page.url).query) == params
     assert len(held_reads) == 2
+    for held in held_reads:
+        held.abort()
     page.get_by_role("button", name="重试打开论文").click()
     page_number = page.locator(".pageTools span").first
     expect(page_number).to_have_text(re.compile(rf"^{target} /"))
@@ -1010,6 +1015,17 @@ def evidence_source_navigation(browser, frontend, backend):
     expect(drawer.locator(".paperItem[aria-current=true]")).to_contain_text(paper["title"])
     drawer.get_by_role("button", name="关闭论文库", exact=True).click()
     assert context.request.get(workspace_url).json()["core_paper_id"] == workspace["core_paper_id"]
+    assert context.request.patch(workspace_url, data={"synthesis_id": None}).ok
+    page.go_back()
+    evidence = page.get_by_role("dialog", name="Evidence navigation check", exact=True)
+    expect(evidence.get_by_role("link", name=f"打开原文第 {target} 页 ↗")).to_be_visible()
+    expect(evidence.get_by_role("button", name="关闭详情")).to_be_focused()
+    assert parse_qs(urlsplit(page.url).query)["artifact"] == [workspace["synthesis_id"]]
+    page.keyboard.press("Escape")
+    expect(evidence).to_have_count(0)
+    expect(claim).to_be_focused()
+    assert "claim" not in parse_qs(urlsplit(page.url).query)
+    assert context.request.patch(workspace_url, data={"synthesis_id": workspace["synthesis_id"]}).ok
     stale = urlencode({"paper": paper_id, "page": target, "source_file": "old-pdf-version"})
     page.goto(f"{frontend}/read?{stale}")
     expect(page.get_by_role("status").filter(has_text="旧引用的页码与当前 PDF 无法确认对应")).to_be_visible()

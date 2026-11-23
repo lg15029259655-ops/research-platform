@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef } from "react";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
 
 type Ref = { paper_id: string; unit_id: string; section: string; page: number | null; page_start?: number | null; page_end?: number | null; snippet: string; quote_verified?: boolean; file_version?: string | null };
@@ -24,10 +24,17 @@ function sourceLink(ref: Ref, stale: boolean) {
   return { href: `/read?${params}`, label };
 }
 
-export default function EvidenceMap({ claims, papers, onReviseSelection, stale = false }: {
-  claims: Claim[]; papers: Paper[]; onReviseSelection?: () => void; stale?: boolean;
+export default function EvidenceMap({ claims, papers, selectedIndex, onSelect, onOpenSource, onReviseSelection, stale = false }: {
+  claims: Claim[]; papers: Paper[]; selectedIndex: number; onSelect: (index: number | null) => void;
+  onOpenSource: () => void; onReviseSelection?: () => void; stale?: boolean;
 }) {
-  const [selected, setSelected] = useState<Claim | null>(null);
+  const nodes = useRef(new Map<number, HTMLButtonElement>());
+  const selected = claims[selectedIndex];
+  const indexedClaims = claims.map((item, index) => ({ item, index }));
+  function closeClaim() {
+    onSelect(null);
+    requestAnimationFrame(() => nodes.current.get(selectedIndex)?.focus());
+  }
   const visibleClaims = claims;
   const title = (id: string) => papers.find((item) => item.paper_id === id)?.title || "未知论文";
   const hasDirectRelation = visibleClaims.some((item) => item.stance === "SUPPORTS" || item.stance === "REFUTES");
@@ -46,16 +53,19 @@ export default function EvidenceMap({ claims, papers, onReviseSelection, stale =
     {!!visibleClaims.length && <p className="miniNotice">分类由 AI 根据所选片段提出；原文引用匹配不等于已验证支持或冲突关系，请核对研究条件和上下文。空栏不代表整个领域没有相关证据。</p>}
     {!!visibleClaims.length &&
     <div className="evidenceColumns">{columns.map(([key, label, subtitle]) => <section key={key} className={`evidenceLane ${key.toLowerCase()}`}><header><h3>{label}</h3><small>{subtitle}</small><b>{visibleClaims.filter((item) => item.stance === key).length}</b></header>
-      <div>{visibleClaims.filter((item) => item.stance === key).map((item, index) => <button key={index} className="evidenceNode" onClick={() => setSelected(item)}><strong>{item.claim}</strong><span>{item.paper_ids.map(title).join(" · ")}</span></button>)}
+      <div>{indexedClaims.filter(({ item }) => item.stance === key).map(({ item, index }) => <button
+        key={index} className="evidenceNode" type="button" aria-haspopup="dialog"
+        ref={(node) => { if (node) nodes.current.set(index, node); else nodes.current.delete(index); }}
+        onClick={() => onSelect(index)}><strong>{item.claim}</strong><span>{item.paper_ids.map(title).join(" · ")}</span></button>)}
       {!visibleClaims.some((item) => item.stance === key) && <p className="emptyLane">{emptyMessage[key as keyof typeof emptyMessage]}</p>}</div></section>)}</div>}
-    {selected && <EvidenceDrawer title={selected.claim} eyebrow="证据关系" onClose={() => setSelected(null)}><p>{selected.reason}</p><dl><dt>状态</dt><dd>{columns.find((row) => row[0] === selected.stance)?.[1]}</dd><dt>涉及论文</dt><dd>{selected.paper_ids.map(title).join("；")}</dd></dl>
+    {selected && <EvidenceDrawer key={selectedIndex} title={selected.claim} eyebrow="证据关系" onClose={closeClaim}><p>{selected.reason}</p><dl><dt>状态</dt><dd>{columns.find((row) => row[0] === selected.stance)?.[1]}</dd><dt>涉及论文</dt><dd>{selected.paper_ids.map(title).join("；")}</dd></dl>
       {selected.evidence_refs?.length ? selected.evidence_refs.map((ref, index) => {
         const { href, label } = sourceLink(ref, stale);
         return <div className="evidenceCitation" key={index}>
           <strong>{title(ref.paper_id)}</strong>
           <small>{ref.section} · {ref.page ? `PDF ${ref.page} 页` : ref.page_start && ref.page_end ? `PDF ${ref.page_start}–${ref.page_end} 页范围，具体页待核对` : "页码待核对"}</small>
           <p>{ref.quote_verified ? "匹配到的原文（支持关系仍需核对）" : "单元开头（未核对为该命题的依据）"}：{ref.snippet}</p>
-          <Link href={href}>{label} ↗</Link>
+          <Link href={href} onNavigate={onOpenSource}>{label} ↗</Link>
         </div>;
       }) : <p className="miniNotice">未定位到具体原文位置；当前为 AI 对已提供论文片段的解释，需核对原文。</p>}
     </EvidenceDrawer>}

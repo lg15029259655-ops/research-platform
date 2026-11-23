@@ -694,3 +694,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the design workspace held its selected view and expanded stage only in React state. Browser back or reload could switch to another view and collapse the stage. A saved synthesis link was also hidden when that version's gap text was empty.
 - Action: remember explicit view selection in the current history entry and store the expanded stage by artifact within the tab. Keep an explicitly selected view when background results arrive. Render a saved source link independently of optional research-gap text.
 - Verification: Chrome and Edge at 390px used keyboard navigation to open the canvas, expanded a stage, opened its saved synthesis with empty gap text, and used browser back to recover the canvas, stage and draft constraints. The selected novelty view survived reload, and returning to the canvas reopened the saved stage. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.
+
+## L-20261123-37 — Return from a PDF citation to the evidence that opened it
+
+- Evidence: the claim drawer stored its selection only in component state. Returning from the reader closed the claim and could display a newer active comparison after a workspace change.
+- Action: record the claim index together with its comparison identity in the current history entry. Pin the comparison when following its PDF citation and focus the original claim button when its drawer closes. Validate the selection against the displayed artifact.
+- Verification: Chrome and Edge at 390px opened an exact PDF citation, recovered from delayed reader requests, then went back after the active comparison was cleared. Both returned to the original comparison and claim. Escape closed the drawer and focused the matching claim button. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.

@@ -26,6 +26,13 @@ type Artifact = { id: string; payload: Comparison; paper_ids: string[]; created_
 type SavedComparison = { id: string; created_at: string; paper_count: number; titles: string[] };
 type View = "matrix" | "evidence" | "gaps";
 
+function updateSynthesisUrl(params: URLSearchParams) {
+  const { pathname, search, hash } = window.location;
+  if (pathname !== "/synthesis") return;
+  const next = params.size ? `?${params}` : "";
+  if (search !== next) window.history.replaceState(null, "", `${pathname}${next}${hash}`);
+}
+
 export default function SynthesisPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -56,7 +63,8 @@ export default function SynthesisPage() {
   function setTab(next: "matrix" | "evidence" | "gaps") {
     const params = new URLSearchParams(window.location.search);
     if (next === "matrix") params.delete("view"); else params.set("view", next);
-    window.history.replaceState(null, "", params.size ? `/synthesis?${params}` : "/synthesis");
+    if (next !== "evidence") params.delete("claim");
+    updateSynthesisUrl(params);
   }
   const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
   useEffect(() => () => { handoff.current?.abort(); }, []);
@@ -73,6 +81,21 @@ export default function SynthesisPage() {
   const artifactId = sourceArtifact || workspace?.synthesis_id;
   const views = savedViews?.id === artifactId ? savedViews?.views : undefined;
   const activeView = views?.[tab];
+  const selectedClaim = tab === "evidence" && activeView
+    ? activeView.payload.controversies.findIndex((_, index) => searchParams.get("claim") === `${activeView.id}:${index}`)
+    : -1;
+  function selectClaim(index: number | null) {
+    const params = new URLSearchParams(window.location.search);
+    if (index === null) params.delete("claim");
+    else if (activeView) params.set("claim", `${activeView.id}:${index}`);
+    updateSynthesisUrl(params);
+  }
+  function pinEvidenceSource() {
+    if (sourceArtifact || !activeView) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("artifact", activeView.id);
+    updateSynthesisUrl(params);
+  }
   const artifact = activeView || (views && Object.values(views)[0]);
   const artifactError = viewError && viewError.id === artifactId && viewError.view === tab ? viewError.message : "";
   useEffect(() => {
@@ -205,8 +228,10 @@ export default function SynthesisPage() {
   useEffect(() => {
     if (artifact?.id && (focusNewResult.current || sourceArtifact)) {
       focusNewResult.current = false;
-      if (sourceArtifact) resultRef.current?.focus({ preventScroll: true });
-      resultRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+      if (selectedClaim < 0) {
+        if (sourceArtifact) resultRef.current?.focus({ preventScroll: true });
+        resultRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+      }
     }
   }, [artifact?.id, sourceArtifact]);
   const label = (id: string) => papers?.find((paper) => paper.id === id)?.title || data?.papers.find((paper) => paper.paper_id === id)?.title || "论文";
@@ -274,7 +299,9 @@ export default function SynthesisPage() {
         </div>
         <div className="compareTakeaways"><section><span>SHARED SIGNAL</span><h3>共同点</h3><p>{displayFinding(data.consensus[0] || "当前资料尚未形成可核对的共同结论。")}</p>{data.consensus.length > 0 && <details><summary>查看全部 {data.consensus.length} 条</summary><ul>{data.consensus.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section><section><span>WHERE THEY DIFFER</span><h3>关键差异</h3><p>{displayFinding(data.differences[0] || "当前资料尚未形成可核对的差异结论。")}</p>{data.differences.length > 0 && <details><summary>查看全部 {data.differences.length} 条</summary><ul>{data.differences.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section></div>
       </>}
-      {tab === "evidence" && activeView && <EvidenceMap claims={data.controversies} papers={data.papers} stale={data.stale_after_reparse} onReviseSelection={reviseSelection} />}
+      {tab === "evidence" && activeView && <EvidenceMap claims={data.controversies} papers={data.papers}
+        selectedIndex={selectedClaim} onSelect={selectClaim} onOpenSource={pinEvidenceSource}
+        stale={data.stale_after_reparse} onReviseSelection={reviseSelection} />}
       {tab === "gaps" && activeView && <GapPath key={artifactId} data={data} onUseQuestion={useQuestion} handoffPending={handoffPending}
         handoffError={handoffError?.artifactId === artifactId ? handoffError?.message : undefined} />}
     </section>}
