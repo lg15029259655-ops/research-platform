@@ -56,6 +56,15 @@ def background_jobs(browser, frontend, backend):
             route.fulfill(json=snapshot)
 
     context.route(re.compile(rf"^{re.escape(backend)}/api/jobs(?:/|$)"), jobs_fixture)
+
+    def comparison_view_fixture(route):
+        if status["comparison"] == "done":
+            route.fulfill(json=artifact)
+        else:
+            route.fallback()
+
+    matrix_url = f"{backend}/api/research/comparisons/{artifact['id']}?view=matrix"
+    context.route(matrix_url, comparison_view_fixture)
     page.get_by_role("button", name="更换对比论文").click()
     boxes = page.locator(".selectionList input")
     expect(boxes).to_have_count(3)
@@ -71,9 +80,13 @@ def background_jobs(browser, frontend, backend):
     expect(page.get_by_text("正在进行后台综合")).to_be_visible()
     assert submissions == ["compare"] and not cancellations
 
+    ticket_key = "medread-job-synthesis"
+    assert json.loads(page.evaluate("(key) => sessionStorage.getItem(key)", ticket_key))["id"] == "comparison"
     status["comparison"] = "done"
-    page.reload()
+    with page.expect_request(f"{backend}/api/jobs/comparison/events"):
+        page.reload()
     expect(page.locator(".compareTakeaways p").filter(has_text="已恢复后台综合结果")).to_be_visible()
+    page.wait_for_function("(key) => sessionStorage.getItem(key) === null", arg=ticket_key)
     assert submissions == ["compare"] and not cancellations
 
     page.locator(".researchNav nav").get_by_role("link", name="科研设计").click()
