@@ -324,7 +324,7 @@ body { background: var(--c-bg); color: var(--c-text); }
 .comparePaperTop b { color: var(--c-primary); font-size: 17px; }
 .comparePaperTop small { color: var(--c-text-soft); font-size:var(--fs-caption); letter-spacing: .1em; font-weight: 700; }
 .comparePaperTop i { margin-left: auto; color: var(--c-text-soft); font-style: normal; }
-.comparePaper>strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-text); font-size: var(--fs-label); }
+.comparePaper>strong { display: block; overflow-wrap: anywhere; color: var(--c-text); font-size: var(--fs-label); }
 .comparePaperExcerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 10px 0 16px; color: var(--c-text-mid); font-size: var(--fs-caption); line-height: 1.65; }
 .comparePaperAction { margin-top: auto; padding-top: 11px; border-top: 1px solid var(--c-line); color: var(--c-primary); font-size: var(--fs-caption); font-weight: 700; }
 .comparePaperAction i { float: right; font-style: normal; }

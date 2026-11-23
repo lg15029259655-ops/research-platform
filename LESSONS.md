@@ -844,3 +844,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: a mouse-wheel gesture over the backdrop moved the underlying design page from 738px to 1156px even after the drawer became a native modal.
 - Action: lock viewport scrolling while the native evidence dialog is modal, with a stable scrollbar gutter. Keep the drawer itself scrollable and release the viewport lock when the dialog closes.
 - Verification: Chrome and Edge on both appearances used real wheel events to verify a stationary backdrop, unchanged scroll position after Escape, normal background scrolling after close and scrolling inside the 320 × 256 drawer with its close button visible. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
+
+## L-20261123-61 — Keep comparison context and paper titles readable on narrow screens
+
+- Evidence: at 320 CSS pixels a demo paper title had about 600px of clipped text. After selecting the last comparison dimension, reloading reset it to the first, and matrix-to-source links did not pin the originating comparison.
+- Action: wrap paper titles, store the selected dimension against its comparison in the URL, and bring the selected dimension into the horizontal index's visible area. Pin the original comparison when opening a source link from the matrix.
+- Verification: Chrome and Edge on both appearances at 320px verified title wrapping without page overflow, remembered the last dimension and kept its control in the visible part of the index. They opened a source, cleared the active workspace comparison and went back to the original saved comparison and dimension. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.

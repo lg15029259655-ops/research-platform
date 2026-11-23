@@ -1669,6 +1669,41 @@ def resume_pdf_reading_position(browser, frontend, backend):
     context.close()
 
 
+def comparison_dimension_navigation(browser, frontend, backend):
+    with browser.new_context(viewport={"width": 320, "height": 675}) as context:
+        assert context.request.get(f"{backend}/api/session").ok
+        workspace_url = f"{backend}/api/workspace"
+        artifact_id = context.request.get(workspace_url).json()["synthesis_id"]
+        page = context.new_page()
+        page.goto(f"{frontend}/synthesis")
+        navigation = page.get_by_role("navigation", name="选择对比维度")
+        dimension = navigation.get_by_role("button").last
+        name = dimension.locator("span").inner_text()
+        dimension.click()
+        expect(page.locator(".compareFocusBody h3")).to_have_text(name)
+        page.reload()
+        expect(dimension).to_have_attribute("aria-current", "true")
+        navigation.scroll_into_view_if_needed()
+        expect(dimension).to_be_in_viewport(ratio=0.95)
+        expect(page.locator(".compareFocusBody h3")).to_have_text(name)
+        title = page.locator(".comparePaper > strong").first
+        assert title.evaluate("node => node.scrollWidth <= node.clientWidth + 1")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 2")
+
+        page.locator(".comparePaper:not([disabled])").first.click()
+        source = page.get_by_role("dialog").get_by_role("link", name="打开论文核对")
+        expected_paper = parse_qs(urlsplit(source.get_attribute("href")).query)["paper"]
+        source.click()
+        expect(page.get_by_role("main")).to_have_class(re.compile("reader"))
+        assert parse_qs(urlsplit(page.url).query)["paper"] == expected_paper
+        assert context.request.patch(workspace_url, data={"synthesis_id": None}).ok
+        page.go_back()
+        expect(page.locator(".compareFocusBody h3")).to_have_text(name)
+        navigation.scroll_into_view_if_needed()
+        expect(dimension).to_be_in_viewport(ratio=0.95)
+        assert parse_qs(urlsplit(page.url).query)["artifact"] == [artifact_id]
+
+
 def evidence_source_navigation(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
@@ -2090,6 +2125,7 @@ if __name__ == "__main__":
             discovery_relation_race(browser, args.frontend, args.backend)
             discovery_graph_navigation(browser, args.frontend, args.backend)
             synthesis_view_loading(browser, args.frontend, args.backend)
+            comparison_dimension_navigation(browser, args.frontend, args.backend)
             evidence_source_navigation(browser, args.frontend, args.backend)
             resume_pdf_reading_position(browser, args.frontend, args.backend)
         finally:

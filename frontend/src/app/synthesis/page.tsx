@@ -59,7 +59,7 @@ export default function SynthesisPage() {
   const [error, setError] = useState("");
   const [taskCanceled, setTaskCanceled] = useState(false);
   const [selectedCell, setSelectedCell] = useState<{cell: Cell; dimension: string} | null>(null);
-  const [activeDimension, setActiveDimension] = useState(0);
+  const dimensionsNav = useRef<HTMLElement>(null);
   const resultRef = useRef<HTMLElement>(null);
   const selectionRef = useRef<HTMLElement>(null);
   const focusNewResult = useRef(false);
@@ -109,6 +109,25 @@ export default function SynthesisPage() {
   const artifactId = sourceArtifact || workspace?.synthesis_id;
   const views = savedViews?.id === artifactId ? savedViews?.views : undefined;
   const activeView = views?.[tab];
+  const dimensionParam = searchParams.get("dimension");
+  const activeDimension = Math.max(0, activeView?.payload.dimensions?.findIndex(
+    (_, index) => dimensionParam === `${activeView.id}:${index}`,
+  ) ?? -1);
+  function selectDimension(index: number) {
+    if (!activeView) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("dimension", `${activeView.id}:${index}`);
+    updateSynthesisUrl(params);
+  }
+  useEffect(() => {
+    const nav = dimensionsNav.current;
+    const selected = nav?.querySelector('[aria-current="true"]');
+    if (!nav || !selected || nav.scrollWidth <= nav.clientWidth) return;
+    const bounds = nav.getBoundingClientRect();
+    const item = selected.getBoundingClientRect();
+    if (item.left < bounds.left) nav.scrollLeft += item.left - bounds.left;
+    else if (item.right > bounds.right) nav.scrollLeft += item.right - bounds.right;
+  }, [activeDimension, activeView]);
   const selectedClaim = tab === "evidence" && activeView
     ? activeView.payload.controversies.findIndex((_, index) => searchParams.get("claim") === `${activeView.id}:${index}`)
     : -1;
@@ -118,7 +137,7 @@ export default function SynthesisPage() {
     else if (activeView) params.set("claim", `${activeView.id}:${index}`);
     updateSynthesisUrl(params);
   }
-  function pinEvidenceSource() {
+  function pinResultSource() {
     if (sourceArtifact || !activeView) return;
     const params = new URLSearchParams(window.location.search);
     params.set("artifact", activeView.id);
@@ -128,7 +147,6 @@ export default function SynthesisPage() {
   const artifactError = viewError && viewError.id === artifactId && viewError.view === tab ? viewError.message : "";
   useEffect(() => {
     setSelectedCell(null);
-    setActiveDimension(0);
     setSavedViews((current) => current?.id === artifactId ? current : null);
   }, [artifactId]);
   useEffect(() => {
@@ -219,7 +237,7 @@ export default function SynthesisPage() {
       if (!new URLSearchParams(window.location.search).has("artifact")) {
         focusNewResult.current = true;
         setSavedViews({ id: result.id, views: { matrix: result, evidence: result, gaps: result } });
-        setActiveDimension(0); setShowSelection(false);
+        setShowSelection(false);
         window.history.replaceState(null, "", "/synthesis");
       }
       dismiss(job);
@@ -354,17 +372,17 @@ export default function SynthesisPage() {
       {viewFeedback}
       {tab === "matrix" && activeView && <>
         <div className="compareFocus">
-          <nav className="compareDimensions" aria-label="选择对比维度"><span>COMPARISON INDEX</span><strong>{data.dimensions.length} 个对比维度</strong>{data.dimensions.map((row, index) => <button key={`${row.name}-${index}`} type="button" className={activeDimension === index ? "active" : ""} aria-current={activeDimension === index ? "true" : undefined} onClick={() => setActiveDimension(index)}><b>{String(index + 1).padStart(2, "0")}</b><span>{row.name}</span><i>↗</i></button>)}</nav>
+          <nav ref={dimensionsNav} className="compareDimensions" aria-label="选择对比维度"><span>COMPARISON INDEX</span><strong>{data.dimensions.length} 个对比维度</strong>{data.dimensions.map((row, index) => <button key={`${row.name}-${index}`} type="button" className={activeDimension === index ? "active" : ""} aria-current={activeDimension === index ? "true" : undefined} onClick={() => selectDimension(index)}><b>{String(index + 1).padStart(2, "0")}</b><span>{row.name}</span><i>↗</i></button>)}</nav>
           <div className="compareFocusBody">{data.dimensions.length ? <><header><div><span>DIMENSION {String(Math.min(activeDimension + 1, data.dimensions.length)).padStart(2, "0")}</span><h3>{data.dimensions[Math.min(activeDimension, data.dimensions.length - 1)].name}</h3></div></header><div className="comparePaperGrid">{artifact?.paper_ids.map((id, index) => { const row = data.dimensions[Math.min(activeDimension, data.dimensions.length - 1)]; const cell = row.values.find((item) => item.paper_id === id); return <button key={id} className="comparePaper" type="button" disabled={!cell} onClick={() => cell && setSelectedCell({cell, dimension: row.name})}><span className="comparePaperTop"><b>{String(index + 1).padStart(2, "0")}</b><small>PAPER</small><i>↗</i></span><strong title={label(id)}>{label(id)}</strong><span className="comparePaperExcerpt">{cell?.value || "该维度尚未提取到证据"}</span><span className="comparePaperAction">{cell ? "查看完整分析与来源" : "暂无内容"} <i>↗</i></span></button>; })}</div></> : <p className="compareEmpty">本次综合没有生成可比较的维度，请更换论文后重新生成。</p>}</div>
         </div>
         <div className="compareTakeaways"><section><span>SHARED SIGNAL</span><h3>共同点</h3><p>{displayFinding(data.consensus[0] || "当前资料尚未形成可核对的共同结论。")}</p>{data.consensus.length > 0 && <details><summary>查看全部 {data.consensus.length} 条</summary><ul>{data.consensus.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section><section><span>WHERE THEY DIFFER</span><h3>关键差异</h3><p>{displayFinding(data.differences[0] || "当前资料尚未形成可核对的差异结论。")}</p>{data.differences.length > 0 && <details><summary>查看全部 {data.differences.length} 条</summary><ul>{data.differences.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section></div>
       </>}
       {tab === "evidence" && activeView && <EvidenceMap claims={data.controversies} papers={data.papers}
-        selectedIndex={selectedClaim} onSelect={selectClaim} onOpenSource={pinEvidenceSource}
+        selectedIndex={selectedClaim} onSelect={selectClaim} onOpenSource={pinResultSource}
         stale={data.stale_after_reparse} onReviseSelection={reviseSelection} />}
       {tab === "gaps" && activeView && <GapPath key={artifactId} data={data} onUseQuestion={useQuestion} handoffPending={handoffPending}
         handoffError={handoffError?.artifactId === artifactId ? handoffError?.message : undefined} />}
     </section>}
-    {selectedCell && <EvidenceDrawer title={selectedCell.dimension} eyebrow={label(selectedCell.cell.paper_id)} onClose={() => setSelectedCell(null)}><p>{selectedCell.cell.value || "未提取到证据"}</p><p className="miniNotice">此单元格是综合分析的概述，请核对原文；来源标记不能代替可点击的原文定位。</p>{selectedCell.cell.source && <dl><dt>来源标记</dt><dd>{selectedCell.cell.source}</dd></dl>}<Link className="drawerAction" href={`/read?paper=${selectedCell.cell.paper_id}`}>打开论文核对 ↗</Link></EvidenceDrawer>}
+    {selectedCell && <EvidenceDrawer title={selectedCell.dimension} eyebrow={label(selectedCell.cell.paper_id)} onClose={() => setSelectedCell(null)}><p>{selectedCell.cell.value || "未提取到证据"}</p><p className="miniNotice">此单元格是综合分析的概述，请核对原文；来源标记不能代替可点击的原文定位。</p>{selectedCell.cell.source && <dl><dt>来源标记</dt><dd>{selectedCell.cell.source}</dd></dl>}<Link className="drawerAction" href={`/read?paper=${selectedCell.cell.paper_id}`} onNavigate={pinResultSource}>打开论文核对 ↗</Link></EvidenceDrawer>}
   </PageMain>;
 }
