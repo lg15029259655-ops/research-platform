@@ -347,6 +347,7 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
     def drop_save_response(route):
         assert route.request.post_data_json["request_id"] == request_id
         assert route.fetch().ok
+        context.route(workspace_url, lambda check: check.fulfill(status=503, json={}), times=1)
         route.abort("connectionreset")
 
     context.route(save_url, drop_save_response, times=1)
@@ -354,11 +355,18 @@ def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
     with page.expect_response(lambda response: response.url == receipt_url and response.ok):
         save.focus()
         save.press("Enter")
+    saved_notice = page.get_by_role("status").filter(has_text="暂时无法确认工作区当前版本")
+    expect(saved_notice).to_be_visible()
+    receipt = context.request.get(receipt_url).json()
+    expect(page.get_by_role("link", name="查看已保存版本", exact=True)).to_have_attribute("href", f"/design?version={receipt['id']}")
+    retry = page.get_by_role("button", name="核对当前版本", exact=True)
+    retry.focus()
+    retry.press("Enter")
     expect(page.locator(".versionBar button.active")).to_contain_text("手动编辑")
+    expect(saved_notice).to_have_count(0)
     expect(stages.first).to_have_attribute("aria-expanded", "true")
     expect(stages.first).to_be_focused()
     expect(details.get_by_role("heading", name="Check saved input")).to_be_visible()
-    receipt = context.request.get(receipt_url).json()
     assert context.request.get(workspace_url).json()["design_version_id"] == receipt["id"]
     assert len(context.request.get(history_url).json()["items"]) == initial_count + 1
     assert sum(step["name"] == "Check saved input" for node in receipt["payload"]["nodes"]

@@ -31,6 +31,7 @@ type Design = { goal: string; change_summary: string; constraints: string[]; nod
 type Artifact<T> = { id: string; payload: T; created_at: string };
 type VersionEntry = { version_id: string; number: number; action: string; artifact_id: string };
 type DesignVersion = VersionEntry & { payload: Design; changes: { added: string[]; removed: string[]; modified: string[] } };
+type StageVersionNotice = { version: DesignVersion; stage: string | null; inactive: boolean };
 type SavedDesign = { id: string; created_at: string; number: number; action: string; goal: string };
 const actions = [["causality", "加强因果"], ["cost", "降低成本"], ["simplify", "简化方案"], ["mechanism", "增加机制"], ["application", "增强应用意义"]];
 const actionLabels: Record<string, string> = {generate: "生成方案", manual: "手动编辑", node: "局部修改", causality: "加强因果",
@@ -207,6 +208,8 @@ function DesignWorkspace() {
   );
   const nodeInstruction = savedNodeInstruction ?? "";
   const [savedStageFocus, setSavedStageFocus] = useState<{ artifactId: string; stage: string } | null>(null);
+  const [stageVersionNotice, setStageVersionNotice] = useState<StageVersionNotice | null>(null);
+  const [checkingStageVersion, setCheckingStageVersion] = useState(false);
   const [selectedChange, setSelectedChange] = useState<{label: string; kind: string} | null>(null);
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [noveltyError, setNoveltyError] = useState("");
@@ -224,6 +227,11 @@ function DesignWorkspace() {
   const tab = designView(searchParams.get("view"))
     ?? (shownDesign && !shownNovelty && !restoringNovelty ? "canvas" : "novelty");
   const workspaceTabs = tabGroup(["novelty", "canvas"] as const, tab, setTab);
+  useEffect(() => {
+    if (!stageVersionNotice || stageVersionNotice.version.artifact_id !== currentDesignId) return;
+    setLoadedVersion(stageVersionNotice.version);
+    setStageVersionNotice(null);
+  }, [currentDesignId, stageVersionNotice]);
   useEffect(() => {
     setNoveltyError("");
     if (!currentNoveltyId) { setNovelty(null); setNoveltyReady(true); return; }
@@ -415,22 +423,32 @@ function DesignWorkspace() {
     if (!draftRequestId) pendingStageSave.current = { input, requestId };
     const result = await saveManualDesign<{ version: DesignVersion }>(activeVersion.artifact_id, draft, requestId);
     if (pendingStageSave.current?.requestId === requestId) pendingStageSave.current = null;
-    const current = await refresh(true).catch(() => null);
-    if (!active.current) return;
-    if (!current) {
-      setError("新版本已保存，暂时无法刷新当前方案。");
-      return;
-    }
-    if (current?.design_version_id !== result.version.artifact_id) return;
+    const { version } = result;
     const openStage = readTabDraft<string>(designStageKey(baseArtifact));
-    if (openStage && result.version.payload.nodes.some((node) => node.id === openStage)) {
-      writeTabDraft(designStageKey(result.version.artifact_id), openStage);
-      const viewingCanvas = new URLSearchParams(window.location.search).get("view") !== "novelty";
-      if (viewingCanvas && openStage === id && (document.activeElement === submitter || document.activeElement === document.body)) {
-        setSavedStageFocus({ artifactId: result.version.artifact_id, stage: id });
-      }
+    if (openStage && version.payload.nodes.some((node) => node.id === openStage)) {
+      writeTabDraft(designStageKey(version.artifact_id), openStage);
     }
-    setLoadedVersion(result.version);
+    if (active.current) await checkStageVersion(version, openStage === id ? id : null, submitter);
+  }
+
+  async function checkStageVersion(version: DesignVersion, stage: string | null, submitter = document.activeElement) {
+    setCheckingStageVersion(true);
+    try {
+      const current = await refresh(true).catch(() => null);
+      if (!active.current) return;
+      if (current?.design_version_id !== version.artifact_id) {
+        setStageVersionNotice({ version, stage, inactive: !!current });
+        return;
+      }
+      setStageVersionNotice(null);
+      const viewingCanvas = new URLSearchParams(window.location.search).get("view") !== "novelty";
+      if (viewingCanvas && stage && (document.activeElement === submitter || document.activeElement === document.body)) {
+        setSavedStageFocus({ artifactId: version.artifact_id, stage });
+      }
+      setLoadedVersion(version);
+    } finally {
+      if (active.current) setCheckingStageVersion(false);
+    }
   }
   return <PageMain route="/design" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">04 / DESIGN</div><h1>让研究想法成为可检验的方案。</h1><p>结合文献线索和研究条件，设计可展开的实验路线，并逐步检查对照、指标与可能结果。</p></div>
@@ -447,6 +465,18 @@ function DesignWorkspace() {
     {tab === "canvas" && shownDesign && versionListError && <p className="researchError" role="alert">暂时无法读取版本列表。 <button className="quietButton" onClick={() => setVersionListAttempt((count) => count + 1)}>重试版本列表</button></p>}
     {!!workspace && !idea.trim() && !shownNovelty && !shownDesign && !busy && <section className="startGuide" aria-label="科研设计使用引导"><div className="startGuideIntro"><span>START HERE</span><h2>把一个想法，推进为可核验的研究路径。</h2><p>先填入自己的研究问题。你可以检索相似研究，也可以直接生成设计草稿；两项结果会清楚标注证据范围。</p><div className="sampleIdeas"><b>试一个示例</b>{["如何降低肿瘤单细胞测序的样本与计算成本？", "如何验证候选基因对肿瘤细胞迁移的影响？", "如何研究代谢通路与肿瘤免疫微环境的关系？"].map((sample) => <button key={sample} disabled={running} onClick={() => { setIdea(sample); document.getElementById("idea")?.focus(); }}>{sample} ↗</button>)}</div></div><div className="startGuideSteps"><div><b>01</b><strong>提出问题</strong><small>明确对象、变量与目标</small></div><div><b>02</b><strong>核对相似研究</strong><small>基于摘要做定性扫描</small></div><div><b>03</b><strong>搭建设计草稿</strong><small>检查对照、读数与假设</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
+    {stageVersionNotice && currentDesignId !== stageVersionNotice.version.artifact_id && <div className="workspaceLoading">
+      <p role="status">{stageVersionNotice.inactive
+        ? "修改已保存，当前工作区正在使用另一个版本。"
+        : "修改已保存，暂时无法确认工作区当前版本。"}</p>
+      <div className="actionRow">
+        {!stageVersionNotice.inactive && <button type="button" className="quietButton" disabled={checkingStageVersion}
+          onClick={() => void checkStageVersion(stageVersionNotice.version, stageVersionNotice.stage)}>
+          {checkingStageVersion ? "正在核对…" : "核对当前版本"}
+        </button>}
+        <Link className="quietButton" href={`/design?version=${encodeURIComponent(stageVersionNotice.version.artifact_id)}`}>查看已保存版本</Link>
+      </div>
+    </div>}
     {resultPending && <JobResultNotice failed={resultReadFailed} onRetry={retryResult} onDismiss={() => dismiss(job)} />}
     {taskCanceled && <p className="workspaceLoading" role="status">任务已取消。</p>}
     {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续。 */}
