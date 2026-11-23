@@ -78,6 +78,54 @@ def reopen_saved_job_result(browser, frontend, backend):
         context.close()
 
 
+def novelty_results_before_analysis(browser, frontend, backend):
+    query = "Compare predictive calibration methods"
+    preview = {"query": query, "papers": [
+        {"openalex_id": "W123", "title": "Calibration study", "year": 2024}
+    ]}
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    submissions = []
+    model_failed = False
+    running = {"id": "novelty-speed-fixture", "kind": "novelty", "status": "running",
+               "stage": "analyzing", "stage_label": "解读相似度与新角度"}
+    job_url = f"{backend}/api/jobs"
+
+    def job_fixture(route):
+        if route.request.method == "POST":
+            submissions.append(route.request.post_data_json["params"]["query"])
+            route.fulfill(status=202, json=running)
+            return
+        snapshot = {**running, "preview": preview}
+        if model_failed:
+            snapshot.update(status="failed", error={"code": "ai_failed", "message": "模型暂时不可用"})
+        if route.request.url.endswith("/events"):
+            route.fulfill(content_type="text/event-stream",
+                          body="event: snapshot\ndata: " + json.dumps(snapshot) + "\n\n")
+        else:
+            route.fulfill(json=snapshot)
+
+    try:
+        context.route(re.compile(rf"^{re.escape(job_url)}(?:/|$)"), job_fixture)
+        page = context.new_page()
+        page.goto(f"{frontend}/design")
+        idea = page.get_by_role("textbox", name="我的研究想法")
+        idea.fill(query)
+        page.get_by_role("button", name="检索相似研究").click()
+        work = page.get_by_role("link", name="Calibration study")
+        expect(work).to_have_attribute("href", "https://openalex.org/W123")
+        expect(page.get_by_text("正在解读摘要，下面是检索结果。")).to_be_visible()
+        page.reload()
+        expect(work).to_be_visible()
+        assert submissions == [query]
+        model_failed = True
+        expect(page.get_by_text("模型暂时不可用")).to_be_visible()
+        expect(work).to_be_visible()
+        idea.fill("A different research idea")
+        expect(work).to_have_count(0)
+    finally:
+        context.close()
+
+
 def background_jobs(browser, frontend, backend):
     context = browser.new_context()
     page = context.new_page()
@@ -2153,6 +2201,7 @@ if __name__ == "__main__":
             keyboard_navigation(browser, args.frontend, viewport={"width": 390, "height": 844})
             design_view_navigation(browser, args.frontend, args.backend)
             history_list_navigation(browser, args.frontend, args.backend)
+            novelty_results_before_analysis(browser, args.frontend, args.backend)
             background_jobs(browser, args.frontend, args.backend)
             reopen_saved_job_result(browser, args.frontend, args.backend)
             reload_before_job_confirmation(browser, args.frontend, args.backend)

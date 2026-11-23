@@ -32,6 +32,7 @@ def snapshot(job: AiJob) -> dict:
         "stage": job.stage,
         "stage_label": job.stage_label,
         "progress": json.loads(job.progress_json) if job.progress_json else None,
+        "preview": json.loads(job.preview_json) if job.preview_json else None,
         "result": json.loads(job.result_json) if job.result_json else None,
         "error": {"code": job.error_code, "message": job.error_message} if job.error_code else None,
         "created_at": _iso(job.created_at),
@@ -163,6 +164,15 @@ def set_progress(job_id: str, done: int, total: int) -> None:
         db.commit()
 
 
+def set_preview(job_id: str, preview: dict) -> None:
+    with SessionLocal() as db:
+        job = db.get(AiJob, job_id)
+        if job is None or job.status != "running":
+            return
+        job.preview_json = json.dumps(preview, ensure_ascii=False)
+        db.commit()
+
+
 def finish(job_id: str, result: dict) -> None:
     with SessionLocal() as db:
         job = db.get(AiJob, job_id)
@@ -172,6 +182,7 @@ def finish(job_id: str, result: dict) -> None:
         job.stage = "done"
         job.stage_label = "已完成"
         job.result_json = json.dumps(result, ensure_ascii=False)
+        job.preview_json = None
         job.finished_at = datetime.now(timezone.utc)
         db.commit()
 

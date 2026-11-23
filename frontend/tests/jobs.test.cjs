@@ -52,6 +52,22 @@ test("stops polling when the task no longer exists", async () => {
   assert.equal(h.FakeEventSource.current.closed, true);
 });
 
+test("shows streamed or recovered previews before resolving the final job", async () => {
+  const preview = { query: "calibration", papers: [{ openalex_id: "W123", title: "Calibration study" }] };
+  const seen = [];
+  const h = harness(async () => ({ id: "job", kind: "novelty", status: "running", preview }));
+  const final = h.watchJob("job", { onPreview: value => seen.push(value.papers[0].title) });
+  await Promise.resolve();
+  h.FakeEventSource.current.emit("snapshot", { id: "job", kind: "novelty", status: "running" });
+  h.FakeEventSource.current.emit("preview", preview);
+  assert.deepEqual(seen, ["Calibration study"]);
+  h.timers.find(timer => timer.delay === 5000).fn();
+  await new Promise(setImmediate);
+  assert.deepEqual(seen, ["Calibration study", "Calibration study"]);
+  h.FakeEventSource.current.emit("result", { value: "completed analysis" });
+  assert.equal((await final).result.value, "completed analysis");
+});
+
 test("preserves cancellation received over SSE", async () => {
   const h = harness(async () => { throw new Error("unexpected poll"); });
   const result = h.watchJob("job");

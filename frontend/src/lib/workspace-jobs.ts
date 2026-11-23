@@ -12,7 +12,7 @@ type Ticket = JobIntent & { id: string };
 type Submission = JobIntent & { requestId: string };
 type Job = {
   kind: Kind; startedAt: number; stage: string; progress: JobProgress | null;
-  status: "running" | "done" | "failed" | "canceled"; result?: unknown; error?: string; draft?: Draft;
+  status: "running" | "done" | "failed" | "canceled"; result?: unknown; preview?: unknown; error?: string; draft?: Draft;
   reconnecting?: boolean; cancelPending?: boolean; cancelError?: string;
 };
 type ActiveJob = { record: Submission | Ticket };
@@ -102,11 +102,12 @@ function createJobStore(scope: Scope) {
         snapshot = await watchJob(ticket.id, {
           onStage: (_stage, label) => update({ stage: label }),
           onProgress: (progress) => update({ progress }),
+          onPreview: (preview) => update({ preview }),
           onConnection: (connected) => update({ reconnecting: !connected }),
         });
       }
       if (snapshot.status === "done" || snapshot.status === "failed" || snapshot.status === "canceled") {
-        update({ status: snapshot.status, result: snapshot.result, error: snapshot.error?.message });
+        update({ status: snapshot.status, result: snapshot.result, preview: snapshot.preview ?? current?.preview, error: snapshot.error?.message });
       } else {
         update({ status: "failed", error: "暂时无法确认任务结果，请重试" });
       }

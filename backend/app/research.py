@@ -615,21 +615,28 @@ async def execute_novelty(owner: str, query: str, *, emit=None, timeout: float |
             await emit("stage", {"stage": "searching", "label": "检索相似研究"})
         found = await semantic_discovery(query, 1)
         works = found["items"]
-        if emit is not None:
-            await emit("stage", {"stage": "analyzing", "label": "解读相似度与新角度"})
-        try:
-            payload = await _run_task("novelty_analysis", {
-                "query": query,
-                "evidence_scope": "OpenAlex 检索元数据与可用摘要，未读取全文",
-                "papers": [{"openalex_id": item["openalex_id"], "title": item["title"],
-                            "abstract": item["abstract"][:1200]} for item in works[:8]],
-            }, emit, timeout=timeout)
-        except (TimeoutError, StructuredAIError):
-            # 异步任务路径不静默降级：宁可报错重试，也不给"看起来能用其实没解读"的结果。
-            if not fallback:
-                raise
-            logger.warning("Novelty interpretation timed out or failed; returning search-only result")
+        if emit is not None and works:
+            await emit("preview", {"query": query, "papers": [
+                {"openalex_id": item["openalex_id"], "title": item["title"], "year": item["year"]}
+                for item in works[:8]
+            ]})
+        if not works:
             payload = search_only_novelty(query, works)
+        else:
+            if emit is not None:
+                await emit("stage", {"stage": "analyzing", "label": "解读相似度与新角度"})
+            try:
+                payload = await _run_task("novelty_analysis", {
+                    "query": query,
+                    "evidence_scope": "OpenAlex 检索元数据与可用摘要，未读取全文",
+                    "papers": [{"openalex_id": item["openalex_id"], "title": item["title"],
+                                "abstract": item["abstract"][:1200]} for item in works[:8]],
+                }, emit, timeout=timeout)
+            except (TimeoutError, StructuredAIError):
+                if not fallback:
+                    raise
+                logger.warning("Novelty interpretation timed out or failed; returning search-only result")
+                payload = search_only_novelty(query, works)
     except DiscoveryRateLimited as exc:
         logger.warning("Novelty search rate limited")
         raise HTTPException(429, str(exc)) from exc

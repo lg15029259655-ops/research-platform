@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, nullcontext
 from typing import Any
 
 import httpx
@@ -21,6 +23,18 @@ class AIServiceResponseError(RuntimeError):
 # read 只用来判断"真的一点数据都没有"，因此比原来的统一 120 s 更精确：
 # 连接 20 s、写入 30 s、池 30 s，避免把长思考误判成网络故障。
 REQUEST_TIMEOUT = httpx.Timeout(connect=20, read=90, write=30, pool=30)
+_clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+
+
+@asynccontextmanager
+async def connection_pool():
+    loop = asyncio.get_running_loop()
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        _clients[loop] = client
+        try:
+            yield
+        finally:
+            _clients.pop(loop)
 
 
 def model_config(vision: bool = False) -> tuple[str, str, str]:
@@ -74,7 +88,8 @@ async def stream_events(
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     body = request_body(model, messages, fast_structured=fast_structured,
                         thinking_budget=thinking_budget)
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    pooled = _clients.get(asyncio.get_running_loop())
+    async with (nullcontext(pooled) if pooled is not None else httpx.AsyncClient(timeout=REQUEST_TIMEOUT)) as client:
         async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=body) as response:
             if response.status_code >= 400:
                 raise AIServiceResponseError(response.status_code)

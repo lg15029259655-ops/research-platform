@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from threading import Event
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -26,6 +27,66 @@ def test_novelty_job_preserves_search_error(monkeypatch):
     with pytest.raises(worker.JobFailed, match="文献检索暂时不可用") as error:
         asyncio.run(handlers._run_novelty(ctx))
     assert error.value.code == "search_failed"
+
+
+def test_novelty_job_exposes_search_hits_while_model_is_running(monkeypatch):
+    model_started = Event()
+    release_model = Event()
+    query = "Compare predictive calibration methods"
+    hit = {"openalex_id": "W123", "title": "Calibration study", "abstract": "Methods", "year": 2024}
+
+    async def search(*_args):
+        return {"items": [hit], "cached": False, "fetched_at": "2026-01-01T00:00:00+00:00"}
+
+    async def model(*_args, **_kwargs):
+        model_started.set()
+        assert await asyncio.to_thread(release_model.wait, 5)
+        return {"similar_papers": [{"openalex_id": "W123"}]}
+
+    monkeypatch.setattr("app.research.semantic_discovery", search)
+    monkeypatch.setattr("app.research._run_task", model)
+    with TestClient(app) as client:
+        try:
+            client.get("/api/session")
+            response = client.post("/api/jobs", json={"kind": "novelty", "params": {"query": query}})
+            assert response.status_code == 202
+            job_id = response.json()["id"]
+            assert model_started.wait(3)
+            snapshot = client.get(f"/api/jobs/{job_id}").json()
+            assert snapshot["status"] == "running"
+            assert snapshot["result"] is None
+            assert snapshot["preview"] == {"query": query, "papers": [
+                {"openalex_id": "W123", "title": "Calibration study", "year": 2024}
+            ]}
+            assert not client.get("/api/workspace").json()["novelty_id"]
+            release_model.set()
+            result = _wait(client, job_id)
+            assert result["status"] == "done"
+            assert result["preview"] is None
+            assert result["result"]["payload"]["similar_papers"][0]["abstract"] == "Methods"
+        finally:
+            release_model.set()
+            _cleanup()
+
+
+def test_novelty_job_with_no_search_hits_skips_the_model(monkeypatch):
+    async def search(*_args):
+        return {"items": [], "cached": False, "fetched_at": "2026-01-01T00:00:00+00:00"}
+
+    async def model(*_args, **_kwargs):
+        raise AssertionError("Model should not interpret an empty result")
+
+    monkeypatch.setattr("app.research.semantic_discovery", search)
+    monkeypatch.setattr("app.research._run_task", model)
+    with TestClient(app) as client:
+        try:
+            job = client.post("/api/jobs", json={"kind": "novelty", "params": {"query": "No results expected"}}).json()
+            done = _wait(client, job["id"])
+            assert done["status"] == "done"
+            assert done["result"]["payload"]["search_only"] is True
+            assert done["result"]["payload"]["similar_papers"] == []
+        finally:
+            _cleanup()
 
 
 def test_terminal_event_survives_full_subscriber_queue():

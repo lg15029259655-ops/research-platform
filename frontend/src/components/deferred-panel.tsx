@@ -35,7 +35,7 @@ export function deferredPanel<Props extends object>(
     return request;
   }
 
-  return function DeferredPanel(props: Props) {
+  function DeferredPanel(props: Props) {
     const [Panel, setPanel] = useState(() => loaded);
     const [attempt, setAttempt] = useState(0);
     const [failed, setFailed] = useState(false);
@@ -63,5 +63,9 @@ export function deferredPanel<Props extends object>(
     if (failed) return fallback;
     if (!Panel) return <p className={loadingClassName} role="status">正在打开{label}…</p>;
     return <PanelBoundary key={attempt} fallback={fallback}><Panel {...props} /></PanelBoundary>;
-  };
+  }
+
+  return Object.assign(DeferredPanel, {
+    preload: () => { void loadPanel().catch(() => {}); },
+  });
 }

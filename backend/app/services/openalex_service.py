@@ -3,6 +3,7 @@
 import asyncio
 import re
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 
@@ -12,6 +13,23 @@ API = "https://api.openalex.org"
 WORK_ID = re.compile(r"^W\d+$")
 DISCOVERY_PAGE_SIZE = 10
 SEMANTIC_RESULT_LIMIT = 50
+WORK_FIELDS = (
+    "id,title,display_name,authorships,publication_year,primary_topic,doi,"
+    "abstract_inverted_index,cited_by_count,best_oa_location,primary_location,"
+    "locations,open_access,related_works,referenced_works,topics"
+)
+_clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+
+
+@asynccontextmanager
+async def connection_pool():
+    loop = asyncio.get_running_loop()
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=5), follow_redirects=True) as client:
+        _clients[loop] = client
+        try:
+            yield
+        finally:
+            _clients.pop(loop)
 
 
 class DiscoveryError(Exception):
@@ -65,14 +83,22 @@ def normalize_work(raw: dict[str, Any]) -> dict[str, Any]:
 async def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     key = os.getenv("OPENALEX_API_KEY", "").strip().strip('"').strip("'")
     headers = {"Authorization": f"Bearer {key}"} if key else None
+    pooled = _clients.get(asyncio.get_running_loop())
+    if pooled is not None:
+        return await _get_with_retry(pooled, path, params, headers)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=5), follow_redirects=True) as client:
+        return await _get_with_retry(client, path, params, headers)
+
+
+async def _get_with_retry(client: httpx.AsyncClient, path: str,
+                          params: dict[str, Any] | None, headers: dict[str, str] | None) -> dict[str, Any]:
     for attempt in range(2):
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=5), follow_redirects=True) as client:
-                response = await client.get(API + path, params=params, headers=headers)
-                if response.status_code == 429:
-                    raise DiscoveryRateLimited("OpenAlex 检索额度暂时耗尽，请稍后重试")
-                response.raise_for_status()
-                return response.json()
+            response = await client.get(API + path, params={"select": WORK_FIELDS, **(params or {})}, headers=headers)
+            if response.status_code == 429:
+                raise DiscoveryRateLimited("OpenAlex 检索额度暂时耗尽，请稍后重试")
+            response.raise_for_status()
+            return response.json()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code < 500:
                 raise DiscoveryError("OpenAlex 拒绝了检索请求，请检查检索词或服务配置") from exc

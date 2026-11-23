@@ -13,6 +13,8 @@ from starlette.concurrency import run_in_threadpool
 from .db import Base, SessionLocal, engine
 from . import models  # noqa: F401 - register tables
 from .services.bailian_service import AIConfigurationError, stream_completion, text_config
+from .services.bailian_service import connection_pool as model_pool
+from .services.openalex_service import connection_pool as discovery_pool
 from .papers import router as papers_router
 from .papers import pending_parse_tickets, recover_pending_parses
 from .research import route_research, router as research_router
@@ -49,6 +51,9 @@ async def lifespan(_app: FastAPI):
             connection.exec_driver_sql(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_messages_paper_turn_role ON messages (paper_id, turn_id, role)"
             )
+        job_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(ai_jobs)")}
+        if job_columns and "preview_json" not in job_columns:
+            connection.exec_driver_sql("ALTER TABLE ai_jobs ADD COLUMN preview_json TEXT")
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         for paper in db.query(models.Paper).filter(models.Paper.domain.is_(None)).all():
@@ -60,14 +65,15 @@ async def lifespan(_app: FastAPI):
     stopping = asyncio.Event()
     tickets = await run_in_threadpool(pending_parse_tickets)
     register_all()
-    start_worker()
-    recovery = asyncio.create_task(recover_pending_parses(tickets, stopping))
-    try:
-        yield
-    finally:
-        stopping.set()
-        await recovery
-        await stop_worker()
+    async with discovery_pool(), model_pool():
+        start_worker()
+        recovery = asyncio.create_task(recover_pending_parses(tickets, stopping))
+        try:
+            yield
+        finally:
+            stopping.set()
+            await recovery
+            await stop_worker()
 
 
 app = FastAPI(title="科研工作台 API", lifespan=lifespan)

@@ -20,6 +20,7 @@ export type JobSnapshot = {
   stage?: string | null;
   stage_label?: string | null;
   progress?: JobProgress | null;
+  preview?: unknown;
   result?: unknown | null;
   error?: { code: string; message: string } | null;
 };
@@ -28,6 +29,7 @@ type Handlers = {
   onSnapshot?: (snapshot: JobSnapshot) => void;
   onStage?: (stage: string, label: string) => void;
   onProgress?: (progress: JobProgress) => void;
+  onPreview?: (preview: unknown) => void;
   onConnection?: (connected: boolean) => void;
 };
 
@@ -135,6 +137,7 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
       handlers.onSnapshot?.(snapshot);
       if (snapshot.stage || snapshot.stage_label) handlers.onStage?.(snapshot.stage ?? "", snapshot.stage_label ?? "");
       if (snapshot.progress) handlers.onProgress?.(snapshot.progress);
+      if (snapshot.preview != null) handlers.onPreview?.(snapshot.preview);
       if (!TERMINAL.has(snapshot.status)) return;
       if (snapshot.status === "done" && snapshot.result == null) return;
       settle(snapshot);
@@ -188,6 +191,11 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
         if (settled) return;
         const data = readEventData(event) as { done?: number; total?: number } | null;
         if (data) { ++events; reportConnection(true); handlers.onProgress?.({ done: data.done ?? 0, total: data.total ?? 0 }); }
+      });
+      source.addEventListener("preview", (event) => {
+        if (settled) return;
+        const preview = readEventData(event);
+        if (preview != null) { ++events; reportConnection(true); handlers.onPreview?.(preview); }
       });
       source.addEventListener("result", (event) => {
         const artifact = readEventData(event);

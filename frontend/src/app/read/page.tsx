@@ -375,6 +375,10 @@ export default function ReadPage() {
   }, [selectedId, openAttempt, loadPaper]);
 
   useEffect(() => {
+    if (selectedId && showPdf) PdfPane.preload();
+  }, [selectedId, showPdf]);
+
+  useEffect(() => {
     if (paper?.file_available) setPage(startingPdfPage(paper, requestedPage, sourceFile));
   }, [paper?.id, paper?.file_available, paper?.file_version, requestedPage, sourceFile, validLinkPage]);
 

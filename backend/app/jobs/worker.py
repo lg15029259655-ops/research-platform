@@ -61,6 +61,8 @@ class JobContext:
             store.set_stage(self.job_id, str(data.get("stage", "")), str(data.get("label", "")))
         elif event == "progress":
             store.set_progress(self.job_id, int(data.get("done", 0)), int(data.get("total", 0)))
+        elif event == "preview":
+            store.set_preview(self.job_id, data)
         events.publish(self.job_id, event, data)
 
     def check_cancel(self) -> None:

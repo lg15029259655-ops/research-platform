@@ -167,6 +167,7 @@ class AiJob(Base):
     stage: Mapped[str | None] = mapped_column(String(40), nullable=True)
     stage_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
     progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preview_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
