@@ -16,6 +16,7 @@ export type WorkspaceChange = Partial<Pick<Workspace, "query" | "domain" | "stud
 
 let cached: Workspace | null = null;
 let pending: Promise<Workspace> | null = null;
+let writes: Promise<unknown> = Promise.resolve();
 let revision = 0;
 const subscribers = new Set<(workspace: Workspace) => void>();
 
@@ -35,24 +36,51 @@ function loadWorkspace(): Promise<Workspace> {
   return request;
 }
 
-export async function updateWorkspace(change: WorkspaceChange): Promise<Workspace> {
-  const result = await apiJson<Workspace>("/api/workspace", {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change),
+export function updateWorkspace(change: WorkspaceChange | ((workspace: Workspace) => WorkspaceChange | null)): Promise<Workspace> {
+  const request = writes.then(async () => {
+    let patch = change;
+    if (typeof change === "function") {
+      const current = cached ?? await loadWorkspace();
+      const next = change(current);
+      if (!next) return current;
+      patch = next;
+    }
+    const result = await apiJson<Workspace>("/api/workspace", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+    });
+    revision += 1;
+    publish(result);
+    return result;
   });
-  revision += 1;
-  publish(result);
-  return result;
+  writes = request.catch(() => {});
+  return request;
+}
+
+export function addPaperToSynthesis(id: string) {
+  return updateWorkspace(({ selected_paper_ids: ids }) => {
+    if (ids.includes(id)) return null;
+    if (ids.length >= 5) throw new Error("待综合列表最多 5 篇，请先移除一篇");
+    return { selected_paper_ids: [...ids, id] };
+  });
 }
 
 export function useWorkspace() {
   const [workspace, setWorkspace] = useState<Workspace | null>(cached);
+  const [workspaceError, setWorkspaceError] = useState("");
   const refresh = useCallback(async () => {
-    return loadWorkspace();
+    setWorkspaceError("");
+    try {
+      return await loadWorkspace();
+    } catch (error) {
+      setWorkspaceError("研究工作区暂时无法读取");
+      throw error;
+    }
   }, []);
   useEffect(() => {
     subscribers.add(setWorkspace);
+    if (cached) setWorkspace(cached);
     refresh().catch(() => {});
     return () => { subscribers.delete(setWorkspace); };
   }, [refresh]);
-  return { workspace, refresh };
+  return { workspace, refresh, workspaceError };
 }

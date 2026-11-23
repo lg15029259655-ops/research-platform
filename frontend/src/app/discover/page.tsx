@@ -2,16 +2,13 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ChangeEvent, useEffect, useRef, useState } from "react";
-import ResearchNav from "@/components/ResearchNav";
 import StepLoading from "@/components/StepLoading";
 import type { LineageResponse } from "@/components/lineage/lineageLayout";
-import { API, apiJson, postJson } from "@/lib/api";
-import { updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { API, ApiError, apiJson, postJson } from "@/lib/api";
+import { addPaperToSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
-import "../research.css";
-import "../studio.css";
 
 const CitationGraph = dynamic(() => import("@/components/CitationGraph"), { ssr: false });
 const LineageGraph = dynamic(() => import("@/components/lineage/LineageGraph"), { ssr: false });
@@ -23,11 +20,15 @@ type Search = { items: Work[]; count: number; page: number; mode: "semantic" | "
 type Graph = { nodes: Work[]; links: { source: string; target: string; relation: string }[]; cached?: boolean; fetched_at?: string };
 
 const domains: Record<string, string> = { biomed: "生物科学", review: "综述", general: "领域待确认" };
+const emptySearch: Search = { items: [], count: 0, page: 0, mode: "semantic" };
+let lastSearch: { query: string; result: Search } | null = null;
 
 export default function DiscoverPage() {
   const router = useRouter();
+  const urlQuery = useSearchParams().get("q")?.trim() || "";
   const [query, setQuery] = useState("");
-  const [result, setResult] = useState<Search>({ items: [], count: 0, page: 0, mode: "semantic" });
+  const [result, setResult] = useState<Search>(emptySearch);
+  const [restoring, setRestoring] = useState(true);
   const [mode, setMode] = useState<"semantic" | "keyword">("semantic");
   const [saved, setSaved] = useState<Paper[]>([]);
   const [tab, setTab] = useState<"list" | "graph">("list");
@@ -45,41 +46,62 @@ export default function DiscoverPage() {
   const [pendingWorkId, setPendingWorkId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const searchVersion = useRef(0);
+  const searchRequest = useRef<AbortController | null>(null);
   const graphVersion = useRef(0);
   const lineageVersion = useRef(0);
   const lineageTried = useRef<string | null>(null);
   const graphTried = useRef<string | null>(null);
-  const qHandled = useRef(false);
+  const initializedEntry = useRef<string | null>(null);
+  const active = useRef(false);
   const uploadRefs = useRef<Record<string, HTMLInputElement | null>>({});
-  const { workspace } = useWorkspace();
+  const { workspace, workspaceError, refresh } = useWorkspace();
   const resultTabs = tabGroup(["list", "graph"] as const, tab, setTab);
   // 后端语义检索最多放行 5 页（50 篇），第 6 页直接 422。与其让「加载更多」点出一个错误横幅，
   // 不如在到顶时把按钮改成明确的下一步提示。
   const semanticExhausted = mode === "semantic" && result.items.length >= 50;
-  useEffect(() => { apiJson<Paper[]>("/api/papers").then(setSaved).catch(() => {}); }, []);
   useEffect(() => {
-    if (!workspace?.query || query) return;
-    const previousQuery = workspace.query;
-    const version = searchVersion.current;
-    // 缓存键含 mode：还原时必须用上次实际检索用的模式，否则 cache_key 对不上、回来以后一片空白。
-    // 工作区里没存 mode（后端 Workspace 无此字段），所以记在 localStorage——纯前端偏好，不动接口。
-    const remembered = window.localStorage.getItem("medread-search-mode");
-    const restoredMode: "semantic" | "keyword" = remembered === "keyword" ? "keyword" : "semantic";
-    setQuery(previousQuery);
-    setMode(restoredMode);
-    apiJson<Search>(`/api/research/discover/cached?q=${encodeURIComponent(previousQuery)}&page=1&mode=${restoredMode}`)
-      .then((data) => { if (searchVersion.current === version) setResult(data); })
-      .catch(() => {});
-  }, [workspace?.query]);
-  // 首页 Hero 搜索框跳转 /discover?q=… 的落地侧：仅首次挂载读一次，用 ref 防重入（design-spec §3.1）。
+    active.current = true;
+    apiJson<Paper[]>("/api/papers").then((items) => { if (active.current) setSaved(items); }).catch(() => {});
+    return () => {
+      active.current = false;
+      initializedEntry.current = null;
+      ++searchVersion.current;
+      searchRequest.current?.abort();
+    };
+  }, []);
   useEffect(() => {
-    if (qHandled.current) return;
-    const q = new URLSearchParams(window.location.search).get("q");
-    if (!q || query) return;
-    qHandled.current = true;
-    setQuery(q);
-    search(1, q);
-  }, []); // 空依赖：仅首次挂载执行一次
+    if ((!urlQuery && !workspace && !workspaceError) || initializedEntry.current === urlQuery) return;
+    initializedEntry.current = urlQuery;
+    searchRequest.current?.abort();
+    const version = ++searchVersion.current;
+    setBusy(false); setError(""); setTab("list"); setSelected(null);
+    ++graphVersion.current; ++lineageVersion.current;
+    setGraph(null); setLineage(null); setCenter(""); setLineageCenter("");
+    setLoadingGraph(false); setLoadingLineage(false); setPendingCenter(null);
+    lineageTried.current = null; graphTried.current = null;
+    const term = urlQuery || workspace?.query || "";
+    setQuery(term);
+    const previous = lastSearch?.query === term ? lastSearch.result : null;
+    const mode = previous?.mode ?? (window.localStorage.getItem("medread-search-mode") === "keyword" ? "keyword" : "semantic");
+    setMode(mode);
+    setResult(previous || emptySearch);
+    if (urlQuery && !previous) {
+      void search(1, term, false, mode);
+      return;
+    }
+    setRestoring(!!term && !previous);
+    if (!term || previous) return;
+    const controller = new AbortController();
+    searchRequest.current = controller;
+    apiJson<Search>(`/api/research/discover/cached?q=${encodeURIComponent(term)}&page=1&mode=${mode}`, { signal: controller.signal })
+      .then((data) => {
+        if (searchVersion.current !== version) return;
+        lastSearch = { query: term, result: data };
+        setResult(data);
+      }).catch((error) => {
+        if (searchVersion.current === version && !(error instanceof ApiError && error.status === 404)) setError("无法恢复上次结果，请重新检索");
+      }).finally(() => { if (searchVersion.current === version) setRestoring(false); });
+  }, [urlQuery, workspace?.query, workspaceError]);
   // 关系图谱 tab 被选中时按需加载：方向键只走 tabGroup 的 select，不会触发 item 的 onClick，
   // 若只在 onClick 里加载，方向键选中后会留下空图谱。这里统一兜底（loadingGraph 守卫避免重复请求）。
   useEffect(() => {
@@ -92,33 +114,38 @@ export default function DiscoverPage() {
     if (!graph && !loadingGraph && graphTried.current !== first) showGraph(first);
   }, [tab, graphView, lineage, loadingLineage, graph, loadingGraph, result.items.length]);
 
-  async function search(page = 1, term = query, refresh = false) {
+  async function search(page = 1, term = query, bypassCache = false, searchMode = mode) {
     if (!term.trim()) return;
+    searchRequest.current?.abort();
+    const controller = new AbortController();
+    searchRequest.current = controller;
     const version = ++searchVersion.current;
-    setBusy(true); setBusyLabel("正在检索文献并整理结果"); setError("");
+    setRestoring(false); setBusy(true); setBusyLabel("正在检索文献并整理结果"); setError("");
     try {
-      const data = await apiJson<Search>(`/api/research/discover?q=${encodeURIComponent(term.trim())}&page=${page}&mode=${mode}${refresh ? "&refresh=true" : ""}`);
+      const next = term.trim();
+      const data = await apiJson<Search>(`/api/research/discover?q=${encodeURIComponent(next)}&page=${page}&mode=${searchMode}${bypassCache ? "&refresh=true" : ""}`, { signal: controller.signal });
       if (searchVersion.current !== version) return;
-      // 首页 Hero 的 ?q= 落地直接调 search()，不经过模式按钮的 onClick：只在那里写 key 的话，
-      // 这次检索用的模式不会被记住，下次回 /discover 仍按旧模式取缓存 → 404 空白页。
-      window.localStorage.setItem("medread-search-mode", mode);
-      setResult((prior) => ({ ...data, items: page === 1 ? data.items : [...prior.items, ...data.items] }));
+      window.localStorage.setItem("medread-search-mode", searchMode);
+      const completed = { ...data, items: page === 1 ? data.items : [...result.items, ...data.items] };
+      lastSearch = { query: next, result: completed };
+      setResult(completed);
       if (page === 1) {
-        const next = term.trim();
-        const newTopic = !!workspace?.query && workspace.query.trim().toLocaleLowerCase() !== next.toLocaleLowerCase();
+        initializedEntry.current = next;
+        window.history.replaceState(null, "", `/discover?q=${encodeURIComponent(next)}`);
+        setTab("list"); setSelected(null);
+        setGraph(null); setLineage(null); setLineageCenter("");
+        lineageTried.current = null; graphTried.current = null;
+        const current = workspace ?? await refresh();
+        if (searchVersion.current !== version) return;
+        const newTopic = !!current.query && current.query.trim().toLocaleLowerCase() !== next.toLocaleLowerCase();
         await updateWorkspace({ query: next, domain: data.items[0]?.domain || "general",
           study_type: data.items[0]?.study_type || "unspecified",
           ...(newTopic ? { selected_paper_ids: [], core_paper_id: null, synthesis_id: null,
             research_gap: "", gap_context: {}, design_idea: "", novelty_id: null,
             design_version_id: null } : {}) });
       }
-      if (page === 1) {
-        setTab("list"); setSelected(null);
-        setGraph(null); setLineage(null); setLineageCenter("");
-        lineageTried.current = null; graphTried.current = null;
-      }
-    } catch (e) { setError(e instanceof Error ? e.message : "检索失败"); }
-    finally { setBusy(false); }
+    } catch (e) { if (searchVersion.current === version) setError(e instanceof Error ? e.message : "检索失败"); }
+    finally { if (searchVersion.current === version) setBusy(false); }
   }
 
   async function showGraph(workId: string, refresh = false) {
@@ -188,11 +215,7 @@ export default function DiscoverPage() {
 
   async function addToCompare(work: Work) {
     const paper = await save(work);
-    const ids = workspace?.selected_paper_ids || [];
-    if (!ids.includes(paper.id)) {
-      if (ids.length >= 5) throw new Error("最多选择 5 篇论文");
-      await updateWorkspace({ selected_paper_ids: [...ids, paper.id] });
-    }
+    await addPaperToSynthesis(paper.id);
   }
 
   async function setCore(work: Work) {
@@ -207,20 +230,12 @@ export default function DiscoverPage() {
     setBusy(true); setBusyLabel("正在上传 PDF"); setError("");
     try {
       const paper = await save(work);
-      if (paper.status === "parsed") { router.push(`/read?paper=${paper.id}`); return; }
+      if (!active.current) return;
+      if (paper.status === "parsed") { openReader(paper.id); return; }
       const body = new FormData(); body.append("file", file);
       const response = await fetch(`${API}/api/papers/${paper.id}/attach`, { method: "POST", credentials: "include", body });
       if (!response.ok) { const data = await response.json(); throw new Error(data.detail || "上传 PDF 失败"); }
-      setBusyLabel("PDF 已上传，正在解析全文与页码");
-      for (let attempt = 0; attempt < 120; attempt++) {
-        const updated = await apiJson<Paper>(`/api/papers/${paper.id}`);
-        if (updated.status === "figures") setBusyLabel("正在定位 Figure 与 Table");
-        else if (updated.status === "manifest") setBusyLabel("正在建立逐步精读目录");
-        if (updated.status === "parsed") { router.push(`/read?paper=${paper.id}`); return; }
-        if (updated.status === "failed") throw new Error("PDF 解析失败，请核对文件后重试");
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-      throw new Error("PDF 仍在解析，请稍后从论文库打开");
+      openReader(paper.id);
     } catch (e) { setError(e instanceof Error ? e.message : "上传失败"); }
     finally { setBusy(false); event.target.value = ""; }
   }
@@ -229,18 +244,14 @@ export default function DiscoverPage() {
     setBusy(true); setBusyLabel("正在获取开放 PDF"); setError("");
     try {
       const result = await postJson<Paper>("/api/research/import-pdf", { openalex_id: work.openalex_id });
-      setBusyLabel("开放 PDF 已取得，正在解析全文");
       setSaved((items) => [...items.filter((item) => item.id !== result.id), result]);
-      if (result.status === "parsed") { router.push(`/read?paper=${result.id}`); return; }
-      for (let attempt = 0; attempt < 120; attempt++) {
-        const paper = await apiJson<Paper>(`/api/papers/${result.id}`);
-        if (paper.status === "parsed") { router.push(`/read?paper=${result.id}`); return; }
-        if (paper.status === "failed") throw new Error("开放 PDF 下载成功，但解析失败。请手动上传可读 PDF。");
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-      throw new Error("PDF 仍在解析，请稍后从论文库打开");
+      openReader(result.id);
     } catch (e) { setError(e instanceof Error ? e.message : "开放 PDF 暂时不可用，请手动上传"); }
     finally { setBusy(false); }
+  }
+
+  function openReader(id: string) {
+    if (active.current) router.push(`/read?paper=${encodeURIComponent(id)}`);
   }
 
   function workCard(work: Work, compact = false) {
@@ -256,21 +267,22 @@ export default function DiscoverPage() {
     </article>;
   }
 
-  return <><ResearchNav current="/discover" /><main id="main" className="researchPage">
+  return <main id="main" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">01 / DISCOVER</div><h1>从一个问题，找到值得深读的论文。</h1><p>检索 OpenAlex 中标注为生命科学或健康科学的文献；自动分类可能遗漏相关研究，请核对原文。</p></div>
     <form className="searchBox" onSubmit={(e) => { e.preventDefault(); search(1); }}><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="例如：单细胞测序如何揭示肿瘤耐药机制？" aria-label="论文检索" /><button disabled={busy || !query.trim()} aria-busy={busy}>{busy ? "检索中…" : "检索论文 ↗"}</button></form>
-    <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("semantic"); window.localStorage.setItem("medread-search-mode", "semantic"); setResult({ items: [], count: 0, page: 0, mode: "semantic" }); }}>语义检索</button><button className={mode === "keyword" ? "active" : ""} onClick={() => { searchVersion.current++; setMode("keyword"); window.localStorage.setItem("medread-search-mode", "keyword"); setResult({ items: [], count: 0, page: 0, mode: "keyword" }); }}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
+    <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} disabled={busy || restoring} onClick={() => { searchVersion.current++; setMode("semantic"); window.localStorage.setItem("medread-search-mode", "semantic"); setResult({ items: [], count: 0, page: 0, mode: "semantic" }); }}>语义检索</button><button className={mode === "keyword" ? "active" : ""} disabled={busy || restoring} onClick={() => { searchVersion.current++; setMode("keyword"); window.localStorage.setItem("medread-search-mode", "keyword"); setResult({ items: [], count: 0, page: 0, mode: "keyword" }); }}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
     {!result.items.length && <div className="suggestions">试试：{["single cell RNA sequencing cancer", "tumor immune microenvironment", "gene expression metabolic pathway", "CRISPR cell function"].map((term) => <button key={term} onClick={() => { setQuery(term); search(1, term); }}>{term}</button>)}</div>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {busy && !loadingGraph && !loadingLineage && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
-    {result.page === 0 && !busy && !error && <div className="discoverStarter"><div><span className="sectionLabel">HOW IT WORKS</span><h2>先检索，再决定读哪篇</h2><p>输入研究问题后，先查看摘要和论文关系；找到相关文献，再获取或上传 PDF 进入全文精读。</p></div><ol><li><b>01</b><span>检索主题</span></li><li><b>02</b><span>查看论文关系</span></li><li><b>03</b><span>取得 PDF 后精读</span></li></ol></div>}
+    {restoring && <p className="workspaceLoading" role="status">正在恢复上次检索…</p>}
+    {result.page === 0 && !restoring && !busy && !error && <div className="discoverStarter"><div><span className="sectionLabel">HOW IT WORKS</span><h2>先检索，再决定读哪篇</h2><p>输入研究问题后，先查看摘要和论文关系；找到相关文献，再获取或上传 PDF 进入全文精读。</p></div><ol><li><b>01</b><span>检索主题</span></li><li><b>02</b><span>查看论文关系</span></li><li><b>03</b><span>取得 PDF 后精读</span></li></ol></div>}
     {!!result.items.length && <><div className="resultBar"><div><strong>{result.count.toLocaleString()}</strong> 条相关记录 <span>· 当前展示 {result.items.length} 篇</span>{result.cached && <small className="cacheStamp"> · 缓存结果{result.fetched_at ? ` · ${new Date(result.fetched_at).toLocaleString("zh-CN")}` : ""}{result.stale ? " · 当前网络不可用" : ""}</small>}</div><div className="resultBarActions"><button className="quietButton" disabled={busy} aria-busy={busy} onClick={() => search(1, query, true)}>刷新结果</button><div className="tabBar" {...resultTabs.list} aria-label="结果视图"><button {...resultTabs.item("list")}>列表</button><button {...resultTabs.item("graph", () => {
     setTab("graph");
     const first = result.items[0].openalex_id;
     if (graphView === "lineage") { if (!lineage) showLineage(first); return; }
     if (!graph) showGraph(first);
   })}>文献谱系</button></div></div></div>
-      {tab === "list" ? <><div className="workList">{result.items.map((work) => workCard(work))}</div><button className="moreButton" disabled={busy || semanticExhausted || result.items.length >= result.count} aria-busy={busy} onClick={() => search(result.page + 1)}>{semanticExhausted ? "语义检索上限 50 篇，请改用关键词检索" : busy ? "加载中…" : "加载更多论文"}</button></> :
+      {tab === "list" ? <><div className="workList">{result.items.map((work) => workCard(work))}</div><button className="moreButton" disabled={busy || semanticExhausted || result.items.length >= result.count} aria-busy={busy} onClick={() => search(result.page + 1, lastSearch?.query || query)}>{semanticExhausted ? "语义检索上限 50 篇，请改用关键词检索" : busy ? "加载中…" : "加载更多论文"}</button></> :
       <>
         <div className="graphViews" style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
           <div className="tabBar" role="tablist" aria-label="文献关系视图">
@@ -301,5 +313,5 @@ export default function DiscoverPage() {
       </>}
 </>}
     {!!workspace?.selected_paper_ids.length && <div className="compareTray"><strong>待综合 · {workspace.selected_paper_ids.length} / 5</strong><div>{workspace.selected_paper_ids.map((id) => <span key={id} title={saved.find((item) => item.id === id)?.title || "已选论文"}>{saved.find((item) => item.id === id)?.title || "已选论文"}<button title="移出待综合论文" aria-label={`移出 ${saved.find((item) => item.id === id)?.title || "论文"}`} onClick={() => updateWorkspace({selected_paper_ids: workspace.selected_paper_ids.filter((item) => item !== id)}).catch((e) => setError(e.message))}>×</button></span>)}</div><Link href="/synthesis">开始综合 →</Link></div>}
-  </main></>;
+  </main>;
 }

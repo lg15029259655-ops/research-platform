@@ -1,11 +1,26 @@
 // An empty value uses the site's own origin, allowing Nginx to route /api to FastAPI.
 export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
+let session: Promise<void> | null = null;
+
+export function ensureSession(): Promise<void> {
+  session ??= fetch(`${API}/api/session`, { credentials: "include", cache: "no-store" })
+    .then((response) => {
+      if (!response.ok) throw new Error("无法连接研究工作区，请重试");
+    }).catch((error) => {
+      session = null;
+      throw error;
+    });
+  return session;
+}
+
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) { super(message); this.name = "ApiError"; }
 }
 
 export async function apiJson<T>(path: string, options?: RequestInit): Promise<T> {
+  await ensureSession();
+  options?.signal?.throwIfAborted();
   const response = await fetch(`${API}${path}`, { credentials: "include", ...options });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));

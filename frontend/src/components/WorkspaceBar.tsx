@@ -11,12 +11,12 @@ const steps = [
 ];
 
 export default function WorkspaceBar({ current }: { current: string }) {
-  const { workspace } = useWorkspace();
+  const { workspace, workspaceError, refresh } = useWorkspace();
   const index = Math.max(0, steps.findIndex((step) => step.path === current));
   const step = steps[index];
   return <div className="workspaceStrip" aria-label="当前研究工作区">
     <div className="workspaceStage"><span>RESEARCH WORKSPACE</span><strong>{String(index + 1).padStart(2, "0")} <i>/ 04</i></strong></div>
-    <div className="workspaceSummary"><small>{current === "/design" ? "发现页检索主题" : "当前主题"}</small><strong title={workspace?.query || "尚未设置研究主题"}>{workspace?.query || "尚未设置研究主题"}</strong><span>{workspace?.selected_paper_ids.length || 0} 篇待综合</span></div>
+    <div className="workspaceSummary"><small>{current === "/design" ? "发现页检索主题" : "当前主题"}</small>{workspace ? <><strong title={workspace.query || "尚未设置研究主题"}>{workspace.query || "尚未设置研究主题"}</strong><span>{workspace.selected_paper_ids.length} 篇待综合</span></> : workspaceError ? <button className="quietButton" onClick={() => void refresh().catch(() => {})}>重试读取工作区</button> : <strong>正在读取工作区…</strong>}</div>
     <Link className="workspaceNext" href={step.next}><small>{step.note}</small><strong>{step.nextLabel} <span aria-hidden="true">↗</span></strong></Link>
   </div>;
 }

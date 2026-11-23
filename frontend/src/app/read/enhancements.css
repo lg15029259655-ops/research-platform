@@ -84,3 +84,15 @@
    但 pdfColumn 收到 200px 后，pdfPane 的工具条仍需 ~275px，越界部分 overflow:visible
    盖到聊天列上。现在这一带直接转纵向（见 globals.css 的 max-width:760 块），
    这里不再需要压缩最小宽，留空以免和上面的规则互相打补丁。 */
+
+.readerSubnav { align-items: center; flex-wrap: wrap; }
+.readerViewTabs { display: flex; gap: 4px; }
+.readerSubnav .readerSynthesis {
+  margin-inline-start: auto;
+  padding: 7px 12px;
+  border: 1px solid var(--c-line-strong);
+  border-radius: var(--r-pill);
+  color: var(--c-primary);
+  white-space: nowrap;
+}
+.readerSubnav .readerSynthesis:disabled { opacity: .55; cursor: wait; }

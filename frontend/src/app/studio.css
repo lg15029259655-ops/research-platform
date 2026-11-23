@@ -470,3 +470,18 @@ body { background: var(--c-bg); color: var(--c-text); }
   .planetariumLegend { left: 12px; right: 12px; bottom: 12px; justify-content: space-around; gap: 6px; }
   .planetariumHover { left: 12px; bottom: 64px; width: calc(100% - 24px); }
 }
+
+.researchNav nav a { position: relative; }
+.navPending {
+  position: absolute;
+  inset: auto 12px 3px;
+  height: 2px;
+  border-radius: var(--r-pill);
+  background: var(--c-primary);
+  opacity: 0;
+  animation: showNavPending 0s 150ms forwards;
+}
+@keyframes showNavPending { to { opacity: 1; } }
+.workspaceLoading { color: var(--c-text-mid); font-size: 14px; padding-block: 12px; }
+.routeLoading { width: 100%; }
+.readerShell { height: 100dvh; }
