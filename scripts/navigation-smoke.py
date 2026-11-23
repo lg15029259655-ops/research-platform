@@ -273,6 +273,68 @@ def reload_before_upload_confirmation(browser, frontend, backend):
     context.close()
 
 
+def stage_experiment_draft(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace_url = f"{backend}/api/workspace"
+    base_id = context.request.get(workspace_url).json()["design_version_id"]
+    history_url = f"{backend}/api/research/design/history"
+    initial_count = len(context.request.get(history_url).json()["items"])
+    page = context.new_page()
+    page.goto(f"{frontend}/design?view=canvas")
+    version_label = page.locator(".versionBar strong").inner_text()
+    stages = page.locator(".er-stage-main")
+    stages.first.click()
+    details = page.locator(".er-detail")
+    details.get_by_role("button", name="添加实验").click()
+    form = page.locator(".er-add")
+    name = form.get_by_label("实验名称", exact=True)
+    purpose = form.get_by_label("目的", exact=True)
+    name.fill("Check saved input")
+    purpose.fill("Confirm the draft survives a source check")
+    stages.nth(1).click()
+    details.get_by_role("button", name="添加实验").click()
+    expect(name).to_have_value("")
+    stages.first.click()
+    expect(name).to_have_value("Check saved input")
+    page.locator(".researchNav nav").get_by_role("link", name="文献综合").click()
+    expect(page).to_have_url(f"{frontend}/synthesis")
+    page.go_back()
+    expect(purpose).to_have_value("Confirm the draft survives a source check")
+
+    save = form.get_by_role("button", name="保存为新版本")
+    save_url = f"{backend}/api/research/design/manual"
+    context.route(save_url, lambda route: route.fulfill(status=503, json={"detail": "实验步骤暂时无法保存"}), times=1)
+    with page.expect_request(save_url) as failed:
+        save.click()
+    expect(form.get_by_role("alert")).to_contain_text("实验步骤暂时无法保存")
+    request_id = failed.value.post_data_json["request_id"]
+    page.reload()
+    expect(name).to_have_value("Check saved input")
+    expect(purpose).to_have_value("Confirm the draft survives a source check")
+
+    def drop_save_response(route):
+        assert route.request.post_data_json["request_id"] == request_id
+        assert route.fetch().ok
+        route.abort("connectionreset")
+
+    context.route(save_url, drop_save_response, times=1)
+    receipt_url = f"{save_url}/receipts/{request_id}"
+    with page.expect_response(lambda response: response.url == receipt_url and response.ok):
+        save.click()
+    expect(page.locator(".versionBar button.active")).to_contain_text("手动编辑")
+    receipt = context.request.get(receipt_url).json()
+    assert context.request.get(workspace_url).json()["design_version_id"] == receipt["id"]
+    assert len(context.request.get(history_url).json()["items"]) == initial_count + 1
+    assert sum(step["name"] == "Check saved input" for node in receipt["payload"]["nodes"]
+               for step in node.get("steps", [])) == 1
+    page.get_by_role("button", name="撤回上一版本").click()
+    expect(page.locator(".versionBar strong")).to_have_text(version_label)
+    assert context.request.get(workspace_url).json()["design_version_id"] == base_id
+    expect(form).to_have_count(0)
+    context.close()
+
+
 def manual_design_draft(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
@@ -1506,6 +1568,7 @@ if __name__ == "__main__":
             reload_before_job_confirmation(browser, args.frontend, args.backend)
             reload_before_upload_confirmation(browser, args.frontend, args.backend)
             manual_design_draft(browser, args.frontend, args.backend)
+            stage_experiment_draft(browser, args.frontend, args.backend)
             pdf_search_recovery(browser, args.frontend, args.backend)
             compact_reading(browser, args.frontend, args.backend)
             shared_selection(browser, args.frontend, args.backend)
