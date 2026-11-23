@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
+import JobResultNotice from "@/components/jobs/JobResultNotice";
 import { ApiError, apiJson, postJson } from "@/lib/api";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
 import { saveManualDesign } from "@/lib/manual-design";
@@ -190,9 +191,10 @@ function DesignWorkspace() {
   const constraints = typeof formDraft?.constraints === "string" ? formDraft.constraints
     : (design?.goal.trim() === idea.trim() ? design?.input_constraints || "" : "");
   const [localBusy, setBusy] = useState(false);
-  const { job, start, cancel, dismiss } = useWorkspaceJob("design");
+  const { job, start, cancel, dismiss, resultAttempt, retryResult, resultReadFailed, setFailedResult } = useWorkspaceJob("design");
   const running = job?.status === "running";
-  const busy = localBusy || running;
+  const resultPending = job?.status === "done";
+  const busy = localBusy || running || resultPending;
   const formDisabled = !draftKey || running;
   const [error, setError] = useState("");
   const [taskCanceled, setTaskCanceled] = useState(false);
@@ -284,10 +286,15 @@ function DesignWorkspace() {
     const result = job.result as Artifact<Novelty | Design> & { version?: DesignVersion } | null;
     if (!result?.payload) { dismiss(job); setError("任务没有返回可用结果"); return; }
     let disposed = false;
+    setFailedResult(null);
     void refresh(true).then((current) => {
       if (disposed) return;
       const pointer = job.kind === "novelty" ? current.novelty_id : current.design_version_id;
-      if (pointer !== result.id) { setError("后台任务已完成，当前研究想法或方案已变化。"); return; }
+      if (pointer !== result.id) {
+        dismiss(job);
+        setError("后台任务已完成，当前研究想法或方案已变化。");
+        return;
+      }
       const params = new URLSearchParams(window.location.search);
       const submitted = job.draft;
       if (submitted?.key) {
@@ -315,11 +322,12 @@ function DesignWorkspace() {
       }
       if (!designView(params.get("view"))) params.set("view", job.kind === "novelty" ? "novelty" : "canvas");
       updateDesignUrl(params);
+      dismiss(job);
     }).catch(() => {
-      if (!disposed) setError("结果已保存，请重新打开本页读取。");
-    }).finally(() => { if (!disposed) dismiss(job); });
+      if (!disposed) setFailedResult(job);
+    });
     return () => { disposed = true; };
-  }, [job, dismiss, refresh, urlIdea, draftKey]);
+  }, [job, dismiss, refresh, urlIdea, draftKey, resultAttempt, setFailedResult]);
 
   function scan(force = false) {
     if (busy || !draftKey) return;
@@ -411,13 +419,14 @@ function DesignWorkspace() {
       label={(entry) => entry.goal || "已保存的研究设计"}
       metadata={(entry) => `V${entry.number} · ${actionLabels[entry.action] || entry.action}`} />
     {workspace?.design_idea && workspace.design_idea.trim() === idea.trim() && (workspace.research_gap || typeof pinnedSource === "string") && (!workspace.gap_context.question || workspace.gap_context.question === workspace.design_idea) && <details className="di-origin" open><summary>研究起点 · 来自文献综合</summary>{workspace.research_gap && <p><b>研究空白：</b>{workspace.research_gap}</p>}<p><b>当前问题：</b>{workspace.design_idea}</p><p>这是第三部分的综合线索，请结合对应论文原文核对；不是已独立证实的实验事实。</p><Link className="quietButton" href={typeof pinnedSource === "string" ? sourceHref(pinnedSource) : "/synthesis?view=gaps"}>返回研究空白查看依据 ↗</Link></details>}
-    <section className="sectionBox"><label className="fieldLabel" htmlFor="idea">我的研究想法</label><textarea id="idea" className="largeTextarea" disabled={formDisabled} value={idea} onChange={(e) => { setIdea(e.target.value); setError(""); setTab("novelty"); }} placeholder="例如：用更低成本的单细胞方法识别治疗前肿瘤耐药亚群" /><label className="fieldLabel" htmlFor="constraints">约束条件（可选）</label><input id="constraints" className="largeInput" disabled={formDisabled} value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="经费、样本量、数据来源、周期等" /><div className="actionRow"><button className="primaryButton" disabled={busy || formDisabled || idea.trim().length < 5} aria-busy={busy} onClick={() => scan()}>{busy ? "分析中…" : "检索相似研究"}</button><button disabled={busy || formDisabled || idea.trim().length < 5} aria-busy={busy} onClick={() => generate()}>生成研究设计 →</button></div>{formDraft && <div className="tabDraftNote"><span>设计草稿 · 当前标签页</span><button className="quietButton" type="button" disabled={formDisabled || localBusy} onClick={() => setFormDraft(null)}>还原已保存内容</button></div>}</section>
+    <section className="sectionBox"><label className="fieldLabel" htmlFor="idea">我的研究想法</label><textarea id="idea" className="largeTextarea" disabled={formDisabled} value={idea} onChange={(e) => { setIdea(e.target.value); setError(""); setTab("novelty"); }} placeholder="例如：用更低成本的单细胞方法识别治疗前肿瘤耐药亚群" /><label className="fieldLabel" htmlFor="constraints">约束条件（可选）</label><input id="constraints" className="largeInput" disabled={formDisabled} value={constraints} onChange={(e) => setConstraints(e.target.value)} placeholder="经费、样本量、数据来源、周期等" /><div className="actionRow"><button className="primaryButton" disabled={busy || formDisabled || idea.trim().length < 5} aria-busy={busy} onClick={() => scan()}>{localBusy || running ? "分析中…" : "检索相似研究"}</button><button disabled={busy || formDisabled || idea.trim().length < 5} aria-busy={busy} onClick={() => generate()}>生成研究设计 →</button></div>{formDraft && <div className="tabDraftNote"><span>设计草稿 · 当前标签页</span><button className="quietButton" type="button" disabled={formDisabled || localBusy} onClick={() => setFormDraft(null)}>还原已保存内容</button></div>}</section>
     {!workspace && !workspaceError && <p className="workspaceLoading" role="status">正在读取研究问题…</p>}
     {(restoringDesign || restoringNovelty) && <p className="workspaceLoading" role="status">正在恢复上次研究结果…</p>}
     {(designError || noveltyError) && <div className="researchError" role="alert">{[noveltyError, designError].filter(Boolean).join("；")} <button className="quietButton" onClick={() => setRestoreAttempt((count) => count + 1)}>重试</button></div>}
     {tab === "canvas" && shownDesign && versionListError && <p className="researchError" role="alert">暂时无法读取版本列表。 <button className="quietButton" onClick={() => setVersionListAttempt((count) => count + 1)}>重试版本列表</button></p>}
     {!!workspace && !idea.trim() && !shownNovelty && !shownDesign && !busy && <section className="startGuide" aria-label="科研设计使用引导"><div className="startGuideIntro"><span>START HERE</span><h2>把一个想法，推进为可核验的研究路径。</h2><p>先填入自己的研究问题。你可以检索相似研究，也可以直接生成设计草稿；两项结果会清楚标注证据范围。</p><div className="sampleIdeas"><b>试一个示例</b>{["如何降低肿瘤单细胞测序的样本与计算成本？", "如何验证候选基因对肿瘤细胞迁移的影响？", "如何研究代谢通路与肿瘤免疫微环境的关系？"].map((sample) => <button key={sample} disabled={running} onClick={() => { setIdea(sample); document.getElementById("idea")?.focus(); }}>{sample} ↗</button>)}</div></div><div className="startGuideSteps"><div><b>01</b><strong>提出问题</strong><small>明确对象、变量与目标</small></div><div><b>02</b><strong>核对相似研究</strong><small>基于摘要做定性扫描</small></div><div><b>03</b><strong>搭建设计草稿</strong><small>检查对照、读数与假设</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
+    {resultPending && <JobResultNotice failed={resultReadFailed} onRetry={retryResult} onDismiss={() => dismiss(job)} />}
     {taskCanceled && <p className="workspaceLoading" role="status">任务已取消。</p>}
     {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续。 */}
     <JobProgress variant="fixed" title="正在处理研究设计" stageLabel={job?.stage} progress={job?.progress} startedAt={running ? job.startedAt : null} onCancel={cancel} cancelPending={job?.cancelPending} cancelError={job?.cancelError} reconnecting={job?.reconnecting} />

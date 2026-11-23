@@ -712,3 +712,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the workspace kept the PDF page on return, but discarded the reader pane, zoom and width mode when the reader route unmounted.
 - Action: remember compact and desktop pane choices separately within the tab, and restore display settings for the same PDF fingerprint. Start a citation with its PDF visible even when the regular preference is the AI pane, without changing that preference.
 - Verification: Chrome and Edge at 390px restored a page at 115% in original-width mode, retained the AI pane across navigation, and showed the original PDF for a citation while an ordinary reopen kept the AI preference. Both discarded zoom and page state when the saved fingerprint was changed. At 1440px both retained only-PDF mode, then verified that a separate compact AI choice had no effect on the desktop choice. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.
+
+## L-20261123-40 — Keep a completed job recoverable until its result is opened
+
+- Evidence: synthesis and design discarded the completed job ticket when the follow-up workspace read failed, leaving the user to reopen the page or risk submitting a new job.
+- Action: keep the terminal job and its saved ticket until the workspace read succeeds or the user explicitly defers viewing. Offer a read retry and guard against submitting another job while this result is pending.
+- Verification: Chrome and Edge at 390px received completed synthesis and design jobs while workspace reads returned 503. After reload, the ticket remained recoverable. Retrying opened each saved result and cleared its ticket without an additional job read or submission. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
+import JobResultNotice from "@/components/jobs/JobResultNotice";
 import { ApiError, apiJson } from "@/lib/api";
 import { readPaperLibrary, type PaperSummary } from "@/lib/paper-library";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
@@ -50,8 +51,9 @@ export default function SynthesisPage() {
   const [handoffPending, setHandoffPending] = useState(false);
   const [handoffError, setHandoffError] = useState<{ artifactId: string; message: string } | null>(null);
   const handoff = useRef<AbortController | null>(null);
-  const { job, start, cancel, dismiss } = useWorkspaceJob("synthesis");
+  const { job, start, cancel, dismiss, resultAttempt, retryResult, resultReadFailed, setFailedResult } = useWorkspaceJob("synthesis");
   const busy = job?.status === "running";
+  const resultPending = job?.status === "done";
   const [error, setError] = useState("");
   const [taskCanceled, setTaskCanceled] = useState(false);
   const [selectedCell, setSelectedCell] = useState<{cell: Cell; dimension: string} | null>(null);
@@ -152,7 +154,7 @@ export default function SynthesisPage() {
     }
   }
   function compare() {
-    if (busy || savingSelection || selected.length < 2) return;
+    if (busy || resultPending || savingSelection || selected.length < 2) return;
     if (!sourceArtifact && artifact && !artifact.payload.stale_after_reparse && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
@@ -171,22 +173,26 @@ export default function SynthesisPage() {
       return;
     }
     let disposed = false;
+    setFailedResult(null);
     void refresh(true).then((current) => {
       if (disposed) return;
       if (current.synthesis_id !== result.id) {
+        dismiss(job);
         setError("后台综合已完成，当前工作区已切换到其他内容。");
         return;
       }
-      if (new URLSearchParams(window.location.search).has("artifact")) return;
-      focusNewResult.current = true;
-      setSavedViews({ id: result.id, views: { matrix: result, evidence: result, gaps: result } });
-      setActiveDimension(0); setShowSelection(false);
-      window.history.replaceState(null, "", "/synthesis");
+      if (!new URLSearchParams(window.location.search).has("artifact")) {
+        focusNewResult.current = true;
+        setSavedViews({ id: result.id, views: { matrix: result, evidence: result, gaps: result } });
+        setActiveDimension(0); setShowSelection(false);
+        window.history.replaceState(null, "", "/synthesis");
+      }
+      dismiss(job);
     }).catch(() => {
-      if (!disposed) setError("综合结果已保存，请重新打开本页读取。");
-    }).finally(() => { if (!disposed) dismiss(job); });
+      if (!disposed) setFailedResult(job);
+    });
     return () => { disposed = true; };
-  }, [job, dismiss, refresh]);
+  }, [job, dismiss, refresh, resultAttempt, setFailedResult]);
   async function useQuestion(question: string) {
     if (handoff.current || !activeView) return;
     const controller = new AbortController();
@@ -277,12 +283,13 @@ export default function SynthesisPage() {
       {savingSelection && <p className="workspaceLoading" role="status">正在保存论文选择…</p>}
       {libraryReady && selectionChanged && <p className="selectionChanged" role="status">论文选择已改变。下方保留的是上一次综合结果；重新生成后才会反映当前选择。</p>}
       {showSelection && libraryReady && <button className="primaryButton" onClick={compare}
-        disabled={busy || savingSelection || selected.length < 2} aria-busy={busy || savingSelection}>
+        disabled={busy || resultPending || savingSelection || selected.length < 2} aria-busy={busy || savingSelection}>
         {busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}
       </button>}
     </section>
     {!data && !loadingArtifact && libraryReady && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
+    {resultPending && <JobResultNotice failed={resultReadFailed} onRetry={retryResult} onDismiss={() => dismiss(job)} />}
     {taskCanceled && <p className="workspaceLoading" role="status">任务已取消。</p>}
     {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续，回来还能看到结果。 */}
     <JobProgress variant="fixed" title="正在综合全文证据" stageLabel={job?.stage} progress={job?.progress} startedAt={busy ? job.startedAt : null} onCancel={cancel} cancelPending={job?.cancelPending} cancelError={job?.cancelError} reconnecting={job?.reconnecting} />

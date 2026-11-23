@@ -8,6 +8,76 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from playwright.sync_api import expect, sync_playwright
 
 
+def reopen_saved_job_result(browser, frontend, backend):
+    for scope, kind in [("synthesis", "compare"), ("design", "design")]:
+        context = browser.new_context(viewport={"width": 390, "height": 844})
+        assert context.request.get(f"{backend}/api/session").ok
+        workspace_url = f"{backend}/api/workspace"
+        workspace = context.request.get(workspace_url).json()
+        if scope == "synthesis":
+            url = f"{backend}/api/research/comparisons/{workspace['synthesis_id']}?view=matrix"
+            result = context.request.get(url).json()
+            result["payload"]["consensus"] = ["Recovered saved comparison"]
+            context.route(url, lambda route: route.fulfill(json=result))
+        else:
+            version_url = f"{backend}/api/research/design/versions?artifact_id={workspace['design_version_id']}"
+            version = context.request.get(version_url).json()[0]
+            result = {"id": version["artifact_id"], "payload": version["payload"], "version": version}
+
+        offline = True
+        reads = []
+        submissions = []
+        ticket_key = f"medread-job-{scope}"
+        job_url = f"{backend}/api/jobs/completed-fixture"
+
+        def workspace_fixture(route):
+            if offline:
+                route.fulfill(status=503, json={})
+            else:
+                route.fallback()
+
+        def job_fixture(route):
+            if route.request.method == "POST":
+                submissions.append(route.request.url)
+                route.fulfill(status=500, json={})
+                return
+            reads.append(route.request.url)
+            snapshot = {"id": "completed-fixture", "kind": kind, "status": "done", "result": result}
+            if route.request.url.endswith("/events"):
+                route.fulfill(content_type="text/event-stream",
+                              body="event: snapshot\ndata: " + json.dumps(snapshot) + "\n\n")
+            else:
+                route.fulfill(json=snapshot)
+
+        context.route(workspace_url, workspace_fixture)
+        context.route(re.compile(rf"^{re.escape(backend)}/api/jobs(?:/|$)"), job_fixture)
+        page = context.new_page()
+        page.goto(frontend)
+        page.evaluate("""([key, kind]) => sessionStorage.setItem(
+          key, JSON.stringify({id: "completed-fixture", kind, startedAt: Date.now()})
+        )""", [ticket_key, kind])
+        path = f"{frontend}/{scope}"
+        page.goto(path)
+        retry = page.get_by_role("button", name="重试打开结果")
+        expect(retry).to_be_visible()
+        assert page.evaluate("(key) => !!sessionStorage.getItem(key)", ticket_key)
+        page.reload()
+        expect(retry).to_be_visible()
+        offline = False
+        job_reads_before_retry = len(reads)
+        retry.click()
+        expect(retry).to_have_count(0)
+        if scope == "synthesis":
+            expect(page.locator(".compareTakeaways")).to_contain_text("Recovered saved comparison")
+        else:
+            expect(page.locator(".designGrid")).to_be_visible()
+        page.wait_for_function("(key) => sessionStorage.getItem(key) === null", arg=ticket_key)
+        assert len(reads) >= 2 and all(url.startswith(job_url) for url in reads)
+        assert len(reads) == job_reads_before_retry
+        assert not submissions
+        context.close()
+
+
 def background_jobs(browser, frontend, backend):
     context = browser.new_context()
     page = context.new_page()
@@ -1311,6 +1381,7 @@ if __name__ == "__main__":
             keyboard_navigation(browser, args.frontend, viewport={"width": 390, "height": 844})
             design_view_navigation(browser, args.frontend, args.backend)
             background_jobs(browser, args.frontend, args.backend)
+            reopen_saved_job_result(browser, args.frontend, args.backend)
             reload_before_job_confirmation(browser, args.frontend, args.backend)
             reload_before_upload_confirmation(browser, args.frontend, args.backend)
             manual_design_draft(browser, args.frontend, args.backend)

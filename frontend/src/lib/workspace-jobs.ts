@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { ApiError } from "@/lib/api";
 import { findJobSubmission, requestJobCancellation, submitJob, watchJob, type JobProgress, type JobSnapshot } from "@/lib/jobs";
 
@@ -135,6 +135,7 @@ function createJobStore(scope: Scope) {
       }
     },
     start(kind: Kind, params: Record<string, unknown>, options?: { draft?: Draft }) {
+      if (current?.status === "done") return;
       return run({ requestId: crypto.randomUUID(), kind, startedAt: Date.now(), draft: options?.draft }, params);
     },
     cancel() {
@@ -156,6 +157,13 @@ const serverSnapshot = () => null;
 export function useWorkspaceJob(scope: Scope) {
   const store = stores[scope];
   const job = useSyncExternalStore(store.subscribe, store.getSnapshot, serverSnapshot);
+  const [failedResult, setFailedResult] = useState<Job | null>(null);
+  const [resultAttempt, setResultAttempt] = useState(0);
   useEffect(() => store.restore(), [store]);
-  return { job, start: store.start, cancel: store.cancel, dismiss: store.dismiss };
+  function retryResult() {
+    setFailedResult(null);
+    setResultAttempt((attempt) => attempt + 1);
+  }
+  return { job, start: store.start, cancel: store.cancel, dismiss: store.dismiss, resultAttempt, retryResult,
+    resultReadFailed: !!job && job === failedResult, setFailedResult };
 }
