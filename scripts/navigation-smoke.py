@@ -755,19 +755,32 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     page.get_by_role("tab", name="谱系图", exact=True).press("ArrowRight")
     expect(aside.get_by_role("heading", name="Constellation center")).to_be_visible()
 
+    # Shorten only the production discovery deadlines so the browser can hold
+    # real requests in this suite without adding 75 seconds to the run.
+    page.evaluate("""() => {
+        const timeout = AbortSignal.timeout.bind(AbortSignal);
+        AbortSignal.timeout = (delay) => timeout(delay === 30000 || delay === 45000 ? 1500 : delay);
+    }""")
     page.get_by_role("tab", name="列表", exact=True).click()
     query = page.get_by_role("textbox", name="论文检索")
+    context.route(search, lambda route: held.append(route), times=1)
     query.fill(newer)
+    page.get_by_role("button", name="检索论文").click()
+    expect(page.get_by_role("alert").filter(has_text="检索超时")).to_be_visible()
+    held.pop().abort()
+    expect(page.get_by_role("heading", name=initial)).to_be_visible()
+    assert parse_qs(urlsplit(page.url).query)["q"] == [initial]
     page.get_by_role("button", name="检索论文").click()
     expect(page.get_by_role("heading", name=newer)).to_be_visible()
     new_lineage = f"{backend}/api/research/lineage/W102"
-    context.route(new_lineage, lambda route: route.fulfill(status=503, json={"detail": "谱系暂不可用"}), times=1)
+    context.route(new_lineage, lambda route: held.append(route), times=1)
     context.route(new_lineage + "?refresh=true", lambda route: lineage_fixture(route, "Recovered lineage"))
     page.get_by_role("tab", name="文献谱系", exact=True).click()
     page.get_by_role("tab", name="谱系图", exact=True).click()
-    expect(page.get_by_role("alert").filter(has_text="谱系暂不可用")).to_be_visible()
+    expect(page.get_by_role("alert").filter(has_text="谱系图读取超时")).to_be_visible()
+    held.pop().abort()
     page.get_by_role("tab", name="列表", exact=True).click()
-    expect(page.get_by_role("alert").filter(has_text="谱系暂不可用")).to_have_count(0)
+    expect(page.get_by_role("alert").filter(has_text="谱系图读取超时")).to_have_count(0)
     page.get_by_role("tab", name="文献谱系", exact=True).click()
     page.get_by_role("button", name="重试读取").click()
     expect(aside.get_by_role("heading", name="Recovered lineage")).to_be_visible()

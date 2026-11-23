@@ -23,6 +23,18 @@ const domains: Record<string, string> = { biomed: "生物科学", review: "综�
 const emptySearch: Search = { items: [], count: 0, page: 0, mode: "semantic" };
 let lastSearch: { query: string; result: Search } | null = null;
 
+async function lookup<T>(path: string, controller: AbortController, timeout: number, timeoutMessage: string) {
+  const deadline = AbortSignal.timeout(timeout);
+  const signal = AbortSignal.any([controller.signal, deadline]);
+  try {
+    return await apiJson<T>(path, { signal });
+  } catch (error) {
+    if (deadline.aborted && !controller.signal.aborted) throw new Error(timeoutMessage);
+    if (error instanceof TypeError) throw new Error("连接中断，请重试。");
+    throw error;
+  }
+}
+
 export default function DiscoverPage() {
   const router = useRouter();
   const urlQuery = useSearchParams().get("q")?.trim() || "";
@@ -109,7 +121,8 @@ export default function DiscoverPage() {
     if (!term || matchingResult) return;
     const controller = new AbortController();
     searchRequest.current = controller;
-    apiJson<Search>(`/api/research/discover/cached?q=${encodeURIComponent(term)}&page=1&mode=${mode}`, { signal: controller.signal })
+    lookup<Search>(`/api/research/discover/cached?q=${encodeURIComponent(term)}&page=1&mode=${mode}`,
+      controller, 10000, "恢复上次结果超时，请重新检索。")
       .then((data) => {
         if (searchVersion.current !== version) return;
         lastSearch = { query: term, result: data };
@@ -154,7 +167,9 @@ export default function DiscoverPage() {
     setTopicConfirmation(null);
     try {
       const next = term.trim();
-      const data = await apiJson<Search>(`/api/research/discover?q=${encodeURIComponent(next)}&page=${page}&mode=${searchMode}${bypassCache ? "&refresh=true" : ""}`, { signal: controller.signal });
+      const data = await lookup<Search>(
+        `/api/research/discover?q=${encodeURIComponent(next)}&page=${page}&mode=${searchMode}${bypassCache ? "&refresh=true" : ""}`,
+        controller, 30000, "检索超时，请重试。");
       if (searchVersion.current !== version) return;
       window.localStorage.setItem("medread-search-mode", searchMode);
       const completed = { ...data, items: page === 1 ? data.items : [...result.items, ...data.items] };
@@ -213,7 +228,8 @@ export default function DiscoverPage() {
     graphRequest.current = controller;
     setLoadingGraph(true); setPendingCenter(workId); setGraphError("");
     try {
-      const data = await apiJson<Graph>(`/api/research/graph/${workId}${refresh ? "?refresh=true" : ""}`, { signal: controller.signal });
+      const data = await lookup<Graph>(`/api/research/graph/${workId}${refresh ? "?refresh=true" : ""}`,
+        controller, 45000, "星座视图读取超时，请重试。");
       if (controller.signal.aborted) return;
       setGraph(data); setCenter(workId); setGraphSelection(data.nodes.find((item) => item.openalex_id === workId) || null);
     } catch (e) { if (!controller.signal.aborted) setGraphError(e instanceof Error ? e.message : "关系图读取失败"); }
@@ -235,7 +251,8 @@ export default function DiscoverPage() {
     lineageRequest.current = controller;
     setLoadingLineage(true); setLineageError("");
     try {
-      const data = await apiJson<LineageResponse>(`/api/research/lineage/${workId}${refresh ? "?refresh=true" : ""}`, { signal: controller.signal });
+      const data = await lookup<LineageResponse>(`/api/research/lineage/${workId}${refresh ? "?refresh=true" : ""}`,
+        controller, 45000, "谱系图读取超时，请重试。");
       if (controller.signal.aborted) return;
       setLineage(data); setLineageCenter(workId);
       const centerNode = data.nodes.find((item) => item.openalex_id === workId);

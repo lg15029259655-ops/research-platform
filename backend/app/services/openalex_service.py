@@ -163,27 +163,35 @@ async def lineage_for_work(work_id: str, *, max_references: int = 24,
         data = await _get("/works", {"filter": "openalex_id:" + "|".join(ids), "per_page": len(ids)})
         return [normalize_work(item) for item in data.get("results", [])]
 
-    # 上游：本论文引用的工作（旧 → 新）
-    for work in await fetch(reference_ids):
+    async def fetch_citing_works() -> list[dict[str, Any]]:
+        try:
+            data = await _get("/works", {"filter": f"cites:{work_id}", "per_page": max_cited_by,
+                                         "sort": "cited_by_count:desc"})
+        except DiscoveryError:
+            # 下游关系缺失时，仍可展示已取得的其他关系。
+            return []
+        return [normalize_work(item) for item in data.get("results", [])[:max_cited_by]]
+
+    references, citing, related = await asyncio.gather(
+        fetch(reference_ids), fetch_citing_works(), fetch(related_ids), return_exceptions=True,
+    )
+    for result in (references, citing, related):
+        if isinstance(result, BaseException):
+            raise result
+
+    # 关系按原有优先顺序合并，不依赖各请求的返回顺序。
+    for work in references:
         add_node(work, "reference")
         edges.append({"source": work_id, "target": work["openalex_id"], "relation": "cites"})
 
-    # 下游：引用了本论文的工作（需 OpenAlex 的 cites: 过滤器）
-    try:
-        data = await _get("/works", {"filter": f"cites:{work_id}", "per_page": max_cited_by,
-                                     "sort": "cited_by_count:desc"})
-        for item in data.get("results", [])[:max_cited_by]:
-            work = normalize_work(item)
-            if work["openalex_id"] == work_id:
-                continue
-            add_node(work, "cited_by")
-            edges.append({"source": work["openalex_id"], "target": work_id, "relation": "cites"})
-    except DiscoveryError:
-        # 下游关系缺失不应让整个谱系失败；前端按已有节点渲染。
-        pass
+    for work in citing:
+        if work["openalex_id"] == work_id:
+            continue
+        add_node(work, "cited_by")
+        edges.append({"source": work["openalex_id"], "target": work_id, "relation": "cites"})
 
     # 旁系：Topic 相近但无引用关系
-    for work in await fetch(related_ids):
+    for work in related:
         existing = nodes.get(work["openalex_id"])
         if existing is not None and existing["role"] != "center":
             # 已经有引用关系时保留更具体的方向，不再叠加 related 边。

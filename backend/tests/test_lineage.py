@@ -27,13 +27,19 @@ def _work(work_id: str, title: str, year: int = 2020, cited: int = 10) -> dict:
 def test_lineage_roles_and_directions(monkeypatch):
     center = _work("W1", "Center paper")
     center["referenced_works"] = ["https://openalex.org/W2", "https://openalex.org/W3"]
-    center["related_works"] = ["https://openalex.org/W4"]
+    center["related_works"] = ["https://openalex.org/W4", "https://openalex.org/W2"]
+    started = set()
+    all_started = asyncio.Event()
 
     async def fake_get(path, params=None):
         if path == "/works/W1":
             return center
         assert params is not None
         filter_value = params.get("filter", "")
+        started.add(filter_value)
+        if len(started) == 3:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=2)
         if filter_value.startswith("cites:"):
             return {"results": [_work("W5", "Citing paper")]}
         if filter_value.startswith("openalex_id:"):
@@ -54,6 +60,7 @@ def test_lineage_roles_and_directions(monkeypatch):
     assert ("W1", "W2", "cites") in edges           # 中心引用上游
     assert ("W5", "W1", "cites") in edges           # 下游引用中心
     assert ("W1", "W4", "related") in edges
+    assert ("W1", "W2", "related") not in edges
     # 抽象被截断，避免几十个节点把响应撑大
     assert all(len(node["abstract"]) <= 600 for node in result["nodes"])
 
