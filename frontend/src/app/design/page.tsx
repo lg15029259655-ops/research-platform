@@ -51,6 +51,7 @@ export default function DesignPage() {
   const running = job?.status === "running";
   const busy = localBusy || running;
   const [error, setError] = useState("");
+  const [taskCanceled, setTaskCanceled] = useState(false);
   const [versions, setVersions] = useState<DesignVersion[]>([]);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
@@ -120,6 +121,7 @@ export default function DesignPage() {
   }, [submittedDraft, urlIdea]);
   useEffect(() => {
     if (!job || job.status === "running") return;
+    if (job.status === "canceled") setTaskCanceled(true);
     if (job.status !== "done") {
       dismiss(job);
       if (job.status === "failed") setError(job.error || "任务未完成，请重试");
@@ -149,6 +151,7 @@ export default function DesignPage() {
     if (busy) return;
     if (!force && shownNovelty) { setTab("novelty"); return; }
     setTab("novelty"); setError("");
+    setTaskCanceled(false);
     void start("novelty", { query: idea.trim() }, { draft: { idea, constraints } });
   }
 
@@ -156,6 +159,7 @@ export default function DesignPage() {
     if (busy) return;
     if (action === "generate" && sameDesignInput && !force) { setTab("canvas"); return; }
     setTab("canvas"); setError("");
+    setTaskCanceled(false);
     void start("design", { goal: idea.trim(), constraints, action,
       current_design: action === "generate" ? null : design,
       node_id: nodeId, instruction, regenerate: force,
@@ -220,8 +224,9 @@ export default function DesignPage() {
     {(designError || noveltyError) && <div className="researchError" role="alert">{[noveltyError, designError].filter(Boolean).join("；")} <button className="quietButton" onClick={() => setRestoreAttempt((count) => count + 1)}>重试</button></div>}
     {!!workspace && !idea.trim() && !shownNovelty && !shownDesign && !busy && <section className="startGuide" aria-label="科研设计使用引导"><div className="startGuideIntro"><span>START HERE</span><h2>把一个想法，推进为可核验的研究路径。</h2><p>先填入自己的研究问题。你可以检索相似研究，也可以直接生成设计草稿；两项结果会清楚标注证据范围。</p><div className="sampleIdeas"><b>试一个示例</b>{["如何降低肿瘤单细胞测序的样本与计算成本？", "如何验证候选基因对肿瘤细胞迁移的影响？", "如何研究代谢通路与肿瘤免疫微环境的关系？"].map((sample) => <button key={sample} disabled={running} onClick={() => { setIdea(sample); document.getElementById("idea")?.focus(); }}>{sample} ↗</button>)}</div></div><div className="startGuideSteps"><div><b>01</b><strong>提出问题</strong><small>明确对象、变量与目标</small></div><div><b>02</b><strong>核对相似研究</strong><small>基于摘要做定性扫描</small></div><div><b>03</b><strong>搭建设计草稿</strong><small>检查对照、读数与假设</small></div></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
+    {taskCanceled && <p className="workspaceLoading" role="status">任务已取消。</p>}
     {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续。 */}
-    <JobProgress variant="fixed" title="正在处理研究设计" stageLabel={job?.stage} progress={job?.progress} startedAt={running ? job.startedAt : null} onCancel={cancel} />
+    <JobProgress variant="fixed" title="正在处理研究设计" stageLabel={job?.stage} progress={job?.progress} startedAt={running ? job.startedAt : null} onCancel={cancel} cancelPending={job?.cancelPending} cancelError={job?.cancelError} reconnecting={job?.reconnecting} />
     {(shownNovelty || shownDesign || !!idea.trim()) && <div className="resultBar"><strong>工作区</strong><div className="tabBar" {...workspaceTabs.list} aria-label="工作区视图"><button {...workspaceTabs.item("novelty")}>新颖性扫描</button><button {...workspaceTabs.item("canvas")}>设计沙盘</button></div></div>}
     {/* D10：某个 tab 无数据时给出空态，不留白。 */}
     {tab === "novelty" && !shownNovelty && !!idea.trim() && !busy && !restoringNovelty && !restoringDesign && !noveltyError && <div className="miniNotice">当前想法「{idea.trim()}」尚无检索结果。请点击「检索相似研究」；若检索失败，请稍后重试。</div>}

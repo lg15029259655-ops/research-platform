@@ -21,6 +21,7 @@ def background_jobs(browser, frontend, backend):
     status = {"comparison": "running", "design": "running"}
     submissions = []
     cancellations = []
+    design_offline = False
 
     def jobs_fixture(route):
         url = urlsplit(route.request.url)
@@ -35,8 +36,13 @@ def background_jobs(browser, frontend, backend):
         job_id = parts[3]
         if method == "DELETE":
             cancellations.append(job_id)
-            status[job_id] = "canceled"
+            if len(cancellations) == 1:
+                route.fulfill(status=503, json={})
+                return
             route.fulfill(json={"canceled": True})
+            return
+        if job_id == "design" and design_offline:
+            route.abort("internetdisconnected")
             return
         snapshot = {
             "id": job_id, "kind": "compare" if job_id == "comparison" else "design", "status": status[job_id],
@@ -82,10 +88,20 @@ def background_jobs(browser, frontend, backend):
     expect(page.get_by_label("我的研究想法")).to_have_value("A new design for the background job check")
     expect(page.get_by_label("约束条件（可选）")).to_have_value("Six weeks")
     assert submissions == ["compare", "design"] and not cancellations
-    with page.expect_request(lambda request: request.method == "DELETE" and request.url.endswith("/api/jobs/design")):
-        page.locator(".jobProgress").get_by_role("button", name="取消", exact=True).click()
+    design_offline = True
+    expect(page.get_by_text("连接暂时中断，正在重新读取任务状态。")).to_be_visible(timeout=12000)
+    design_offline = False
+    expect(page.get_by_text("连接暂时中断，正在重新读取任务状态。")).to_have_count(0, timeout=12000)
+    cancel = page.locator(".jobProgress").get_by_role("button", name="取消", exact=True)
+    cancel.click()
+    expect(page.get_by_role("alert").filter(has_text="暂未确认取消")).to_be_visible()
+    expect(page.get_by_text("正在进行后台设计")).to_be_visible()
+    cancel.click()
+    expect(page.get_by_role("button", name="正在取消…")).to_be_disabled()
+    status["design"] = "canceled"
     expect(page.locator(".jobProgress")).to_have_count(0)
-    assert cancellations == ["design"]
+    expect(page.get_by_text("任务已取消。", exact=True)).to_be_visible()
+    assert cancellations == ["design", "design"]
     context.close()
 
 
@@ -271,6 +287,11 @@ def smoke(browser, frontend, backend):
     retry_library = page.get_by_role("button", name="重试读取论文库")
     retry_library.click()
     expect(page.locator(".library .paperItem").first).to_be_visible()
+    context.route(f"{backend}/api/health", lambda route: route.fulfill(status=503, json={}), times=1)
+    page.goto(frontend)
+    expect(page.get_by_text("暂时无法确认服务状态")).to_be_visible()
+    page.get_by_role("button", name="重试检查").click()
+    expect(page.get_by_text("服务运行正常")).to_be_visible()
     context.close()
 
 

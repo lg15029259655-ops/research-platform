@@ -4,7 +4,7 @@ export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 let session: Promise<void> | null = null;
 
 export function ensureSession(): Promise<void> {
-  session ??= fetch(`${API}/api/session`, { credentials: "include", cache: "no-store" })
+  session ??= fetch(`${API}/api/session`, { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(10000) })
     .then((response) => {
       if (!response.ok) throw new Error("无法连接研究工作区，请重试");
     }).catch((error) => {

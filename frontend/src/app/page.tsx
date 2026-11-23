@@ -45,17 +45,23 @@ const faq = [
 
 export default function Home() {
   const router = useRouter();
-  const [health, setHealth] = useState<Health | null>(null);
+  const [health, setHealth] = useState<"checking" | "ready" | "unavailable">("checking");
+  const [healthAttempt, setHealthAttempt] = useState(0);
   const [term, setTerm] = useState("");
   const [openFaq, setOpenFaq] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API}/api/health`)
-      .then((response) => response.ok ? response.json() : Promise.reject())
-      .then(setHealth)
-      .catch(() => setHealth(null));
-  }, []);
-  const connected = health?.status === "ok" && health.database === "ok";
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => { controller.abort(); setHealth("unavailable"); }, 8000);
+    fetch(`${API}/api/health`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => response.ok ? await response.json() as Health : null)
+      .then((result) => {
+        if (!controller.signal.aborted) setHealth(result?.status === "ok" && result.database === "ok" ? "ready" : "unavailable");
+      })
+      .catch(() => { if (!controller.signal.aborted) setHealth("unavailable"); })
+      .finally(() => window.clearTimeout(timeout));
+    return () => { window.clearTimeout(timeout); controller.abort(); };
+  }, [healthAttempt]);
 
   function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -88,7 +94,7 @@ export default function Home() {
           <input value={term} onChange={(event) => setTerm(event.target.value)} placeholder="用一句话描述你的研究问题…" aria-label="检索文献：用一句话描述你的研究问题" />
           <button type="submit" aria-label="开始检索">→</button>
         </form>
-        <div className="home-health" role="status"><span className={connected ? "home-health-dot ready" : "home-health-dot"} />{connected ? "服务运行正常" : "正在检查服务状态"}<span className="home-health-separator" />文献、笔记与研究思路集中管理</div>
+        <div className="home-health"><span aria-hidden="true" className={`home-health-dot ${health}`} /><span role="status">{health === "ready" ? "服务运行正常" : health === "checking" ? "正在检查服务状态" : "暂时无法确认服务状态"}</span>{health === "unavailable" && <button className="home-health-retry" type="button" onClick={() => { setHealth("checking"); setHealthAttempt((count) => count + 1); }}>重试检查</button>}</div>
       </section>
 
       {/* 分区 3 · 真实事实条 */}

@@ -5,7 +5,7 @@
  *  「失败」（生产环境就出现过 35 秒 504）。改成任务后，提交立即返回，长任务在服务端
  *  继续跑，前端用 SSE 订阅阶段与进度，断线了还能重连/轮询，不会丢结果。
  */
-import { API, ApiError, apiJson } from "@/lib/api";
+import { API, ApiError, apiJson, ensureSession } from "@/lib/api";
 
 export type JobKind = "xray" | "compare" | "novelty" | "design" | "mindmap" | "experiment" | "paper_experiments" | "design_review" | "design_outcomes";
 
@@ -28,6 +28,7 @@ type Handlers = {
   onSnapshot?: (snapshot: JobSnapshot) => void;
   onStage?: (stage: string, label: string) => void;
   onProgress?: (progress: JobProgress) => void;
+  onConnection?: (connected: boolean) => void;
 };
 
 const TERMINAL: ReadonlySet<JobStatus> = new Set<JobStatus>(["done", "failed", "canceled"]);
@@ -43,12 +44,18 @@ export async function submitJob(kind: JobKind, params: Record<string, unknown>):
 }
 
 export async function getJob(id: string): Promise<JobSnapshot> {
-  return apiJson<JobSnapshot>(`/api/jobs/${encodeURIComponent(id)}`);
+  return apiJson<JobSnapshot>(`/api/jobs/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(8000) });
+}
+
+export async function requestJobCancellation(id: string): Promise<void> {
+  await apiJson<{ canceled: boolean }>(`/api/jobs/${encodeURIComponent(id)}`, {
+    method: "DELETE", signal: AbortSignal.timeout(8000),
+  });
 }
 
 export async function cancelJob(id: string): Promise<void> {
   try {
-    await apiJson<{ canceled: boolean }>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await requestJobCancellation(id);
   } catch {
     // 取消失败不应影响调用方：任务可能已经结束，或者页面已经离开、连接已断。
   }
@@ -64,14 +71,13 @@ function readEventData(event: Event): unknown {
   }
 }
 
-/** 订阅任务：优先 SSE，连不上或静默时降级为 1 秒轮询；返回最终快照。
+/** 订阅任务：优先 SSE，连接异常时用带退避的轮询继续跟踪；返回最终快照。
  *
  *  - EventSource 在主域名同源时自动带 Cookie；dev 下前端 3000 端口直连 8000，
  *    必须 withCredentials 才能带上匿名会话 Cookie，否则后端看不到 owner。
  *  - signal abort（离开页面 / 切换论文）会关闭连接并调用 DELETE 取消任务，
  *    避免用户已经走了、后台还在白烧 token。
- *  - 约定：任务级失败（status=failed）不抛异常，交给调用方读 snapshot.error；
- *    只有「被 abort」才 reject AbortError，调用方用 signal.aborted 忽略即可。
+ *  - 任务级失败由最终快照报告。永久读取错误与主动中止会拒绝订阅。
  */
 export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSignal): Promise<JobSnapshot> {
   return new Promise<JobSnapshot>((resolve, reject) => {
@@ -81,6 +87,14 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
     let safetyTimer: ReturnType<typeof setTimeout> | null = null;
     let polling = false;
     let latest: JobSnapshot | null = null;
+    let connected = true;
+    let events = 0;
+
+    const reportConnection = (available: boolean) => {
+      if (settled || connected === available) return;
+      connected = available;
+      handlers.onConnection?.(available);
+    };
 
     const stop = () => {
       if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
@@ -115,33 +129,35 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
       if (snapshot.stage || snapshot.stage_label) handlers.onStage?.(snapshot.stage ?? "", snapshot.stage_label ?? "");
       if (snapshot.progress) handlers.onProgress?.(snapshot.progress);
       if (!TERMINAL.has(snapshot.status)) return;
-      if (snapshot.status === "done" && snapshot.result == null) {
-        // 结果事件偶尔会晚于终态快照到达；补一次完整记录，避免上层拿到空 result。
-        getJob(id).then((full) => settle({ ...full, status: "done" })).catch(fail);
-        return;
-      }
+      if (snapshot.status === "done" && snapshot.result == null) return;
       settle(snapshot);
     };
 
     const startPolling = (interval = 1000) => {
       if (polling || settled) return;
       polling = true;
+      let retryDelay = interval;
       const tick = async () => {
         if (settled) return;
+        const eventCount = events;
         try {
           const snapshot = await getJob(id);
-          pushSnapshot(snapshot);
+          reportConnection(true);
+          if (events === eventCount || TERMINAL.has(snapshot.status)) pushSnapshot(snapshot);
+          retryDelay = interval;
           if (settled) return;
         } catch (error) {
           if (error instanceof ApiError && [401, 403, 404].includes(error.status)) { fail(error); return; }
-          // 网络抖动不应该中断等待：下一轮继续。
+          if (eventCount === events) reportConnection(false);
+          retryDelay = Math.min(8000, retryDelay * 2);
         }
-        if (!settled) pollTimer = setTimeout(tick, interval);
+        if (!settled) pollTimer = setTimeout(tick, retryDelay);
       };
       void tick();
     };
 
     const startSse = () => {
+      if (settled) return;
       if (typeof window === "undefined" || typeof EventSource === "undefined") { startPolling(); return; }
       try {
         source = new EventSource(`${API}/api/jobs/${encodeURIComponent(id)}/events`, { withCredentials: true });
@@ -151,23 +167,26 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
       }
       source.addEventListener("snapshot", (event) => {
         const snapshot = readEventData(event) as JobSnapshot | null;
-        if (snapshot) pushSnapshot(snapshot);
+        if (snapshot) {
+          ++events; reportConnection(true); pushSnapshot(snapshot);
+          if (snapshot.status === "done" && snapshot.result == null) startPolling();
+        }
       });
       source.addEventListener("stage", (event) => {
         if (settled) return;
         const data = readEventData(event) as { stage?: string; label?: string } | null;
-        if (data) handlers.onStage?.(data.stage ?? "", data.label ?? "");
+        if (data) { ++events; reportConnection(true); handlers.onStage?.(data.stage ?? "", data.label ?? ""); }
       });
       source.addEventListener("progress", (event) => {
         if (settled) return;
         const data = readEventData(event) as { done?: number; total?: number } | null;
-        if (data) handlers.onProgress?.({ done: data.done ?? 0, total: data.total ?? 0 });
+        if (data) { ++events; reportConnection(true); handlers.onProgress?.({ done: data.done ?? 0, total: data.total ?? 0 }); }
       });
       source.addEventListener("result", (event) => {
         const artifact = readEventData(event);
         if (settled) return;
-        if (latest) { settle({ ...latest, status: "done", result: artifact }); return; }
-        getJob(id).then((full) => settle({ ...full, status: "done", result: full.result ?? artifact })).catch(fail);
+        if (latest && artifact != null) { settle({ ...latest, status: "done", result: artifact }); return; }
+        startPolling();
       });
       source.addEventListener("error", (event) => {
         // 两种 error 要分开：业务错误事件带 data；传输层错误（network/chunked 断开）没有 data。
@@ -177,7 +196,7 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
           const error = { code: data.code ?? "unknown", message: data.message ?? "任务失败，请重试" };
           const status = error.code === "canceled" ? "canceled" : "failed";
           if (latest) { settle({ ...latest, status, error }); return; }
-          getJob(id).then((full) => settle({ ...full, status, error })).catch(fail);
+          startPolling();
           return;
         }
         source?.close();
@@ -193,6 +212,6 @@ export function watchJob(id: string, handlers: Handlers = {}, signal?: AbortSign
       if (signal.aborted) { onAbort(); return; }
       signal.addEventListener("abort", onAbort, { once: true });
     }
-    startSse();
+    void ensureSession().then(startSse, () => startPolling());
   });
 }

@@ -37,6 +37,7 @@ export default function SynthesisPage() {
   const { job, start, cancel, dismiss } = useWorkspaceJob("synthesis");
   const busy = job?.status === "running";
   const [error, setError] = useState("");
+  const [taskCanceled, setTaskCanceled] = useState(false);
   const [selectedCell, setSelectedCell] = useState<{cell: Cell; dimension: string} | null>(null);
   const [activeDimension, setActiveDimension] = useState(0);
   const resultRef = useRef<HTMLElement>(null);
@@ -102,10 +103,12 @@ export default function SynthesisPage() {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
     setError("");
+    setTaskCanceled(false);
     void start("compare", { paper_ids: selected }, { after: selectionWrites.current });
   }
   useEffect(() => {
     if (!job || job.status === "running") return;
+    if (job.status === "canceled") setTaskCanceled(true);
     const result = job.result as Artifact | null;
     if (job.status !== "done" || !result?.payload) {
       dismiss(job);
@@ -172,8 +175,9 @@ export default function SynthesisPage() {
     </section>
     {!data && !loadingArtifact && libraryReady && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
+    {taskCanceled && <p className="workspaceLoading" role="status">任务已取消。</p>}
     {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续，回来还能看到结果。 */}
-    <JobProgress variant="fixed" title="正在综合全文证据" stageLabel={job?.stage} progress={job?.progress} startedAt={busy ? job.startedAt : null} onCancel={cancel} />
+    <JobProgress variant="fixed" title="正在综合全文证据" stageLabel={job?.stage} progress={job?.progress} startedAt={busy ? job.startedAt : null} onCancel={cancel} cancelPending={job?.cancelPending} cancelError={job?.cancelError} reconnecting={job?.reconnecting} />
     {loadingArtifact && <p className="workspaceLoading" role="status">正在打开上次综合结果…</p>}
     {artifactError && <div className="researchError" role="alert">{artifactError} <button className="quietButton" onClick={() => setArtifactAttempt((count) => count + 1)}>重试</button></div>}
     {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
