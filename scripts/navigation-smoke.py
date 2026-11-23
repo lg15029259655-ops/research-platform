@@ -1077,6 +1077,45 @@ def synthesis_view_loading(browser, frontend, backend):
     context.close()
 
 
+def keyboard_navigation(browser, frontend, viewport=None):
+    context = browser.new_context(viewport=viewport)
+    page = context.new_page()
+    page.goto(f"{frontend}/discover")
+    main = page.get_by_role("main")
+    skip = page.get_by_role("link", name="跳到主要内容")
+    page.keyboard.press("Tab")
+    expect(skip).to_be_focused()
+    skip.press("Enter")
+    expect(main).to_be_focused()
+    page.keyboard.press("Tab")
+    expect(page.get_by_role("textbox", name="论文检索")).to_be_focused()
+    expect(page).to_have_title("文献发现 · MedRead")
+
+    for path, title in [("/read", "深度精读"), ("/synthesis", "文献综合"), ("/design", "科研设计")]:
+        target = page.locator(f'.researchNav nav a[href="{path}"]')
+        target.focus()
+        target.press("Enter")
+        expect(target).to_have_attribute("aria-current", "page")
+        expect(main).to_be_focused()
+        expect(page).to_have_title(f"{title} · MedRead")
+
+    page.go_back()
+    expect(main).to_be_focused()
+    expect(page).to_have_title("文献综合 · MedRead")
+    evidence = page.get_by_role("tab", name="证据关系")
+    evidence.focus()
+    evidence.press("Enter")
+    expect(evidence).to_be_focused()
+    expect(evidence).to_have_attribute("aria-selected", "true")
+
+    brand = page.locator(".navBrand")
+    brand.focus()
+    brand.press("Enter")
+    expect(page).to_have_url(f"{frontend}/")
+    expect(main).to_be_focused()
+    context.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frontend", default="http://127.0.0.1:3320")
@@ -1087,6 +1126,7 @@ if __name__ == "__main__":
         browser = playwright.chromium.launch(channel="chrome" if args.chrome else None)
         try:
             smoke(browser, args.frontend, args.backend)
+            keyboard_navigation(browser, args.frontend, viewport={"width": 390, "height": 844})
             background_jobs(browser, args.frontend, args.backend)
             reload_before_job_confirmation(browser, args.frontend, args.backend)
             reload_before_upload_confirmation(browser, args.frontend, args.backend)

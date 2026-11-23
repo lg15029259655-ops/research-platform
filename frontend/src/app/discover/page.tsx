@@ -1,5 +1,6 @@
 "use client";
 
+import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChangeEvent, useEffect, useRef, useState } from "react";
@@ -358,7 +359,7 @@ export default function DiscoverPage() {
     </article>;
   }
 
-  return <main id="main" className="researchPage">
+  return <PageMain route="/discover" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">01 / DISCOVER</div><h1>从一个问题，找到值得深读的论文。</h1><p>检索 OpenAlex 中标注为生命科学或健康科学的文献；自动分类可能遗漏相关研究，请核对原文。</p></div>
     <form className="searchBox" onSubmit={(e) => { e.preventDefault(); search(1); }}><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="例如：单细胞测序如何揭示肿瘤耐药机制？" aria-label="论文检索" /><button disabled={busy || !query.trim()} aria-busy={busy}>{busy ? "检索中…" : "检索论文 ↗"}</button></form>
     <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} disabled={busy || restoring} onClick={() => changeSearchMode("semantic")}>语义检索</button><button className={mode === "keyword" ? "active" : ""} disabled={busy || restoring} onClick={() => changeSearchMode("keyword")}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
@@ -431,5 +432,5 @@ export default function DiscoverPage() {
         <Link href="/synthesis">开始综合 →</Link>
       </div>
     )}
-  </main>;
+  </PageMain>;
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { type CSSProperties, type KeyboardEvent, type ReactNode, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -758,7 +759,7 @@ export default function ReadPage() {
     </div>
     <div className="libraryFoot">上传的 PDF 保存在当前服务端</div>
   </>;
-  return <main id="main" className={`reader ${compact ? "readerCompact" : ""} ${!libraryOpen ? "libraryClosed" : ""}`}>
+  return <PageMain route="/read" className={`reader ${compact ? "readerCompact" : ""} ${!libraryOpen ? "libraryClosed" : ""}`}>
     {compact ? <dialog id="reader-library" ref={libraryDrawer} className="libraryDrawer" aria-labelledby="reader-library-title"
       onClose={() => { setDrawerOpen(false); libraryToggle.current?.focus({ preventScroll: true }); }}
       onClick={(event) => { if (event.target === event.currentTarget) closeLibraryDrawer(); }}>
@@ -819,5 +820,5 @@ export default function ReadPage() {
         </RetainedPane>
       </div></>}
     </section>
-  </main>;
+  </PageMain>;
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -219,7 +220,7 @@ export default function SynthesisPage() {
     setShowSelection(true);
     selectionRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
   }
-  return <main id="main" className="researchPage">
+  return <PageMain route="/synthesis" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">03 / SYNTHESIZE</div><h1>把多篇论文放在同一张证据桌上。</h1><p>选取 2–5 篇已有可解析 PDF 的论文，比较研究问题、方法、结论与证据边界。</p></div>
     <SavedHistory<SavedComparison> title="综合历史" endpoint="/api/research/comparisons" currentId={workspace?.synthesis_id} viewingId={artifactId} scroll={false}
       href={(entry) => `/synthesis?artifact=${encodeURIComponent(entry.id)}`}
@@ -278,5 +279,5 @@ export default function SynthesisPage() {
         handoffError={handoffError?.artifactId === artifactId ? handoffError?.message : undefined} />}
     </section>}
     {selectedCell && <EvidenceDrawer title={selectedCell.dimension} eyebrow={label(selectedCell.cell.paper_id)} onClose={() => setSelectedCell(null)}><p>{selectedCell.cell.value || "未提取到证据"}</p><p className="miniNotice">此单元格是综合分析的概述，请核对原文；来源标记不能代替可点击的原文定位。</p>{selectedCell.cell.source && <dl><dt>来源标记</dt><dd>{selectedCell.cell.source}</dd></dl>}<Link className="drawerAction" href={`/read?paper=${selectedCell.cell.paper_id}`}>打开论文核对 ↗</Link></EvidenceDrawer>}
-  </main>;
+  </PageMain>;
 }

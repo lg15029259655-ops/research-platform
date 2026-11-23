@@ -1,5 +1,6 @@
 "use client";
 
+import PageMain from "@/components/PageMain";
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -70,7 +71,7 @@ export default function Home() {
     router.push(`/discover?q=${encodeURIComponent(q)}`);
   }
 
-  return <main className="home-page" id="main">
+  return <PageMain route="/" className="home-page">
     <div className="home-container">
       {/* 分区 1 · header（brand chrome） */}
       <header className="home-header">
@@ -146,5 +147,5 @@ export default function Home() {
       {/* 分区 7 · footer */}
       <footer className="home-footer"><span>MedRead / 科研工作台</span><span>让研究过程有迹可循</span></footer>
     </div>
-  </main>;
+  </PageMain>;
 }
