@@ -232,6 +232,33 @@ def test_duplicate_submit_reuses_running_job():
             _cleanup()
 
 
+def test_submission_receipts_survive_completion_and_restart_without_requeueing():
+    receipt = str(uuid4())
+    second_receipt = str(uuid4())
+    path = f"/api/jobs/submissions/{receipt}"
+    request = {"kind": "test_echo", "params": {"value": "same"}, "request_id": receipt}
+    try:
+        with TestClient(app) as client:
+            first = client.post("/api/jobs", json=request).raise_for_status().json()
+            duplicate = client.post("/api/jobs", json={**request, "request_id": second_receipt}).raise_for_status().json()
+            assert first["id"] == duplicate["id"]
+            finished = _wait(client, first["id"])
+            assert finished["status"] == "done"
+            assert client.get(f"/api/jobs/submissions/{second_receipt}").json() == finished
+            cookies = dict(client.cookies)
+        with TestClient(app, cookies=cookies) as reopened:
+            assert reopened.get(path).json() == finished
+            assert reopened.post("/api/jobs", json=request).json() == finished
+            assert reopened.post("/api/jobs", json={**request, "params": {"value": "different"}}).status_code == 409
+            fresh = reopened.post("/api/jobs", json={**request, "request_id": str(uuid4())}).raise_for_status().json()
+            assert fresh["id"] != first["id"]
+            assert _wait(reopened, fresh["id"])["status"] == "done"
+        with TestClient(app) as stranger:
+            assert stranger.get(path).status_code == 404
+    finally:
+        _cleanup()
+
+
 def test_job_cancel_marks_canceled_and_keeps_worker_alive():
     with TestClient(app) as client:
         try:

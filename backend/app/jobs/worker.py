@@ -81,12 +81,13 @@ def _dedupe_key(owner: str, kind: str, params: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-async def enqueue(kind: str, owner: str, params: dict) -> dict:
+async def enqueue(kind: str, owner: str, params: dict, request_id: str | None = None) -> dict:
     if kind not in _handlers:
         raise ValueError(f"未注册的任务类型: {kind}")
+    submission = (request_id, _dedupe_key(owner, kind, params)) if request_id else None
     if kind in JOB_CONTEXT_FIELDS:
         params = {**params, "_workspace_context": job_workspace_context(owner, kind)}
-    snapshot, reused = store.create_or_reuse(owner, kind, params, _dedupe_key(owner, kind, params))
+    snapshot, reused = store.create_or_reuse(owner, kind, params, _dedupe_key(owner, kind, params), submission)
     if not reused and _queue is not None:
         _queue.put_nowait(snapshot["id"])
         if _wakeup is not None:

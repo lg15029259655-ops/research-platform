@@ -176,6 +176,14 @@ class AiJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AiJobSubmission(Base):
+    __tablename__ = "ai_job_submissions"
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("ai_jobs.id", ondelete="CASCADE"), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+
+
 class DiscoveryCache(Base):
     __tablename__ = "discovery_cache"
     cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)

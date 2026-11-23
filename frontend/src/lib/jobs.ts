@@ -34,12 +34,19 @@ type Handlers = {
 const TERMINAL: ReadonlySet<JobStatus> = new Set<JobStatus>(["done", "failed", "canceled"]);
 
 /** 同一请求已在跑时，后端返回的是同一个 job（幂等），所以重复点击不会重复烧 token。 */
-export async function submitJob(kind: JobKind, params: Record<string, unknown>): Promise<JobSnapshot> {
+export async function submitJob(kind: JobKind, params: Record<string, unknown>, requestId?: string): Promise<JobSnapshot> {
   // 后端返回 202；apiJson 只在 !ok 时抛错，202 属于 ok。
   return apiJson<JobSnapshot>("/api/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind, params }),
+    body: JSON.stringify({ kind, params, request_id: requestId }),
+    signal: requestId ? AbortSignal.timeout(10000) : undefined,
+  });
+}
+
+export function findJobSubmission(requestId: string): Promise<JobSnapshot> {
+  return apiJson<JobSnapshot>(`/api/jobs/submissions/${encodeURIComponent(requestId)}`, {
+    signal: AbortSignal.timeout(8000), cache: "no-store",
   });
 }
 

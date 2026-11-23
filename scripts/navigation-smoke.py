@@ -105,6 +105,51 @@ def background_jobs(browser, frontend, backend):
     context.close()
 
 
+def reload_before_job_confirmation(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    page.goto(f"{frontend}/synthesis")
+    page.get_by_role("button", name="更换对比论文").click()
+    page.locator(".selectionList input").last.uncheck()
+    expect(page.get_by_text("正在保存论文选择…")).to_have_count(0)
+    submissions = []
+    held = []
+    lookups = []
+    job_reads = []
+    page.on("request", lambda request: job_reads.append(request.url) if "/api/jobs/" in request.url else None)
+
+    def hold_confirmation(route):
+        body = route.request.post_data_json
+        # Exercise the real queue without asking a model to generate a result.
+        response = route.fetch(post_data={**body, "params": {"paper_ids": []}})
+        assert response.status == 202, response.text()
+        submissions.append((body["request_id"], response.json()["id"]))
+        held.append(route)
+
+    context.route(f"{backend}/api/jobs", hold_confirmation)
+    page.get_by_role("button", name="按当前选择重新综合").click()
+    expect(page.get_by_text("正在提交任务")).to_be_visible()
+    pending = page.evaluate("JSON.parse(sessionStorage.getItem('medread-job-synthesis'))")
+    assert "requestId" in pending and "id" not in pending
+    receipt_url = f"{backend}/api/jobs/submissions/{pending['requestId']}"
+
+    def temporarily_offline(route):
+        lookups.append(route.request.url)
+        route.abort("internetdisconnected")
+
+    context.route(receipt_url, temporarily_offline, times=1)
+    with page.expect_request(receipt_url):
+        page.reload()
+    expect(page.get_by_role("alert").filter(has_text="请选择至少两篇论文")).to_be_visible()
+    assert len(submissions) == 1 and submissions[0][0] == pending["requestId"]
+    assert lookups == [receipt_url]
+    recovered = context.request.get(receipt_url).json()
+    assert recovered["id"] == submissions[0][1] and recovered["status"] == "failed"
+    assert job_reads == [receipt_url, receipt_url]
+    held[0].abort()
+    context.close()
+
+
 def manual_design_draft(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
@@ -764,6 +809,7 @@ if __name__ == "__main__":
         try:
             smoke(browser, args.frontend, args.backend)
             background_jobs(browser, args.frontend, args.backend)
+            reload_before_job_confirmation(browser, args.frontend, args.backend)
             manual_design_draft(browser, args.frontend, args.backend)
             compact_reading(browser, args.frontend, args.backend)
             shared_selection(browser, args.frontend, args.backend)

@@ -1,7 +1,7 @@
 """ai_jobs 的持久化操作：创建、去重、状态推进、快照序列化。
 
-去重只针对"进行中"的任务：同一资源连点不会重复调用模型；已经完成的任务不会被
-复用，因为结果是否过期应该由业务层按论文/解析版本判断（例如重新解析后必须重算）。
+新提交仅复用进行中的同参数任务。提交回执可找回原任务，包含已结束的任务；
+主动重新运行时使用新回执，结果是否过期由业务层判断。
 """
 
 import json
@@ -11,9 +11,13 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from ..db import SessionLocal
-from ..models import AiJob
+from ..models import AiJob, AiJobSubmission
 
 TERMINAL = ("done", "failed", "canceled")
+
+
+class SubmissionConflict(Exception):
+    """A submitter tried to reuse its receipt for different input."""
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -49,32 +53,47 @@ def load_owned(job_id: str, owner: str) -> dict | None:
         return snapshot(job)
 
 
-def create_or_reuse(owner: str, kind: str, params: dict, dedupe_key: str) -> tuple[dict, bool]:
+def load_submission(request_id: str, owner: str) -> dict | None:
+    with SessionLocal() as db:
+        job = db.scalar(select(AiJob).join(AiJobSubmission, AiJobSubmission.job_id == AiJob.id).where(
+            AiJobSubmission.owner_id == owner, AiJobSubmission.request_id == request_id, AiJob.owner_id == owner,
+        ))
+        return snapshot(job) if job else None
+
+
+def create_or_reuse(owner: str, kind: str, params: dict, dedupe_key: str,
+                    submission: tuple[str, str] | None = None) -> tuple[dict, bool]:
     """返回 (快照, 是否复用了进行中的任务)。"""
     with SessionLocal() as db:
-        existing = db.scalar(
+        # Read receipts and acquire/create the job in the same SQLite write transaction.
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        if submission:
+            request_id, fingerprint = submission
+            saved = db.get(AiJobSubmission, (owner, request_id))
+            if saved:
+                if saved.fingerprint != fingerprint:
+                    raise SubmissionConflict
+                return snapshot(db.get(AiJob, saved.job_id)), True
+        job = db.scalar(
             select(AiJob).where(
                 AiJob.owner_id == owner,
                 AiJob.dedupe_key == dedupe_key,
                 AiJob.status.in_(("queued", "running")),
             )
         )
-        if existing is not None:
-            return snapshot(existing), True
-        job = AiJob(
-            id=str(uuid4()),
-            owner_id=owner,
-            kind=kind,
-            dedupe_key=dedupe_key,
-            params_json=json.dumps(params, ensure_ascii=False),
-            status="queued",
-            stage="queued",
-            stage_label="排队中",
-        )
-        db.add(job)
+        reused = job is not None
+        if job is None:
+            job = AiJob(id=str(uuid4()), owner_id=owner, kind=kind, dedupe_key=dedupe_key,
+                        params_json=json.dumps(params, ensure_ascii=False), status="queued",
+                        stage="queued", stage_label="排队中")
+            db.add(job)
+            db.flush()
+        if submission:
+            request_id, fingerprint = submission
+            db.add(AiJobSubmission(owner_id=owner, request_id=request_id,
+                                   job_id=job.id, fingerprint=fingerprint))
         db.commit()
-        db.refresh(job)
-        return snapshot(job), False
+        return snapshot(job), reused
 
 
 def params_of(job_id: str) -> dict:

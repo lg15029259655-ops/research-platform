@@ -1,10 +1,11 @@
-"""任务 API：提交、快照、进度订阅（SSE）、取消。
+"""任务 API：提交、按回执恢复、快照、进度订阅（SSE）、取消。
 
-前端只依赖这 4 个接口，具体任务类型由 jobs.handlers 注册，路由层保持稳定。
+具体任务类型由 jobs.handlers 注册，路由层保持稳定。
 """
 
 
 
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 
 from pydantic import BaseModel, Field
@@ -21,14 +22,25 @@ Owner = Depends(current_owner)
 class JobRequest(BaseModel):
     kind: str = Field(min_length=1, max_length=30)
     params: dict = Field(default_factory=dict)
+    request_id: UUID | None = None
 
 
 @router.post("", status_code=202)
 async def submit(request: JobRequest, owner: str = Owner):
     try:
-        snapshot = await worker.enqueue(request.kind, owner, request.params)
+        snapshot = await worker.enqueue(request.kind, owner, request.params, str(request.request_id) if request.request_id else None)
+    except store.SubmissionConflict as exc:
+        raise HTTPException(409, "这次提交已用于其他任务") from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    return snapshot
+
+
+@router.get("/submissions/{request_id}")
+def job_submission(request_id: UUID, owner: str = Owner):
+    snapshot = store.load_submission(str(request_id), owner)
+    if snapshot is None:
+        raise HTTPException(404, "暂未找到这次提交")
     return snapshot
 
 
