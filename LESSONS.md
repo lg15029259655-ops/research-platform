@@ -868,3 +868,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the historical design view used the same retry control for empty results and interrupted requests. It also accepted the first returned entry without checking its artifact ID.
 - Action: match the requested design artifact. Keep the direct return to the current design for a missing version, and preserve the historical stage link during temporary retries.
 - Verification: Chrome and Edge on both appearances retried an injected historical-view failure and reopened the requested stage. An unknown version used the missing state and returned to the current design. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
+
+## L-20261123-65 — Keep saved history pagination usable after a failed read
+
+- Evidence: starting a history page read removed the focused action from the DOM. A request failure left earlier records visible but required keyboard users to find a newly mounted retry control.
+- Action: retain one action during loading and retry, and keep the failed cursor for the next attempt. When the final page removes the focused action, focus the first newly shown record if focus still needs a destination.
+- Verification: Chrome and Edge on both appearances injected a 503 for the first older-page request in design and synthesis, confirmed the visible entry remained, retried from the same button with Enter, and checked final-page and Back navigation focus. Both production builds, both full Chrome navigation runs, 154 backend tests, 13 frontend tests, source preflight and the visual rollback patch check passed. The two previews match across backend application and frontend source outside the five appearance paths. Repeat visual measurements after the PDF canvas is ready so the initial reader layout cannot skew the result.

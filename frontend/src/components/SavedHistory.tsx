@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { apiJson } from "@/lib/api";
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 
@@ -54,6 +54,8 @@ function HistoryEntries<T extends Entry>({ title, endpoint, currentId, viewingId
   const next = state?.page?.next_before;
   const request = useRef<AbortController | null>(null);
   const links = useRef(new Map<string, HTMLAnchorElement>());
+  const pagination = useRef<HTMLButtonElement>(null);
+  const finalPageFocus = useRef<string | null>(null);
 
   function updateHistory(change: HistoryState<T>) {
     writeTabDraft(historyKey, { ...readTabDraft<HistoryState<T>>(historyKey), ...change });
@@ -63,7 +65,7 @@ function HistoryEntries<T extends Entry>({ title, endpoint, currentId, viewingId
     if (request.current) return;
     const controller = new AbortController();
     request.current = controller;
-    setLoading(true); setFailedBefore(undefined);
+    setLoading(true);
     try {
       const params = before ? `?before=${encodeURIComponent(before)}` : "";
       const result = await apiJson<HistoryPage<T>>(`${endpoint}${params}`, {
@@ -71,8 +73,13 @@ function HistoryEntries<T extends Entry>({ title, endpoint, currentId, viewingId
       });
       if (controller.signal.aborted) return;
       const latest = readTabDraft<HistoryState<T>>(historyKey);
-      updateHistory({ open: latest?.open ?? true,
-        page: mergeHistory(latest?.page, result, before !== null), loadedFor: currentId ?? "" });
+      const page = mergeHistory(latest?.page, result, before !== null);
+      if (!page.next_before && document.activeElement === pagination.current) {
+        const firstAdded = before ? latest?.page?.items.length ?? 0 : 0;
+        finalPageFocus.current = (page.items[firstAdded] ?? page.items.at(-1))?.id ?? null;
+      }
+      updateHistory({ open: latest?.open ?? true, page, loadedFor: currentId ?? "" });
+      setFailedBefore(undefined);
     } catch {
       if (!controller.signal.aborted) setFailedBefore(before);
     } finally {
@@ -103,6 +110,16 @@ function HistoryEntries<T extends Entry>({ title, endpoint, currentId, viewingId
     return () => cancelAnimationFrame(frame);
   }, [historyKey, viewingId]);
 
+  useLayoutEffect(() => {
+    if (loading || next || failedBefore !== undefined || !finalPageFocus.current) return;
+    const id = finalPageFocus.current;
+    finalPageFocus.current = null;
+    if (document.activeElement === document.body) links.current.get(id)?.focus();
+  }, [loading, next, failedBefore]);
+
+  const cursor = failedBefore !== undefined ? failedBefore : next;
+  const showPagination = failedBefore !== undefined || Boolean(next);
+
   return <>
     {!!entries.length && <ul>
       {entries.map((entry) => <li key={entry.id}>
@@ -117,9 +134,11 @@ function HistoryEntries<T extends Entry>({ title, endpoint, currentId, viewingId
         </p>
       </li>)}
     </ul>}
-    {loading && <p className="workspaceLoading" role="status">正在读取{title}…</p>}
-    {failedBefore !== undefined && <p className="researchError" role="alert">暂时无法读取{title}。 <button className="quietButton" onClick={() => void load(failedBefore)}>重试读取历史</button></p>}
+    {loading && <p className="workspaceLoading" role="status">{showPagination ? "正在读取历史记录…" : `正在读取${title}…`}</p>}
+    {!loading && failedBefore !== undefined && <p className="researchError" role="alert">{failedBefore === null ? `暂时无法读取${title}。` : "暂时无法读取更早的记录。"}</p>}
     {!loading && failedBefore === undefined && !entries.length && <p>这里还没有已保存的记录。</p>}
-    {!loading && failedBefore === undefined && next && <button className="quietButton" onClick={() => void load(next)}>加载更早的记录</button>}
+    {showPagination && <button ref={pagination} className="quietButton" aria-disabled={loading || undefined} onClick={() => {
+      if (!loading) void load(cursor);
+    }}>{loading ? "正在读取…" : failedBefore !== undefined ? "重试读取历史" : "加载更早的记录"}</button>}
   </>;
 }

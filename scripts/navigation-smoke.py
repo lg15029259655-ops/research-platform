@@ -1994,31 +1994,41 @@ def history_list_navigation(browser, frontend, backend):
                 route.fulfill(json={"items": items, "next_before": first["id"]})
             else:
                 assert cursor == first["id"]
-                route.fulfill(json={"items": [older], "next_before": None})
+                if reads.count(cursor) == 1:
+                    route.fulfill(status=503, json={"detail": "Temporary history failure"})
+                else:
+                    route.fulfill(json={"items": [older], "next_before": None})
 
         context.route(re.compile(rf"^{re.escape(endpoint)}(?:[?].*)?$"), history_fixture)
         page = context.new_page()
         page.goto(f"{frontend}/{scope}")
         history = page.locator(".synthesisHistory")
         history.get_by_text(title, exact=True).click()
-        history.get_by_role("button", name="加载更早的记录").click()
+        load_more = history.get_by_role("button", name="加载更早的记录")
+        load_more.press("Enter")
+        retry = history.get_by_role("button", name="重试读取历史")
+        expect(history.get_by_role("alert")).to_have_text("暂时无法读取更早的记录。")
+        expect(history.locator("li")).to_have_count(1)
+        expect(retry).to_be_focused()
+        retry.press("Enter")
         link = history.locator(f'[href="{urlsplit(historical).path}?{urlsplit(historical).query}"]')
         expect(link).to_have_text(expected_label)
+        expect(link).to_be_focused()
         link.click()
         expect(page).to_have_url(historical)
         page.go_back()
         expect(link).to_be_focused()
         expect(history.locator("li")).to_have_count(2)
-        assert reads == [None, first["id"]]
+        assert reads == [None, first["id"], first["id"]]
         page.reload()
         expect(link).to_be_visible()
-        assert reads == [None, first["id"]]
+        assert reads == [None, first["id"], first["id"]]
         history.get_by_text(title, exact=True).click()
         expect(link).to_be_hidden()
         with page.expect_response(endpoint):
             history.get_by_text(title, exact=True).click()
         expect(link).to_be_visible()
-        assert reads == [None, first["id"], None]
+        assert reads == [None, first["id"], first["id"], None]
         if scope == "design":
             updated = context.request.post(f"{backend}/api/research/design/manual",
                                            data={"artifact_id": first["id"], "design": version["payload"]}).json()
@@ -2027,7 +2037,7 @@ def history_list_navigation(browser, frontend, backend):
             expect(history.locator(f'a[href="/design?version={newest["id"]}"]')).to_have_attribute("aria-current", "page")
             expect(link).to_be_visible()
             expect(history.locator("li")).to_have_count(3)
-            assert reads == [None, first["id"], None, None]
+            assert reads == [None, first["id"], first["id"], None, None]
             context.clear_cookies()
             page.reload()
             expect(page.get_by_label("我的研究想法")).to_be_enabled()
