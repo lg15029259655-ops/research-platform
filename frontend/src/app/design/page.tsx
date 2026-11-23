@@ -414,7 +414,8 @@ function DesignWorkspace() {
   }
   return <PageMain route="/design" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">04 / DESIGN</div><h1>让研究想法成为可检验的方案。</h1><p>结合文献线索和研究条件，设计可展开的实验路线，并逐步检查对照、指标与可能结果。</p></div>
-    <SavedHistory<SavedDesign> title="设计历史" endpoint="/api/research/design/history" currentId={currentDesignId} viewingId={currentDesignId}
+    <SavedHistory<SavedDesign> title="设计历史" endpoint="/api/research/design/history" workspaceId={workspace?.workspace_id}
+      currentId={currentDesignId} viewingId={currentDesignId}
       href={(entry) => `/design?version=${encodeURIComponent(entry.id)}`}
       label={(entry) => entry.goal || "已保存的研究设计"}
       metadata={(entry) => `V${entry.number} · ${actionLabels[entry.action] || entry.action}`} />

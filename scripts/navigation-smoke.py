@@ -1275,6 +1275,86 @@ def synthesis_view_loading(browser, frontend, backend):
     context.close()
 
 
+def history_list_navigation(browser, frontend, backend):
+    for scope in ("design", "synthesis"):
+        context = browser.new_context(viewport={"width": 390, "height": 844})
+        assert context.request.get(f"{backend}/api/session").ok
+        workspace = context.request.get(f"{backend}/api/workspace").json()
+        if scope == "design":
+            endpoint = f"{backend}/api/research/design/history"
+            artifact_id = workspace["design_version_id"]
+            version = context.request.get(
+                f"{backend}/api/research/design/versions?artifact_id={artifact_id}"
+            ).json()[0]
+            assert context.request.post(f"{backend}/api/research/design/manual",
+                                        data={"artifact_id": artifact_id, "design": version["payload"]}).ok
+            first, older = context.request.get(endpoint).json()["items"][:2]
+            historical = f"{frontend}/design?{urlencode({'version': older['id']})}"
+            expected_label = older["goal"]
+            title = "设计历史"
+        else:
+            endpoint = f"{backend}/api/research/comparisons"
+            first = context.request.get(endpoint).json()["items"][0]
+            older = {**first, "id": "historical-comparison-fixture", "titles": ["Older saved comparison"]}
+            historical = f"{frontend}/synthesis?{urlencode({'artifact': older['id']})}"
+            matrix = context.request.get(f"{endpoint}/{first['id']}?view=matrix").json()
+            context.route(f"{endpoint}/{older['id']}?view=matrix",
+                          lambda route: route.fulfill(json={**matrix, "id": older["id"]}))
+            expected_label = "Older saved comparison"
+            title = "综合历史"
+
+        reads = []
+        newest = None
+
+        def history_fixture(route):
+            cursor = parse_qs(urlsplit(route.request.url).query).get("before", [None])[0]
+            reads.append(cursor)
+            if cursor is None:
+                items = [newest, first] if newest else [first]
+                route.fulfill(json={"items": items, "next_before": first["id"]})
+            else:
+                assert cursor == first["id"]
+                route.fulfill(json={"items": [older], "next_before": None})
+
+        context.route(re.compile(rf"^{re.escape(endpoint)}(?:[?].*)?$"), history_fixture)
+        page = context.new_page()
+        page.goto(f"{frontend}/{scope}")
+        history = page.locator(".synthesisHistory")
+        history.get_by_text(title, exact=True).click()
+        history.get_by_role("button", name="加载更早的记录").click()
+        link = history.locator(f'[href="{urlsplit(historical).path}?{urlsplit(historical).query}"]')
+        expect(link).to_have_text(expected_label)
+        link.click()
+        expect(page).to_have_url(historical)
+        page.go_back()
+        expect(link).to_be_focused()
+        expect(history.locator("li")).to_have_count(2)
+        assert reads == [None, first["id"]]
+        page.reload()
+        expect(link).to_be_visible()
+        assert reads == [None, first["id"]]
+        history.get_by_text(title, exact=True).click()
+        expect(link).to_be_hidden()
+        with page.expect_response(endpoint):
+            history.get_by_text(title, exact=True).click()
+        expect(link).to_be_visible()
+        assert reads == [None, first["id"], None]
+        if scope == "design":
+            updated = context.request.post(f"{backend}/api/research/design/manual",
+                                           data={"artifact_id": first["id"], "design": version["payload"]}).json()
+            newest = {**first, "id": updated["id"], "number": updated["version"]["number"]}
+            page.evaluate("window.dispatchEvent(new Event('focus'))")
+            expect(history.locator(f'a[href="/design?version={newest["id"]}"]')).to_have_attribute("aria-current", "page")
+            expect(link).to_be_visible()
+            expect(history.locator("li")).to_have_count(3)
+            assert reads == [None, first["id"], None, None]
+            context.clear_cookies()
+            page.reload()
+            expect(page.get_by_label("我的研究想法")).to_be_enabled()
+            expect(history.locator("li")).to_have_count(0)
+        context.close()
+
+
 def design_view_navigation(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     assert context.request.get(f"{backend}/api/session").ok
@@ -1380,6 +1460,7 @@ if __name__ == "__main__":
             smoke(browser, args.frontend, args.backend)
             keyboard_navigation(browser, args.frontend, viewport={"width": 390, "height": 844})
             design_view_navigation(browser, args.frontend, args.backend)
+            history_list_navigation(browser, args.frontend, args.backend)
             background_jobs(browser, args.frontend, args.backend)
             reopen_saved_job_result(browser, args.frontend, args.backend)
             reload_before_job_confirmation(browser, args.frontend, args.backend)

@@ -253,7 +253,8 @@ export default function SynthesisPage() {
   }
   return <PageMain route="/synthesis" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">03 / SYNTHESIZE</div><h1>把多篇论文放在同一张证据桌上。</h1><p>选取 2–5 篇已有可解析 PDF 的论文，比较研究问题、方法、结论与证据边界。</p></div>
-    <SavedHistory<SavedComparison> title="综合历史" endpoint="/api/research/comparisons" currentId={workspace?.synthesis_id} viewingId={artifactId} scroll={false}
+    <SavedHistory<SavedComparison> title="综合历史" endpoint="/api/research/comparisons" workspaceId={workspace?.workspace_id}
+      currentId={workspace?.synthesis_id} viewingId={artifactId} scroll={false}
       href={(entry) => `/synthesis?artifact=${encodeURIComponent(entry.id)}`}
       label={(entry) => entry.titles.length ? entry.titles.join(" · ") : `${entry.paper_count} 篇论文的综合`}
       metadata={(entry) => `${entry.paper_count} 篇论文`} />

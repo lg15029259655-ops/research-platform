@@ -718,3 +718,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: synthesis and design discarded the completed job ticket when the follow-up workspace read failed, leaving the user to reopen the page or risk submitting a new job.
 - Action: keep the terminal job and its saved ticket until the workspace read succeeds or the user explicitly defers viewing. Offer a read retry and guard against submitting another job while this result is pending.
 - Verification: Chrome and Edge at 390px received completed synthesis and design jobs while workspace reads returned 503. After reload, the ticket remained recoverable. Retrying opened each saved result and cleared its ticket without an additional job read or submission. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.
+
+## L-20261123-41 — Preserve the loaded history when returning from a saved result
+
+- Evidence: closing history or replacing the design workspace with a preview discarded the loaded cursor pages. Returning meant opening the list and paging again.
+- Action: scope the open state, summary pages and last opened entry by authenticated workspace and history endpoint within the tab. Restore focus after returning. When the current result changes or the user intentionally reopens history, reconcile the newest page with the known older entries where they overlap.
+- Verification: Chrome and Edge at 390px loaded older records, went back from both historical views, restored focus and retained both pages through reload. Reopening refreshed only the first page. A newly saved design appeared while keeping the older entries, and an authenticated workspace change did not restore the previous workspace's list. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.
