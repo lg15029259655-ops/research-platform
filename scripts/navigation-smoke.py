@@ -1035,6 +1035,13 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
         return {"openalex_id": work_id, "title": title, "authors": [], "year": 2021,
                 "journal": "", "doi": "", "abstract": "", "citation_count": 0, "oa_pdf_url": None}
 
+    library_url = f"{backend}/api/papers?view=summary"
+    library = context.request.get(library_url).json()
+    saved_paper = next(paper for paper in library if paper["status"] == "parsed")
+    saved_paper["openalex_id"] = "W101"
+    context.route(library_url, lambda route: route.fulfill(json=library))
+    context.route(library_url, lambda route: route.fulfill(status=503, json={}), times=1)
+
     def search_fixture(route):
         query = parse_qs(urlsplit(route.request.url).query)
         term = query["q"][0]
@@ -1058,7 +1065,13 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     }))
 
     page.goto(f"{frontend}/discover?{urlencode({'q': initial})}")
-    expect(page.get_by_role("heading", name=initial)).to_be_visible()
+    initial_card = page.locator(".workCard").filter(has=page.get_by_role("heading", name=initial, exact=True))
+    expect(initial_card.get_by_text("全文状态待确认", exact=True)).to_be_visible()
+    expect(initial_card.get_by_text("尚无全文", exact=True)).to_have_count(0)
+    page.get_by_role("button", name="重试读取论文库", exact=True).click()
+    expect(initial_card.get_by_text("已有全文", exact=True)).to_be_visible()
+    expect(initial_card.get_by_role("link", name="打开全文精读")).to_have_attribute("href", f"/read?paper={saved_paper['id']}")
+    expect(page.get_by_role("alert").filter(has_text="无法核对论文库")).to_have_count(0)
     topic = page.get_by_role("region", name="研究主题")
     expect(topic).to_contain_text(original["query"])
     assert context.request.get(workspace_url).json() == original
@@ -1361,9 +1374,28 @@ def evidence_source_navigation(browser, frontend, backend):
     page_number = page.locator(".pageTools span").first
     expect(page_number).to_have_text(re.compile(rf"^{target} /"))
     expect(page.locator(".pdfCanvas canvas")).to_be_visible()
+    chat_tab = page.get_by_role("tab", name="AI 讲解", exact=True)
+    chat_tab.click()
+    chat_url = detail_url + "/chat"
+    context.route(chat_url, lambda route: route.fulfill(status=503, json={"detail": "精读服务暂不可用"}), times=1)
+    question = page.get_by_role("textbox", name="提出你的科研问题")
+    question.fill("Question with the paper library offline")
+    with page.expect_request(chat_url):
+        page.get_by_role("button", name=re.compile(r"^发送")).click()
+    expect(page.get_by_role("alert").filter(has_text="精读服务暂不可用")).to_be_visible()
+    expect(question).to_have_value("Question with the paper library offline")
+    page.get_by_role("tab", name="原文 PDF", exact=True).click()
     page.get_by_role("button", name="展开论文库").click()
     drawer = page.get_by_role("dialog", name="论文库")
     expect(drawer.get_by_role("alert").filter(has_text="暂时无法读取论文库")).to_be_visible()
+    upload_url = re.compile(rf"^{re.escape(backend)}/api/papers\?deferred=true&request_id=")
+    context.route(upload_url, lambda route: route.fulfill(status=422, json={"detail": "PDF 上传验证"}), times=1)
+    with page.expect_request(upload_url):
+        drawer.locator('input[type="file"]').set_input_files({
+            "name": "library-offline.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-",
+        })
+    expect(page.get_by_role("alert").filter(has_text="PDF 上传验证")).to_be_visible()
+    page.get_by_role("button", name="展开论文库").click()
     drawer.get_by_role("button", name="重试读取论文库").click()
     expect(drawer.locator(".paperItem[aria-current=true]")).to_contain_text(paper["title"])
     drawer.get_by_role("button", name="关闭论文库", exact=True).click()

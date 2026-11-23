@@ -130,7 +130,7 @@ export default function ReadPage() {
   const [lastPaper] = useTabDraft<string>(lastPaperKey);
   const [pendingUpload] = useTabDraft<PendingUpload>(pendingUploadKey);
   const selectedId = paperParam ?? lastPaper ?? workspace?.core_paper_id ?? null;
-  const [ready, setReady] = useState(false);
+  const [libraryReady, setLibraryReady] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
   const [papers, setPapers] = useState<PaperSummary[]>([]);
   const [record, setPaper] = useState<Paper | null>(null);
@@ -238,7 +238,7 @@ export default function ReadPage() {
       const items = await readPaperLibrary(controller.signal);
       if (controller.signal.aborted) return;
       setPapers(items);
-      setReady(true);
+      setLibraryReady(true);
     } catch (error) {
       if (controller.signal.aborted) return;
       setLibraryError(true);
@@ -400,7 +400,7 @@ export default function ReadPage() {
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (!file || !ready || pending || uploadAttempt.current) return;
+    if (!file || pending || uploadAttempt.current) return;
     const saved = readTabDraft<PendingUpload>(pendingUploadKey);
     const intent = saved?.name === file.name && saved.size === file.size && saved.modified === file.lastModified ? saved : {
       requestId: crypto.randomUUID(), name: file.name, size: file.size, modified: file.lastModified,
@@ -565,7 +565,7 @@ export default function ReadPage() {
   }
 
   async function act(action: Action, message?: string) {
-    if (!paper || !ready || pending || chatRequest.current) return;
+    if (!paper || paper.status !== "parsed" || pending || chatRequest.current) return;
     const controller = new AbortController();
     const network = new AbortController();
     const networkSignal = AbortSignal.any([controller.signal, network.signal]);
@@ -755,7 +755,7 @@ export default function ReadPage() {
     <div className="libraryHeading">
       <strong id="reader-library-title">论文库</strong>
       <label className="uploadBtn" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, libraryUploadRef.current)}>
-        ＋ 上传 PDF<input ref={libraryUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden />
+        ＋ 上传 PDF<input ref={libraryUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending} hidden />
       </label>
       {compact && <button className="quietButton libraryClose" type="button" aria-label="关闭论文库" onClick={closeLibraryDrawer}>关闭论文库</button>}
     </div>
@@ -775,7 +775,7 @@ export default function ReadPage() {
         <p className="pdfError" role="alert">暂时无法读取论文库。</p>
         <button type="button" className="quietButton" onClick={() => void loadList().catch(() => {})}>重试读取论文库</button>
       </div>}
-      {!ready ? (!libraryError && <p className="emptyLibrary" role="status">正在读取论文库…</p>)
+      {!libraryReady ? (!libraryError && <p className="emptyLibrary" role="status">正在读取论文库…</p>)
         : visiblePapers.length ? visiblePapers.map((item) => <div className="paperRow" key={item.id}>
           <button className={`paperItem ${selectedId === item.id ? "selected" : ""}`} disabled={!!parseStage}
             aria-current={selectedId === item.id ? "true" : undefined} onClick={() => selectPaper(item.id)}>
@@ -834,7 +834,7 @@ export default function ReadPage() {
         <h2>暂时无法打开论文</h2>
         <p role="alert">{openError}</p>
         <button type="button" className="quietButton" onClick={() => selectPaper(selectedId)}>重试打开论文</button>
-      </div> : readerLoading && !parseStage ? <div className="welcome" role="status" aria-busy="true"><h2>正在打开论文…</h2></div> : !paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || "让阅读从原文开始"}</h2><p>上传 PDF 后，可查看原文并按阅读单元逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
+      </div> : readerLoading && !parseStage ? <div className="welcome" role="status" aria-busy="true"><h2>正在打开论文…</h2></div> : !paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || "让阅读从原文开始"}</h2><p>上传 PDF 后，可查看原文并按阅读单元逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> :
       <>
       {readerTab === "mindmap" && <>

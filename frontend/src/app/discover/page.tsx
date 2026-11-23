@@ -56,6 +56,8 @@ export default function DiscoverPage() {
   const [restoring, setRestoring] = useState(true);
   const [mode, setMode] = useState<"semantic" | "keyword">("semantic");
   const [saved, setSaved] = useState<Paper[]>([]);
+  const [libraryStatus, setLibraryStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [libraryAttempt, setLibraryAttempt] = useState(0);
   const viewKey = resultQuery ? discoveryViewKey(resultQuery, result) : null;
   const [discoveryView, setDiscoveryView] = useTabDraft<DiscoveryView>(viewKey);
   const tab = discoveryView?.tab ?? "list";
@@ -103,11 +105,8 @@ export default function DiscoverPage() {
   const semanticExhausted = mode === "semantic" && result.items.length >= 50;
   useEffect(() => {
     active.current = true;
-    const library = new AbortController();
-    readPaperLibrary(library.signal).then((items) => { if (!library.signal.aborted) setSaved(items); }).catch(() => {});
     return () => {
       active.current = false;
-      library.abort();
       initializedEntry.current = null;
       ++searchVersion.current;
       searchRequest.current?.abort();
@@ -115,6 +114,20 @@ export default function DiscoverPage() {
       lineageRequest.current?.abort();
     };
   }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLibraryStatus("loading");
+    readPaperLibrary(controller.signal).then((items) => {
+      if (controller.signal.aborted) return;
+      const received = new Set(items.map((item) => item.id));
+      // An import can succeed while this library snapshot is in flight.
+      setSaved((current) => [...items, ...current.filter((item) => !received.has(item.id))]);
+      setLibraryStatus("ready");
+    }).catch(() => {
+      if (!controller.signal.aborted) setLibraryStatus("error");
+    });
+    return () => controller.abort();
+  }, [libraryAttempt]);
   useEffect(() => {
     if ((!urlQuery && !workspace && !workspaceError) || initializedEntry.current === urlQuery) return;
     initializedEntry.current = urlQuery;
@@ -366,15 +379,17 @@ export default function DiscoverPage() {
     const paper = saved.find((item) => item.openalex_id === work.openalex_id);
     const fulltext = hasParsedPdf(paper);
     const parsing = !!paper && isPdfParsing(paper.status);
+    const pdfStatus = fulltext ? "已有全文" : paper ? paperLibraryIssue(paper)
+      : libraryStatus === "ready" ? "尚无全文" : libraryStatus === "loading" ? "正在核对全文" : "全文状态待确认";
     const linkLabel = fulltext ? "打开全文精读" : parsing ? "查看解析进度" : "打开论文处理";
     const acting = pendingWorkId === work.openalex_id;
     return <article key={work.openalex_id} className={`workCard ${compact ? "compact" : ""}`}>
-      <div className="workMeta"><span>{domains[work.domain || ""] || "领域待确认"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${fulltext ? "fulltext" : ""}`}>{fulltext ? "已有全文" : paper ? paperLibraryIssue(paper) : "尚无全文"}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
+      <div className="workMeta"><span>{domains[work.domain || ""] || "领域待确认"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${fulltext ? "fulltext" : ""}`}>{pdfStatus}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
       <h3>{work.title}</h3><p className="workAuthors">{work.authors.slice(0, 4).join(" · ") || "作者未提供"}</p>
       {work.abstract && <p className="workAbstract">{work.abstract}</p>}
       <div className="workPrimaryActions"><button onClick={() => showLineage(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献谱系 <span>↗</span></button>{paper && (paper.status === "parsed" || parsing) ? <Link href={`/read?paper=${paper.id}`}>{linkLabel} <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
       <details className="workMore"><summary>保存、对比与其他操作 <span>＋</span></summary><div className="workActions"><button onClick={() => runWorkAction(work.openalex_id, () => setCore(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>设为研究中心</button><button onClick={() => runWorkAction(work.openalex_id, () => addToCompare(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>{workspace?.selected_paper_ids.includes(paper?.id || "") ? "已加入对比" : "加入对比"}</button>{paper ? <span className="workSaved">已存入论文库</span> : <button onClick={() => runWorkAction(work.openalex_id, () => save(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>保存检索记录</button>}{work.oa_pdf_url && !parsing && paper?.status !== "parsed" && <button onClick={() => importOpenPdf(work)} disabled={busy} aria-busy={busy}>尝试获取开放 PDF</button>}</div></details>
-      {!parsing && paper?.status !== "parsed" && <small className="evidenceNote">当前仅展示检索信息与可用摘要；逐页精读需先取得全文。</small>}
+      {(paper || libraryStatus === "ready") && !parsing && paper?.status !== "parsed" && <small className="evidenceNote">当前仅展示检索信息与可用摘要；逐页精读需先取得全文。</small>}
     </article>;
   }
 
@@ -384,6 +399,13 @@ export default function DiscoverPage() {
     <div className="searchModes"><button className={mode === "semantic" ? "active" : ""} disabled={busy || restoring} onClick={() => changeSearchMode("semantic")}>语义检索</button><button className={mode === "keyword" ? "active" : ""} disabled={busy || restoring} onClick={() => changeSearchMode("keyword")}>关键词检索</button><span>语义检索最多展示 50 篇；关键词检索适合精确题名。</span></div>
     {!result.items.length && <div className="suggestions">试试：{["single cell RNA sequencing cancer", "tumor immune microenvironment", "gene expression metabolic pathway", "CRISPR cell function"].map((term) => <button key={term} onClick={() => { setQuery(term); search(1, term); }}>{term}</button>)}</div>}
     {error && <div className="researchError" role="alert">{error}</div>}
+    {libraryStatus === "error" && <div className="workspaceLoading">
+      <p role="alert">暂时无法核对论文库中的全文状态。</p>
+      <button type="button" className="quietButton" onClick={() => {
+        setLibraryStatus("loading");
+        setLibraryAttempt((attempt) => attempt + 1);
+      }}>重试读取论文库</button>
+    </div>}
     {busy && <StepLoading title={busyLabel || "正在处理"} steps={busyLabel.includes("检索") ? ["理解检索词", "查询 OpenAlex 或本地缓存", "整理论文信息与关系"] : ["保留论文记录", "提取全文与页码", "建立可核验的精读目录"]} />}
     {restoring && <p className="workspaceLoading" role="status">正在恢复上次检索…</p>}
     {!!result.items.length && <section className="workspaceLoading" aria-label="研究主题" style={{ overflowWrap: "anywhere" }}>
