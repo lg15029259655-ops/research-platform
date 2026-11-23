@@ -446,8 +446,50 @@ def reader_reparse(browser, frontend, backend):
     expect(page.locator(".pdfCanvas canvas")).to_be_visible(timeout=15000)
     after = context.request.get(detail_url).json()
     assert after["status"] == "parsed"
+    assert after["content_revision"] and after["content_revision"] != prior["content_revision"]
+    assert after["file_version"] == prior["file_version"]
     assert [item["id"] for item in after["messages"]] == [item["id"] for item in prior["messages"]]
     context.close()
+
+
+def reader_reparse_recovery(browser, frontend, backend, *, viewport=None):
+    with browser.new_context(viewport=viewport) as context:
+        assert context.request.get(f"{backend}/api/session").ok
+        paper_id = context.request.get(f"{backend}/api/workspace").json()["core_paper_id"]
+        detail_url = f"{backend}/api/papers/{paper_id}"
+        prior = {**context.request.get(detail_url).json(), "warning": "未可靠识别论文章节"}
+        draft = "Retain my research question while rechecking this PDF"
+        context.route(detail_url, lambda route: route.fulfill(json=prior))
+        submitted = []
+
+        def disconnect(route):
+            submitted.append(route.request.method)
+            route.abort("connectionreset")
+
+        context.route(detail_url + "/reparse", disconnect)
+        page = context.new_page()
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.goto(f"{frontend}/read?paper={paper_id}")
+        if viewport:
+            page.get_by_role("tab", name="AI 讲解", exact=True).click()
+        question = page.get_by_role("textbox", name="提出你的科研问题")
+        question.fill(draft)
+        expect(page.get_by_role("button", name=re.compile(r"^发送"))).to_be_enabled()
+        page.get_by_role("button", name="重新识别当前 PDF").click()
+        warning = page.get_by_role("alert").filter(has_text="暂时无法确认 PDF 解析请求是否已受理")
+        expect(warning).to_be_visible()
+        expect(question).to_have_value(draft)
+        assert len(submitted) == 1
+        next_detail = {**prior, "warning": None, "content_revision": "recovered-new-revision"}
+        context.route(detail_url, lambda route: route.fulfill(json=next_detail), times=1)
+        page.get_by_role("button", name="核对解析状态", exact=True).click()
+        expect(warning).to_have_count(0)
+        expect(page.get_by_role("button", name="重新识别当前 PDF")).to_have_count(0)
+        expect(question).to_have_value(draft)
+        assert submitted == ["POST"]
+        if viewport:
+            page.get_by_role("tab", name="原文 PDF", exact=True).click()
+        expect(page.locator(".pdfCanvas canvas")).to_be_visible()
 
 
 def pending_pdf_selection(browser, frontend, backend):
@@ -1820,6 +1862,7 @@ if __name__ == "__main__":
             shared_selection(browser, args.frontend, args.backend)
             pending_pdf_selection(browser, args.frontend, args.backend)
             reader_reparse(browser, args.frontend, args.backend)
+            reader_reparse_recovery(browser, args.frontend, args.backend)
             discovery_relation_race(browser, args.frontend, args.backend)
             discovery_graph_navigation(browser, args.frontend, args.backend)
             synthesis_view_loading(browser, args.frontend, args.backend)

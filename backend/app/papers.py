@@ -118,6 +118,7 @@ def paper_data(paper: Paper, units: list[ReadingUnit] | None = None, *, image_co
         data["file_available"] = (data["page_count"] is not None and data["page_count"] > 0
                                   and paper_source_matches(paper))
         data["file_version"] = paper.sha256 if data["file_available"] else None
+        data["content_revision"] = paper.content_revision
         data["units"] = [{"id": unit.id, "position": unit.position, "kind": unit.kind,
                           "heading": unit.heading, "page_start": unit.page_start,
                           "page_end": unit.page_end,

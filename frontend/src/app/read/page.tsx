@@ -25,7 +25,8 @@ const ReadingMarkdown = lazy(() => import("@/components/reader/ReadingMarkdown")
 })));
 type Unit = { id: string; position: number; kind: string; heading: string; page_start: number | null; actual_pdf_page?: number | null; caption?: string | null; evidence_snippet?: string | null };
 type Message = { id: string; role: string; content: string; reading_unit_id: string | null; visual_verified?: boolean; turn_id?: string | null };
-type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean; file_version?: string | null; source_matches?: boolean };
+type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean; file_version?: string | null; content_revision?: string | null; source_matches?: boolean };
+type ParseSubmission = Pick<Paper, "id" | "status" | "warning" | "content_revision">;
 type Action = "START" | "NEXT" | "NAVIGATE" | "FIGURE" | "WHY_DESIGN" | "EVIDENCE" | "QUESTION";
 type Mode = "split" | "pdf" | "ai";
 type PaperDeletion = { status: "pending" | "deleted" } | { status: "failed"; message: string };
@@ -173,6 +174,7 @@ export default function ReadPage() {
   const [pending, setPending] = useState(false);
   const [parseStage, setParseStage] = useState("");
   const [parseProgress, setParseProgress] = useState("");
+  const [unconfirmedParse, setUnconfirmedParse] = useState<ParseSubmission | null>(null);
   const [addingToSynthesis, setAddingToSynthesis] = useState(false);
   const [settingCenter, setSettingCenter] = useState(false);
   const [centerError, setCenterError] = useState("");
@@ -234,6 +236,7 @@ export default function ReadPage() {
   const active = useRef(false);
   const chatRequest = useRef<AbortController | null>(null);
   const uploadAttempt = useRef<AbortController | null>(null);
+  const parseRequest = useRef<AbortController | null>(null);
   const libraryUploadRef = useRef<HTMLInputElement>(null);
   const welcomeUploadRef = useRef<HTMLInputElement>(null);
   const attachUploadRef = useRef<HTMLInputElement>(null);
@@ -306,6 +309,13 @@ export default function ReadPage() {
   useEffect(() => {
     activePaper.current = selectedId;
     stopChat();
+    if (parseRequest.current) {
+      parseRequest.current.abort();
+      parseRequest.current = null;
+      setPending(false);
+      setParseStage("");
+    }
+    setUnconfirmedParse(null);
     abortReaderJobs();
     setPaper(null);
     setReaderTab("read"); setMindmap(null); setExperiments(null);
@@ -341,6 +351,8 @@ export default function ReadPage() {
     return () => {
       active.current = false;
       chatRequest.current?.abort();
+      parseRequest.current?.abort();
+      parseRequest.current = null;
       uploadAttempt.current?.abort();
       uploadAttempt.current = null;
       abortReaderJobs();
@@ -477,30 +489,57 @@ export default function ReadPage() {
     }
   }
 
-  async function submitParseRequest(id: string, action: "attach" | "reparse", body?: FormData) {
+  async function confirmParseRequest(previous: ParseSubmission, action?: "attach" | "reparse", body?: FormData) {
+    if (parseRequest.current) return;
+    const { id } = previous;
+    const controller = new AbortController();
+    parseRequest.current = controller;
+    const isCurrent = () => active.current && activePaper.current === id && !controller.signal.aborted;
     setPending(true); setError("");
-    setParseStage(action === "attach" ? "正在上传全文 PDF…" : "正在提交重新识别…");
+    setUnconfirmedParse(null);
+    setParseStage(action === "attach" ? "正在上传全文 PDF…" : action === "reparse" ? "正在提交重新识别…" : "正在核对解析状态…");
     try {
-      const result = await apiJson<Pick<Paper, "status">>(`/api/papers/${id}/${action}`, {
-        method: "POST", body, signal: body ? undefined : AbortSignal.timeout(20000),
-      });
-      if (!active.current || activePaper.current !== id) return;
+      let status: string | undefined;
+      if (action) {
+        try {
+          // Leave the submission in flight when the reader switches papers.
+          const result = await apiJson<Pick<Paper, "status">>(`/api/papers/${encodeURIComponent(id)}/${action}`, {
+            method: "POST", body, signal: AbortSignal.timeout(body ? 15 * 60 * 1000 : 20000),
+          });
+          status = result?.status;
+        } catch (error) {
+          if (error instanceof ApiError && error.status < 500 && error.status !== 408 && error.status !== 409) throw error;
+        }
+      }
+      if (!isCurrent()) return;
+      if (status) {
+        const acceptedStatus = status;
+        setPaper((record) => record?.id === id ? { ...record, status: acceptedStatus, warning: undefined } : record);
+      } else {
+        setParseStage("正在核对解析状态…");
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
+        const data = await loadPaper(id, false, signal).catch(() => undefined);
+        if (!isCurrent()) return;
+        const newFailure = data?.warning?.startsWith("重新解析失败") && data.warning !== previous.warning;
+        if (!data || (!parseStages[data.status] && data.status === previous.status &&
+            data.content_revision === previous.content_revision && !newFailure)) {
+          setUnconfirmedParse(previous);
+          return;
+        }
+        status = data.status;
+        if (!parseStages[status]) void loadList().catch(() => {});
+      }
       abortReaderJobs();
       setReaderTab("read"); setMindmap(null); setExperiments(null);
-      setPaper((record) => record?.id === id ? { ...record, status: result.status, warning: undefined } : record);
-      setParseProgress(parseStages[result.status] || "");
+      setParseProgress(parseStages[status] || "");
     } catch (error) {
-      if (!active.current || activePaper.current !== id) return;
-      setError(error instanceof ApiError ? error.message : "暂时无法确认提交结果，正在刷新论文状态");
-      // A response can be lost after the server has accepted the request.
-      void loadPaper(id, false, AbortSignal.timeout(10000))
-        .then((data) => {
-          if (data && parseStages[data.status] && active.current && activePaper.current === id) setError("");
-        })
-        .catch(() => {
-          if (active.current && activePaper.current === id) setError("暂时无法读取论文状态，请稍后刷新确认");
-        });
-    } finally { setPending(false); setParseStage(""); }
+      if (isCurrent()) setError(error instanceof ApiError ? error.message : "暂时无法提交 PDF 解析请求。");
+    } finally {
+      if (parseRequest.current === controller) {
+        parseRequest.current = null;
+        setPending(false); setParseStage("");
+      }
+    }
   }
 
   async function attach(event: ChangeEvent<HTMLInputElement>) {
@@ -508,13 +547,13 @@ export default function ReadPage() {
     if (!file || !paper || pending) return;
     const body = new FormData();
     body.append("file", file);
-    try { await submitParseRequest(paper.id, "attach", body); }
+    try { await confirmParseRequest(paper, "attach", body); }
     finally { event.target.value = ""; }
   }
 
   async function reparse() {
     if (!paper || pending || !window.confirm("重新识别会保留原 PDF、旧精读记录和综合结果，但会重置当前阅读位置。旧记录与新章节的关联将解除，旧综合结果需要重新核对。继续吗？")) return;
-    await submitParseRequest(paper.id, "reparse");
+    await confirmParseRequest(paper, "reparse");
   }
 
   /** 章节骨架由后端确定性生成，AI 只补关键点。 */
@@ -873,6 +912,9 @@ export default function ReadPage() {
       </header>
       {paper?.status === "parsed" && <div className="readerSubnav"><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">{compact ? "查看待综合 ↗" : "已选入综合 · 查看 ↗"}</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
       {error && <div className="alert" role="alert">{error}{pendingUpload && !pending && <button className="quietButton" onClick={() => void runUpload(pendingUpload)}>重试确认上传</button>}</div>}
+      {unconfirmedParse && <div className="alert" role="alert">暂时无法确认 PDF 解析请求是否已受理。
+        <button type="button" className="quietButton" disabled={pending} onClick={() => void confirmParseRequest(unconfirmedParse)}>核对解析状态</button>
+      </div>}
       <JobProgress startedAt={chatStartedAt} hint=""
         title={stream ? "正在生成精读回复" : thinking ? "正在分析原文" : "正在等待精读回复"}
         onCancel={stopChat} />
