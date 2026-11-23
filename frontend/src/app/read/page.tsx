@@ -64,9 +64,22 @@ function SummaryCards({ content }: { content: string }) {
 }
 
 const questionDraftKey = (paperId: string) => `read:${paperId}`;
+const readingPositionKey = (paperId: string) => `read-position:${paperId}`;
 const turnDraftKey = (paperId: string, action: Action) => `read-turn:${paperId}:${action}`;
 type ChatTurn = { id: string; message?: string };
+type ReadingPosition = { fileVersion: string; page: number };
 const chatActions: Action[] = ["START", "NEXT", "NAVIGATE", "FIGURE", "WHY_DESIGN", "EVIDENCE", "QUESTION"];
+
+function validPdfPage(paper: Paper | null, page: number) {
+  return !!paper?.file_available && Number.isInteger(page) && page > 0 && page <= (paper.page_count || 0);
+}
+
+function startingPdfPage(paper: Paper, requested: number, sourceFile: string | null) {
+  if (validPdfPage(paper, requested) && (!sourceFile || sourceFile === paper.file_version)) return requested;
+  const saved = readTabDraft<ReadingPosition>(readingPositionKey(paper.id));
+  if (paper.file_version && saved?.fileVersion === paper.file_version && validPdfPage(paper, saved.page)) return saved.page;
+  return paper.units?.find((unit) => unit.id === paper.current_unit_id)?.page_start || 1;
+}
 
 function reconcileChatTurns(paper: Paper) {
   const saved = new Set(paper.messages?.filter((item) => item.role === "assistant").map((item) => item.turn_id));
@@ -94,8 +107,7 @@ export default function ReadPage() {
   const [record, setPaper] = useState<Paper | null>(null);
   const paper = record?.id === selectedId ? record : null;
   const sourceChanged = !!paper?.file_available && !!sourceFile && sourceFile !== paper.file_version;
-  const validLinkPage = !!paper?.file_available && Number.isInteger(requestedPage)
-    && requestedPage > 0 && requestedPage <= (paper.page_count || 0);
+  const validLinkPage = validPdfPage(paper, requestedPage);
   const invalidLinkPage = !!paper?.file_available && linkPage !== null && !validLinkPage;
   const [openingPaper, setOpeningPaper] = useState(false);
   const [savedQuestion, setDraft] = useTabDraft<string>(paper ? questionDraftKey(paper.id) : null);
@@ -197,7 +209,8 @@ export default function ReadPage() {
     followLatest.current = true;
     setPaper(data);
     if (opening) {
-      setPage(data.units?.find((unit) => unit.id === data.current_unit_id)?.page_start || 1);
+      const params = new URLSearchParams(window.location.search);
+      setPage(startingPdfPage(data, Number(params.get("page")), params.get("source_file")));
       void updateWorkspace({core_paper_id: id}).catch(() => {});
     }
     return data;
@@ -233,8 +246,8 @@ export default function ReadPage() {
   }, [selectedId, loadPaper]);
 
   useEffect(() => {
-    if (paper?.id && validLinkPage && !sourceChanged) setPage(requestedPage);
-  }, [paper?.id, requestedPage, validLinkPage, sourceChanged]);
+    if (paper?.file_available) setPage(startingPdfPage(paper, requestedPage, sourceFile));
+  }, [paper?.id, paper?.file_available, paper?.file_version, requestedPage, sourceFile, validLinkPage]);
 
   // 组件卸载（跳到别的页面）时取消后台任务，避免服务端为一个没人看的任务继续花钱。
   useEffect(() => {
@@ -551,6 +564,9 @@ export default function ReadPage() {
   function changePdfPage(next: number) {
     if (!paper || paper.id !== activePaper.current) return;
     setPage(next);
+    if (paper.file_version && validPdfPage(paper, next)) {
+      writeTabDraft<ReadingPosition>(readingPositionKey(paper.id), { fileVersion: paper.file_version, page: next });
+    }
     const params = new URLSearchParams(window.location.search);
     params.set("page", String(next));
     params.delete("source_file");
@@ -571,6 +587,7 @@ export default function ReadPage() {
     const response = await fetch(`${API}/api/papers/${id}`, { method: "DELETE", credentials: "include" });
     if (!response.ok) { setError("删除论文失败，请重试"); return; }
     writeTabDraft(questionDraftKey(id), null);
+    writeTabDraft(readingPositionKey(id), null);
     for (const action of chatActions) writeTabDraft(turnDraftKey(id, action), null);
     await refresh().catch(() => {});
     if (active.current && activePaper.current === id) {

@@ -774,6 +774,43 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     context.close()
 
 
+def resume_pdf_reading_position(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace = context.request.get(f"{backend}/api/workspace").json()
+    paper_id = workspace["core_paper_id"]
+    paper = context.request.get(f"{backend}/api/papers/{paper_id}").json()
+    base = f"{frontend}/read?{urlencode({'paper': paper_id})}"
+    page.goto(base)
+    expect(page.locator(".pdfCanvas canvas")).to_be_visible()
+    page_number = page.locator(".pageTools span").first
+    initial = int(page_number.inner_text().split("/")[0])
+    offset = 1 if initial < paper["page_count"] else -1
+    remembered = initial + offset
+    assert remembered > 0
+    page.get_by_role("button", name="下一页" if offset > 0 else "上一页", exact=True).click()
+    expect(page_number).to_have_text(re.compile(rf"^{remembered} /"))
+    navigation = page.locator(".researchNav nav")
+    for destination in ("文献综合", "深度精读"):
+        navigation.get_by_role("link", name=destination).click()
+    expect(page_number).to_have_text(re.compile(rf"^{remembered} /"))
+
+    citation = urlencode({"page": initial, "source_file": paper["file_version"]})
+    page.goto(f"{base}&{citation}")
+    expect(page_number).to_have_text(re.compile(rf"^{initial} /"))
+    page.goto(base)
+    expect(page_number).to_have_text(re.compile(rf"^{remembered} /"))
+    page.evaluate("""(id) => {
+      const key = 'medread-draft:read-position:' + id;
+      const saved = JSON.parse(sessionStorage.getItem(key));
+      sessionStorage.setItem(key, JSON.stringify({...saved, fileVersion: 'obsolete-version'}));
+    }""", paper_id)
+    page.reload()
+    expect(page_number).to_have_text(re.compile(rf"^{initial} /"))
+    context.close()
+
+
 def evidence_source_navigation(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
@@ -897,6 +934,7 @@ if __name__ == "__main__":
             discovery_relation_race(browser, args.frontend, args.backend)
             synthesis_view_loading(browser, args.frontend, args.backend)
             evidence_source_navigation(browser, args.frontend, args.backend)
+            resume_pdf_reading_position(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")

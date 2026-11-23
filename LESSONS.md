@@ -608,3 +608,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: evidence links used a bare page number. After a PDF replacement the old link could jump to an unrelated page. A page range also used the same action label as an exact page.
 - Action: save the source file fingerprint on new comparison citations, and validate it in the reader before jumping. Distinguish exact pages from the start of a range. Open the current reading position when the linked page is invalid or an older citation has no available matching source.
 - Verification: Chrome at 390px followed an exact link, checked the range label, and confirmed that a mismatched fingerprint and a page outside the current PDF both kept the saved reading position. Backend tests verify the exact persisted citation fingerprint. The production build, source preflight, 149 backend tests and 13 frontend tests passed.
+
+## L-20261123-23 — Resume the last PDF page without forgetting citation intent
+
+- Evidence: a new visit with no page in its URL reverted to the AI reading unit, even after the reader had manually moved to a different PDF page.
+- Action: remember a manually chosen page by paper ID and file fingerprint in the current tab. Use a valid explicit page first, then a same-file checkpoint, then the reading unit. Opening a citation alone does not change the checkpoint.
+- Verification: Chrome at 390px left for synthesis, resumed the previous page, followed a valid citation, returned to the earlier checkpoint, and rejected a checkpoint from a different file version. The production build, source preflight and 13 frontend tests passed.
