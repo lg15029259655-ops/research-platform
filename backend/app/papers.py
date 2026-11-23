@@ -82,13 +82,17 @@ def pdf_is_readable(path: str) -> bool:
         return False
 
 
-def paper_source_matches(paper: Paper) -> bool:
-    """Whether saved reading units can be associated with the current PDF."""
-    if paper.source_sha256:
-        return paper.source_sha256 == paper.sha256
+def source_fingerprints_match(source: str | None, current: str, warning: str | None) -> bool:
+    if source:
+        return source == current
     # Older records may predate the source fingerprint. A failed replacement
     # cannot establish which file produced those units, so require a reparse.
-    return not (paper.parse_warning or "").startswith("重新解析失败")
+    return not (warning or "").startswith("重新解析失败")
+
+
+def paper_source_matches(paper: Paper) -> bool:
+    """Whether saved reading units can be associated with the current PDF."""
+    return source_fingerprints_match(paper.source_sha256, paper.sha256, paper.parse_warning)
 
 
 def paper_data(paper: Paper, units: list[ReadingUnit] | None = None, *, image_count: int | None = None) -> dict:
@@ -363,8 +367,16 @@ def list_papers(request: Request, view: Literal["full", "summary"] = "full", own
             rows = db.execute(select(
                 Paper.id, Paper.title, Paper.original_filename, Paper.status,
                 Paper.parse_warning.label("warning"), Paper.openalex_id, Paper.domain,
+                Paper.source_sha256, Paper.sha256,
             ).where(Paper.owner_id == owner).order_by(Paper.created_at.desc(), Paper.id.desc())).mappings()
-            response = JSONResponse([dict(row) for row in rows])
+            summaries = []
+            for row in rows:
+                summary = dict(row)
+                summary["source_matches"] = source_fingerprints_match(
+                    summary.pop("source_sha256"), summary.pop("sha256"), summary["warning"],
+                )
+                summaries.append(summary)
+            response = JSONResponse(summaries)
             etag = '"' + sha256(owner.encode() + b"\0" + response.body).hexdigest() + '"'
             headers = {"Cache-Control": "private, no-cache", "Vary": "Cookie", "ETag": etag}
             if matches_etag(request, etag):

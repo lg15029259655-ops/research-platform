@@ -388,6 +388,46 @@ def reader_reparse(browser, frontend, backend):
     context.close()
 
 
+def pending_pdf_selection(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace_url = f"{backend}/api/workspace"
+    workspace = context.request.get(workspace_url).json()
+    blocked, parsing, *_ = workspace["selected_paper_ids"]
+    library_url = f"{backend}/api/papers?view=summary"
+    papers = context.request.get(library_url).json()
+    blocked_paper = next(item for item in papers if item["id"] == blocked)
+    parsing_paper = next(item for item in papers if item["id"] == parsing)
+    blocked_paper.update(source_matches=False, openalex_id="W201")
+    parsing_paper.update(status="reading", openalex_id="W202")
+    context.route(library_url, lambda route: route.fulfill(json=papers))
+    page = context.new_page()
+    page.goto(f"{frontend}/synthesis")
+    page.get_by_role("button", name="更换对比论文").click()
+    expect(page.get_by_text(re.compile("PDF 与已保存的阅读内容不一致"))).to_be_visible()
+    expect(page.get_by_text(re.compile("PDF 正在解析"))).to_be_visible()
+    run = page.get_by_role("button", name=re.compile("生成对比|按当前选择重新综合"))
+    expect(run).to_be_disabled()
+    expect(page.locator(f'a[href="/read?paper={blocked}"]')).to_have_text("打开论文")
+    parsing_paper["status"] = "parsed"
+    expect(page.get_by_text(re.compile("PDF 正在解析"))).to_have_count(0, timeout=9000)
+    expect(run).to_be_disabled()
+    page.get_by_role("button", name=f"移出待综合 {blocked_paper['title']}", exact=True).click()
+    expect(run).to_be_enabled()
+    assert context.request.get(workspace_url).json()["selected_paper_ids"] == [
+        item for item in workspace["selected_paper_ids"] if item != blocked
+    ]
+
+    work = {"openalex_id": "W201", "title": blocked_paper["title"], "authors": [], "year": 2020,
+            "journal": "", "doi": "", "abstract": "", "citation_count": 0, "oa_pdf_url": None}
+    context.route(re.compile(rf"^{re.escape(backend)}/api/research/discover[?]"),
+                  lambda route: route.fulfill(json={"items": [work], "count": 1, "page": 1, "mode": "semantic"}))
+    page.goto(f"{frontend}/discover?q=pdf-repair-fixture")
+    repair = page.get_by_role("link", name="打开论文处理")
+    expect(repair).to_have_attribute("href", f"/read?paper={blocked}")
+    context.close()
+
+
 def shared_selection(browser, frontend, backend):
     context = browser.new_context()
     first = context.new_page()
@@ -1469,6 +1509,7 @@ if __name__ == "__main__":
             pdf_search_recovery(browser, args.frontend, args.backend)
             compact_reading(browser, args.frontend, args.backend)
             shared_selection(browser, args.frontend, args.backend)
+            pending_pdf_selection(browser, args.frontend, args.backend)
             reader_reparse(browser, args.frontend, args.backend)
             discovery_relation_race(browser, args.frontend, args.backend)
             discovery_graph_navigation(browser, args.frontend, args.backend)

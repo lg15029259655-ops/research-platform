@@ -7,7 +7,7 @@ import { ChangeEvent, useEffect, useRef, useState } from "react";
 import StepLoading from "@/components/StepLoading";
 import type { LineageResponse } from "@/components/lineage/lineageLayout";
 import { API, ApiError, apiJson, postJson } from "@/lib/api";
-import { readPaperLibrary } from "@/lib/paper-library";
+import { hasParsedPdf, isPdfParsing, paperLibraryIssue, readPaperLibrary } from "@/lib/paper-library";
 import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import { tabGroup } from "@/lib/tabs";
@@ -18,7 +18,7 @@ const LineageGraph = deferredPanel(() => import("@/components/lineage/LineageGra
 type Work = { openalex_id: string; title: string; authors: string[]; year: number | null; journal: string;
   doi: string; abstract: string; citation_count: number; oa_pdf_url: string | null;
   domain?: string; study_type?: string; related_ids?: string[]; reference_ids?: string[] };
-type Paper = { id: string; title: string; openalex_id: string | null; status: string };
+type Paper = { id: string; title: string; openalex_id: string | null; status: string; source_matches?: boolean };
 type Search = { items: Work[]; count: number; page: number; mode: "semantic" | "keyword"; cached?: boolean; stale?: boolean; fetched_at?: string; snapshot?: string };
 type Graph = { nodes: Work[]; links: { source: string; target: string; relation: string }[]; cached?: boolean; fetched_at?: string };
 type DiscoveryView = {
@@ -364,14 +364,17 @@ export default function DiscoverPage() {
 
   function workCard(work: Work, compact = false) {
     const paper = saved.find((item) => item.openalex_id === work.openalex_id);
+    const fulltext = hasParsedPdf(paper);
+    const parsing = !!paper && isPdfParsing(paper.status);
+    const linkLabel = fulltext ? "打开全文精读" : parsing ? "查看解析进度" : "打开论文处理";
     const acting = pendingWorkId === work.openalex_id;
     return <article key={work.openalex_id} className={`workCard ${compact ? "compact" : ""}`}>
-      <div className="workMeta"><span>{domains[work.domain || ""] || "领域待确认"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${paper?.status === "parsed" ? "fulltext" : ""}`}>{paper?.status === "parsed" ? "已有全文" : "尚无全文"}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
+      <div className="workMeta"><span>{domains[work.domain || ""] || "领域待确认"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${fulltext ? "fulltext" : ""}`}>{fulltext ? "已有全文" : paper ? paperLibraryIssue(paper) : "尚无全文"}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
       <h3>{work.title}</h3><p className="workAuthors">{work.authors.slice(0, 4).join(" · ") || "作者未提供"}</p>
       {work.abstract && <p className="workAbstract">{work.abstract}</p>}
-      <div className="workPrimaryActions"><button onClick={() => showLineage(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献谱系 <span>↗</span></button>{paper?.status === "parsed" ? <Link href={`/read?paper=${paper.id}`}>打开全文精读 <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
-      <details className="workMore"><summary>保存、对比与其他操作 <span>＋</span></summary><div className="workActions"><button onClick={() => runWorkAction(work.openalex_id, () => setCore(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>设为研究中心</button><button onClick={() => runWorkAction(work.openalex_id, () => addToCompare(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>{workspace?.selected_paper_ids.includes(paper?.id || "") ? "已加入对比" : "加入对比"}</button>{paper ? <span className="workSaved">已存入论文库</span> : <button onClick={() => runWorkAction(work.openalex_id, () => save(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>保存检索记录</button>}{work.oa_pdf_url && paper?.status !== "parsed" && <button onClick={() => importOpenPdf(work)} disabled={busy} aria-busy={busy}>尝试获取开放 PDF</button>}</div></details>
-      {paper?.status !== "parsed" && <small className="evidenceNote">当前仅展示检索信息与可用摘要；逐页精读需先取得全文。</small>}
+      <div className="workPrimaryActions"><button onClick={() => showLineage(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献谱系 <span>↗</span></button>{paper && (paper.status === "parsed" || parsing) ? <Link href={`/read?paper=${paper.id}`}>{linkLabel} <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
+      <details className="workMore"><summary>保存、对比与其他操作 <span>＋</span></summary><div className="workActions"><button onClick={() => runWorkAction(work.openalex_id, () => setCore(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>设为研究中心</button><button onClick={() => runWorkAction(work.openalex_id, () => addToCompare(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>{workspace?.selected_paper_ids.includes(paper?.id || "") ? "已加入对比" : "加入对比"}</button>{paper ? <span className="workSaved">已存入论文库</span> : <button onClick={() => runWorkAction(work.openalex_id, () => save(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>保存检索记录</button>}{work.oa_pdf_url && !parsing && paper?.status !== "parsed" && <button onClick={() => importOpenPdf(work)} disabled={busy} aria-busy={busy}>尝试获取开放 PDF</button>}</div></details>
+      {!parsing && paper?.status !== "parsed" && <small className="evidenceNote">当前仅展示检索信息与可用摘要；逐页精读需先取得全文。</small>}
     </article>;
   }
 

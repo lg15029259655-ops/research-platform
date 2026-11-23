@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
 import JobResultNotice from "@/components/jobs/JobResultNotice";
 import { ApiError, apiJson } from "@/lib/api";
-import { readPaperLibrary, type PaperSummary } from "@/lib/paper-library";
+import { hasParsedPdf, isPdfParsing, paperLibraryIssue, readPaperLibrary, type PaperSummary } from "@/lib/paper-library";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
 import { setPaperInSynthesis, updateWorkspace, useWorkspace, WorkspaceSaveUnconfirmed } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
@@ -42,6 +42,7 @@ export default function SynthesisPage() {
   const tab = view === "evidence" || view === "gaps" ? view : "matrix";
   const [papers, setPapers] = useState<PaperSummary[] | null>(null);
   const [libraryError, setLibraryError] = useState(false);
+  const libraryRead = useRef(0);
   const [pendingChoices, setPendingChoices] = useState<Record<string, boolean>>({});
   const [selectionError, setSelectionError] = useState("");
   const [savedViews, setSavedViews] = useState<{ id: string; views: Partial<Record<View, Artifact>> } | null>(null);
@@ -71,14 +72,21 @@ export default function SynthesisPage() {
   const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
   useEffect(() => () => { handoff.current?.abort(); }, []);
   async function loadPapers(signal?: AbortSignal) {
+    const version = ++libraryRead.current;
     setLibraryError(false);
-    try { setPapers(await readPaperLibrary(signal)); }
-    catch { if (!signal?.aborted) setLibraryError(true); }
+    try {
+      const next = await readPaperLibrary(signal);
+      if (!signal?.aborted && libraryRead.current === version) setPapers(next);
+    } catch {
+      if (!signal?.aborted && libraryRead.current === version) setLibraryError(true);
+    }
   }
   useEffect(() => {
     const controller = new AbortController();
-    void loadPapers(controller.signal);
-    return () => controller.abort();
+    const refreshLibrary = () => void loadPapers(controller.signal);
+    refreshLibrary();
+    window.addEventListener("focus", refreshLibrary);
+    return () => { window.removeEventListener("focus", refreshLibrary); controller.abort(); };
   }, []);
   const artifactId = sourceArtifact || workspace?.synthesis_id;
   const views = savedViews?.id === artifactId ? savedViews?.views : undefined;
@@ -126,7 +134,7 @@ export default function SynthesisPage() {
       });
     return () => controller.abort();
   }, [artifactId, tab, activeView, artifactAttempt]);
-  const fulltext = (papers || []).filter((paper) => paper.status === "parsed");
+  const fulltext = (papers || []).filter(hasParsedPdf);
   const savedSelection = workspace?.selected_paper_ids ?? [];
   const missingPapers = papers ? savedSelection.filter((id) => !papers.some((paper) => paper.id === id)).join(",") : "";
   useEffect(() => {
@@ -137,6 +145,18 @@ export default function SynthesisPage() {
   }, [missingPapers]);
   const selected = savedSelection.filter((id) => fulltext.some((paper) => paper.id === id));
   const awaitingFulltext = savedSelection.filter((id) => !selected.includes(id));
+  const waitingOnParser = !!papers?.some((paper) => savedSelection.includes(paper.id) && isPdfParsing(paper.status));
+  useEffect(() => {
+    if (!waitingOnParser) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      if (document.visibilityState === "visible") await loadPapers(controller.signal);
+      if (!controller.signal.aborted) timer = setTimeout(poll, 3000);
+    }
+    timer = setTimeout(poll, 3000);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [waitingOnParser]);
   const savingSelection = Object.keys(pendingChoices).length > 0;
   async function changeChoice(id: string, checked: boolean) {
     if (!workspace || pendingChoices[id] !== undefined) return;
@@ -154,7 +174,7 @@ export default function SynthesisPage() {
     }
   }
   function compare() {
-    if (busy || resultPending || savingSelection || selected.length < 2) return;
+    if (busy || resultPending || savingSelection || awaitingFulltext.length || selected.length < 2) return;
     if (!sourceArtifact && artifact && !artifact.payload.stale_after_reparse && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
@@ -229,7 +249,7 @@ export default function SynthesisPage() {
     }
   }
   const data = artifact?.payload;
-  const selectionChanged = !sourceArtifact && !!artifact && artifact.paper_ids.slice().sort().join("|") !== selected.slice().sort().join("|");
+  const selectionChanged = !sourceArtifact && !!artifact && artifact.paper_ids.slice().sort().join("|") !== savedSelection.slice().sort().join("|");
   useEffect(() => { if (artifact?.id) setShowSelection(false); }, [artifact?.id]);
   useEffect(() => {
     if (artifact?.id && (focusNewResult.current || sourceArtifact)) {
@@ -259,8 +279,11 @@ export default function SynthesisPage() {
       label={(entry) => entry.titles.length ? entry.titles.join(" · ") : `${entry.paper_count} 篇论文的综合`}
       metadata={(entry) => `${entry.paper_count} 篇论文`} />
     {sourceArtifact && <p className="workspaceLoading">正在查看已保存的综合。 <Link className="inlineLink" href="/synthesis">返回当前综合</Link></p>}
-    <section className="sectionBox" ref={selectionRef}><div className="selectionHeading"><h2>选择论文 <small> {selected.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
+    <section className="sectionBox" ref={selectionRef}><div className="selectionHeading"><h2>选择论文 <small> {savedSelection.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
       {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇 PDF 提取的片段；不代表每篇都已完整解析。</p>}
+      {!showSelection && libraryReady && awaitingFulltext.length > 0 && <p className="selectionSummary" role="status">
+        {awaitingFulltext.length} 篇已选论文暂时无法参与新的综合，可打开论文列表处理。
+      </p>}
       {showSelection && !libraryReady && <p className="workspaceLoading" role="status">{libraryError ? <button className="quietButton" onClick={() => void loadPapers()}>重试读取论文库</button> : (workspaceError && !workspace) ? "请先重试读取工作区" : "正在读取论文与已选列表…"}</p>}
       {showSelection && libraryReady && <>
         {fulltext.length ? <div className="selectionList">
@@ -272,19 +295,26 @@ export default function SynthesisPage() {
           </label>)}
         </div> : <p>论文库中尚无已解析的 PDF。先去 <Link href="/read" className="inlineLink">上传 PDF</Link>。</p>}
         {!!awaitingFulltext.length && <div className="selectionSummary">
-          <p>以下已选论文尚无可综合的全文，仍占用待综合名额。</p>
-          <ul>{awaitingFulltext.map((id) => <li key={id}>
-            {papers?.find((paper) => paper.id === id)?.title || "论文暂不可用"}
-            <button type="button" className="quietButton" disabled={pendingChoices[id] !== undefined}
-              onClick={() => void changeChoice(id, false)}>移出待综合</button>
-          </li>)}</ul>
+          <p>以下论文暂时无法参与综合。请处理或移出后再继续。</p>
+          <ul>{awaitingFulltext.map((id) => {
+            const paper = papers?.find((item) => item.id === id);
+            const title = paper?.title || "论文暂不可用";
+            return <li key={id}>
+              <p>{title} · {paperLibraryIssue(paper)}</p>
+              <div className="actionRow">
+                {paper && <Link className="quietButton" href={`/read?paper=${encodeURIComponent(id)}`}>打开论文</Link>}
+                <button type="button" className="quietButton" disabled={pendingChoices[id] !== undefined}
+                  aria-label={`移出待综合 ${title}`} onClick={() => void changeChoice(id, false)}>移出待综合</button>
+              </div>
+            </li>;
+          })}</ul>
         </div>}
       </>}
       {selectionError && <div className="researchError" role="alert">{selectionError}</div>}
       {savingSelection && <p className="workspaceLoading" role="status">正在保存论文选择…</p>}
       {libraryReady && selectionChanged && <p className="selectionChanged" role="status">论文选择已改变。下方保留的是上一次综合结果；重新生成后才会反映当前选择。</p>}
       {showSelection && libraryReady && <button className="primaryButton" onClick={compare}
-        disabled={busy || resultPending || savingSelection || selected.length < 2} aria-busy={busy || savingSelection}>
+        disabled={busy || resultPending || savingSelection || awaitingFulltext.length > 0 || selected.length < 2} aria-busy={busy || savingSelection}>
         {busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}
       </button>}
     </section>

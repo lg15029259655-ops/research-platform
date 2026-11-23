@@ -124,7 +124,8 @@ def test_library_summary_revalidates_by_owner_and_visible_content():
 
         initial = first.get(url)
         assert initial.json() == [{"id": paper_id, "title": "Library summary", "original_filename": "source.pdf",
-                                   "status": "uploaded", "warning": None, "openalex_id": "W123", "domain": "general"}]
+                                   "status": "uploaded", "warning": None, "openalex_id": "W123", "domain": "general",
+                                   "source_matches": True}]
         assert initial.headers["Cache-Control"] == "private, no-cache"
         assert "Cookie" in initial.headers["Vary"]
         conditional = {"If-None-Match": "W/" + initial.headers["ETag"]}
@@ -137,12 +138,15 @@ def test_library_summary_revalidates_by_owner_and_visible_content():
             paper = db.get(Paper, paper_id)
             paper.status = "parsed"
             paper.parse_warning = "Check extracted sections"
+            paper.source_sha256 = "1" * 64
             db.commit()
 
         changed = first.get(url, headers=conditional)
         assert changed.status_code == 200 and changed.headers["ETag"] != initial.headers["ETag"]
         assert changed.json()[0]["status"] == "parsed"
         assert changed.json()[0]["warning"] == "Check extracted sections"
+        assert changed.json()[0]["source_matches"] is False
+        assert "sha256" not in changed.json()[0] and "source_sha256" not in changed.json()[0]
 
 
 def test_concurrent_first_workspace_requests_share_one_row(monkeypatch):
