@@ -42,6 +42,13 @@ async def lifespan(_app: FastAPI):
             for name, kind in additions.items():
                 if name not in columns:
                     connection.exec_driver_sql(f"ALTER TABLE papers ADD COLUMN {name} {kind}")
+        message_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(messages)")}
+        if message_columns:
+            if "turn_id" not in message_columns:
+                connection.exec_driver_sql("ALTER TABLE messages ADD COLUMN turn_id VARCHAR(36)")
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_messages_paper_turn_role ON messages (paper_id, turn_id, role)"
+            )
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         for paper in db.query(models.Paper).filter(models.Paper.domain.is_(None)).all():

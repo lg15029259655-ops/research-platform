@@ -12,7 +12,7 @@ import type { PaperExperimentsPayload } from "@/components/experiment-map/PaperE
 import { submitJob, watchJob, type JobProgress as JobProgressData } from "@/lib/jobs";
 import { setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
-import { useTabDraft, writeTabDraft } from "@/lib/tab-draft";
+import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import "./enhancements.css";
 
 const PdfPane = dynamic(() => import("@/components/PdfPane"), {
@@ -23,7 +23,7 @@ const MindMapPanel = dynamic(() => import("@/components/mindmap/MindMapPanel"));
 const PaperExperimentsPanel = dynamic(() => import("@/components/experiment-map/PaperExperimentsPanel"));
 const ReadingMarkdown = lazy(() => import("@/components/reader/ReadingMarkdown"));
 type Unit = { id: string; position: number; kind: string; heading: string; page_start: number | null; actual_pdf_page?: number | null; caption?: string | null; evidence_snippet?: string | null };
-type Message = { id: string; role: string; content: string; reading_unit_id: string | null; visual_verified?: boolean };
+type Message = { id: string; role: string; content: string; reading_unit_id: string | null; visual_verified?: boolean; turn_id?: string | null };
 type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean; source_matches?: boolean };
 type Action = "START" | "NEXT" | "NAVIGATE" | "FIGURE" | "WHY_DESIGN" | "EVIDENCE" | "QUESTION";
 type Mode = "split" | "pdf" | "ai";
@@ -65,6 +65,21 @@ function SummaryCards({ content }: { content: string }) {
 }
 
 const questionDraftKey = (paperId: string) => `read:${paperId}`;
+const turnDraftKey = (paperId: string, action: Action) => `read-turn:${paperId}:${action}`;
+type ChatTurn = { id: string; message?: string };
+const chatActions: Action[] = ["START", "NEXT", "NAVIGATE", "FIGURE", "WHY_DESIGN", "EVIDENCE", "QUESTION"];
+
+function reconcileChatTurns(paper: Paper) {
+  const saved = new Set(paper.messages?.filter((item) => item.role === "assistant").map((item) => item.turn_id));
+  for (const action of chatActions) {
+    const key = turnDraftKey(paper.id, action);
+    const turn = readTabDraft<ChatTurn>(key);
+    if (!turn || !saved.has(turn.id)) continue;
+    const draftKey = questionDraftKey(paper.id);
+    if (action === "QUESTION" && readTabDraft<string>(draftKey)?.trim() === turn.message) writeTabDraft(draftKey, null);
+    writeTabDraft(key, null);
+  }
+}
 
 export default function ReadPage() {
   const searchParams = useSearchParams();
@@ -167,12 +182,13 @@ export default function ReadPage() {
     const request = ++paperRequest.current;
     let data: Paper;
     try {
-      data = await apiJson<Paper>(`/api/papers/${encodeURIComponent(id)}`, { signal });
+      data = await apiJson<Paper>(`/api/papers/${encodeURIComponent(id)}`, { signal, cache: "no-store" });
     } catch (error) {
       if (request !== paperRequest.current) return;
       throw error;
     }
-    if (request !== paperRequest.current) return;
+    if (request !== paperRequest.current || signal?.aborted) return;
+    reconcileChatTurns(data);
     followLatest.current = true;
     setPaper(data);
     if (opening) {
@@ -435,10 +451,15 @@ export default function ReadPage() {
     setChatStartedAt(Date.now());
     setPending(true); setError(""); setStream(""); setThinking(""); setActiveHeading(""); followLatest.current = true;
     let completed = false;
+    let turn: ChatTurn | undefined;
     try {
+      const key = turnDraftKey(paper.id, action);
+      const previous = readTabDraft<ChatTurn>(key);
+      turn = previous && previous.message === message ? previous : { id: crypto.randomUUID(), message };
+      writeTabDraft(key, turn);
       const res = await fetch(`${API}/api/papers/${paper.id}/chat`, {
         method: "POST", credentials: "include", signal: controller.signal, headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, message, unit_id: action === "NAVIGATE" ? message : undefined }),
+        body: JSON.stringify({ action, message, unit_id: action === "NAVIGATE" ? message : undefined, turn_id: turn.id }),
       });
       if (!res.ok) { const data = await res.json(); throw new Error(data.detail || "请求失败"); }
       if (!res.body) throw new Error("浏览器未收到流式响应");
@@ -463,19 +484,33 @@ export default function ReadPage() {
           if (data.type === "done") {
             completed = true;
             setChatStartedAt(null);
-            if (action === "QUESTION") setDraft(null);
           }
         }
       }
       if (!completed) throw new Error("流式回复未正常结束");
-      await loadPaper(paper.id);
+      await loadPaper(paper.id, false, AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]));
       if (controller.signal.aborted) return;
       setStream("");
       await loadList().catch(() => {});
     } catch (e) {
       if (!controller.signal.aborted) {
+        // The response can disconnect after the server commits both messages.
+        // Match the saved turn before suggesting a retry or clearing a draft.
+        if (turn && !completed) {
+          setChatStartedAt(null);
+          const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
+          const detail = await loadPaper(paper.id, false, signal).catch(() => undefined);
+          if (controller.signal.aborted) return;
+          completed = !!detail?.messages?.some((item) => item.role === "assistant" && item.turn_id === turn?.id);
+          if (completed) {
+            setStream("");
+            void loadList().catch(() => {});
+            return;
+          }
+        }
         if (!completed) { setStream(""); setThinking(""); }
         setError(completed ? "回复已保存，暂时无法刷新论文，请重新打开查看。"
+          : e instanceof TypeError ? "连接中断，请重试当前操作。"
           : e instanceof Error ? e.message : "精读失败");
         controller.abort();
       }
@@ -531,6 +566,7 @@ export default function ReadPage() {
     const response = await fetch(`${API}/api/papers/${id}`, { method: "DELETE", credentials: "include" });
     if (!response.ok) { setError("删除论文失败，请重试"); return; }
     writeTabDraft(questionDraftKey(id), null);
+    for (const action of chatActions) writeTabDraft(turnDraftKey(id, action), null);
     await refresh().catch(() => {});
     if (active.current && activePaper.current === id) {
       setPaper(null);

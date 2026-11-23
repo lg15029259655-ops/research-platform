@@ -89,13 +89,17 @@ class PaperImage(Base):
 
 class Message(Base):
     __tablename__ = "messages"
-    __table_args__ = (Index("ix_messages_paper_created", "paper_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_messages_paper_created", "paper_id", "created_at"),
+        Index("ix_messages_paper_turn_role", "paper_id", "turn_id", "role", unique=True),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     action: Mapped[str | None] = mapped_column(String(40), nullable=True)
     reading_unit_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    turn_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="completed")
     visual_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

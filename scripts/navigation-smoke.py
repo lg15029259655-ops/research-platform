@@ -376,17 +376,39 @@ def smoke(browser, frontend, backend):
     page.reload()
     expect(draft).to_have_value("Keep this draft with the current paper")
 
-    chat_url = f"{backend}/api/papers/{source_id}/chat"
-    context.route(chat_url, lambda route: route.fulfill(status=503, json={"detail": "精读服务暂不可用"}), times=1)
-    page.get_by_role("button", name="发送").click()
+    detail_url = f"{backend}/api/papers/{source_id}"
+    chat_url = detail_url + "/chat"
+    with page.expect_request(chat_url) as first_chat:
+        context.route(chat_url, lambda route: route.fulfill(status=503, json={"detail": "精读服务暂不可用"}), times=1)
+        page.get_by_role("button", name="发送").click()
+    turn_id = first_chat.value.post_data_json["turn_id"]
     expect(page.get_by_role("alert").filter(has_text="精读服务暂不可用")).to_be_visible()
     expect(draft).to_have_value("Keep this draft with the current paper")
-    context.route(chat_url, lambda route: route.fulfill(content_type="text/event-stream",
-                  body='data: {"type":"done"}\n\n'), times=1)
+
+    detail = context.request.get(detail_url).json()
+    answer = "Recovered answer after the connection closed"
+    detail["messages"].append({
+        "id": "recovered-chat-answer", "role": "assistant", "content": answer,
+        "reading_unit_id": detail["current_unit_id"], "turn_id": turn_id,
+    })
+
+    def disconnect_after_commit(route):
+        assert route.request.post_data_json["turn_id"] == turn_id
+        context.route(detail_url, lambda fresh: fresh.fulfill(json=detail))
+        route.fulfill(content_type="text/event-stream",
+                      body='data: {"type":"delta","content":"Partial streamed answer"}\n\n')
+
+    context.route(chat_url, disconnect_after_commit, times=1)
+    page.reload()
+    expect(draft).to_have_value("Keep this draft with the current paper")
     page.get_by_role("button", name="发送").click()
     expect(draft).to_have_value("")
+    expect(page.locator(".bubble.assistant").filter(has_text=answer)).to_be_visible()
+    expect(page.get_by_text("流式回复未正常结束")).to_have_count(0)
     page.reload()
     expect(draft).to_have_value("")
+    expect(page.locator(".bubble.assistant").filter(has_text=answer)).to_have_count(1)
+    context.unroute(detail_url)
     page.go_back()
     expect(page.locator(".comparePaper").first).to_be_visible()
 

@@ -347,6 +347,61 @@ def test_disconnected_chat_closes_model_and_does_not_save_partial_reply(monkeypa
         assert (owner, paper_id) not in papers._active_chats
         detail = client.get(f"/api/papers/{paper_id}").json()
         assert detail["messages"] == [] and detail["current_unit_id"] is None
+
+
+def test_chat_retry_recovers_committed_answer_without_advancing_twice(monkeypatch, tmp_path):
+    from starlette.requests import ClientDisconnect
+    from app import papers
+
+    calls = 0
+
+    async def model(_messages, **_kwargs):
+        nonlocal calls
+        calls += 1
+        yield {"type": "content", "content": f"Answer {calls}"}
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    monkeypatch.setattr(papers, "model_config", lambda vision=False: ("unused", "unused", "unused"))
+    monkeypatch.setattr("app.services.bailian_service.stream_events", model)
+    with TestClient(app) as client:
+        paper_id = upload(client, "Committed Chat")["id"]
+        owner = owner_of(client)
+        detail_url = f"/api/papers/{paper_id}"
+        chat_url = detail_url + "/chat"
+        turn_id = uuid4()
+        assert '"type": "done"' in client.post(chat_url, json={"action": "START"}).text
+
+        async def disconnect_at_done():
+            response = await papers.chat(paper_id, papers.ChatRequest(action="NEXT", turn_id=turn_id), owner)
+
+            async def send(message):
+                if b'"type": "done"' in message.get("body", b""):
+                    raise OSError("connection closed")
+
+            async def receive():
+                await asyncio.Event().wait()
+
+            with pytest.raises(ClientDisconnect):
+                await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+
+        asyncio.run(disconnect_at_done())
+        saved = client.get(detail_url).json()
+        assert len(saved["messages"]) == 4
+        assert [item["turn_id"] for item in saved["messages"][-2:]] == [str(turn_id)] * 2
+        retry = client.post(chat_url, json={"action": "NEXT", "turn_id": str(turn_id)})
+        assert "Answer 2" in retry.text and '"type": "done"' in retry.text
+        assert client.get(detail_url).json() == saved
+        assert calls == 2
+        assert client.post(chat_url, json={"action": "QUESTION", "message": "Different", "turn_id": str(turn_id)}).status_code == 409
+
+        assert '"type": "done"' in client.post(chat_url, json={"action": "NEXT"}).text
+        advanced = client.get(detail_url).json()
+        assert advanced["current_unit_id"] != saved["current_unit_id"]
+        assert "Answer 2" in client.post(chat_url, json={"action": "NEXT", "turn_id": str(turn_id)}).text
+        assert client.get(detail_url).json() == advanced
+        assert calls == 3
+
+
 def test_pdf_search_stops_after_thirty_matches(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     with TestClient(app) as client:

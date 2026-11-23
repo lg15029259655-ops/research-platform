@@ -4,7 +4,7 @@ import json
 from contextlib import aclosing
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 import shutil
 import logging
 import threading
@@ -337,7 +337,7 @@ def get_paper(paper_id: str, owner: str = Owner):
         data = paper_data(paper, units)
         data["messages"] = [{"id": item.id, "role": item.role, "content": item.content,
                              "action": item.action, "reading_unit_id": item.reading_unit_id,
-                             "visual_verified": item.visual_verified,
+                             "visual_verified": item.visual_verified, "turn_id": item.turn_id,
                              "created_at": item.created_at.isoformat() if item.created_at else None} for item in messages]
         return data
 
@@ -514,6 +514,7 @@ class ChatRequest(BaseModel):
     action: str
     message: str | None = None
     unit_id: str | None = None
+    turn_id: UUID | None = None
 
 
 def choose_unit(units: list[ReadingUnit], current_id: str | None, action: str, target_id: str | None = None) -> ReadingUnit:
@@ -605,6 +606,19 @@ async def chat(paper_id: str, request: ChatRequest, owner: str = Owner):
 def _prepare_chat(paper_id: str, request: ChatRequest, owner: str) -> StreamingResponse:
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
+        turn_id = str(request.turn_id) if request.turn_id else None
+        if turn_id:
+            previous = db.scalars(select(Message).where(
+                Message.paper_id == paper_id, Message.turn_id == turn_id,
+            )).all()
+            if previous:
+                user_message = next(item for item in previous if item.role == "user")
+                if (user_message.action != request.action
+                        or (request.action == "QUESTION" and user_message.content != (request.message or "").strip())
+                        or (request.action == "NAVIGATE" and user_message.reading_unit_id != request.unit_id)):
+                    raise HTTPException(409, "这次精读请求已用于其他操作")
+                assistant = next(item for item in previous if item.role == "assistant")
+                return _ChatStream(_replay_answer(assistant, paper.current_unit_id), (owner, paper_id))
         if paper.status != "parsed":
             raise HTTPException(409, "论文正在解析或尚未解析完成，请稍后再试")
         if not paper_source_matches(paper):
@@ -698,9 +712,9 @@ def _prepare_chat(paper_id: str, request: ChatRequest, owner: str) -> StreamingR
             if claim.rowcount != 1:
                 return False
             db.add(Message(id=str(uuid4()), paper_id=paper_id, role="user", content=user_visible_request,
-                           action=request.action, reading_unit_id=selected_id))
+                           action=request.action, reading_unit_id=selected_id, turn_id=turn_id))
             db.add(Message(id=str(uuid4()), paper_id=paper_id, role="assistant", content=answer,
-                           action=request.action, reading_unit_id=selected_id, visual_verified=verified))
+                           action=request.action, reading_unit_id=selected_id, turn_id=turn_id, visual_verified=verified))
             db.commit()
         return True
 
@@ -741,3 +755,8 @@ def _prepare_chat(paper_id: str, request: ChatRequest, owner: str) -> StreamingR
             yield frame({'type': 'error', 'message': 'AI 服务暂时不可用，请重试'})
 
     return _ChatStream(events(), (owner, paper_id))
+
+
+async def _replay_answer(assistant: Message, current_unit_id: str | None):
+    yield f"data: {json.dumps({'type': 'delta', 'content': assistant.content}, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'current_unit_id': current_unit_id, 'visual_verified': assistant.visual_verified})}\n\n"
