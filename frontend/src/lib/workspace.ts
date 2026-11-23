@@ -18,6 +18,8 @@ let cached: Workspace | null = null;
 let pending: Promise<Workspace> | null = null;
 let writes: Promise<unknown> = Promise.resolve();
 let revision = 0;
+let channel: BroadcastChannel | undefined;
+let watching = false;
 const subscribers = new Set<(workspace: Workspace) => void>();
 
 function publish(workspace: Workspace) {
@@ -28,7 +30,7 @@ function publish(workspace: Workspace) {
 function loadWorkspace(afterPending = false): Promise<Workspace> {
   if (pending) return afterPending ? pending.catch(() => {}).then(() => loadWorkspace()) : pending;
   const started = revision;
-  const request = apiJson<Workspace>("/api/workspace").then((result) => {
+  const request = apiJson<Workspace>("/api/workspace", { signal: AbortSignal.timeout(10000) }).then((result) => {
     if (started === revision) publish(result);
     return started === revision ? result : (cached || result);
   }).finally(() => { if (pending === request) pending = null; });
@@ -36,32 +38,43 @@ function loadWorkspace(afterPending = false): Promise<Workspace> {
   return request;
 }
 
-export function updateWorkspace(change: WorkspaceChange | ((workspace: Workspace) => WorkspaceChange | null)): Promise<Workspace> {
+function watchOtherTabs() {
+  if (watching) return;
+  watching = true;
+  const reload = () => {
+    if (subscribers.size) void loadWorkspace(true).catch(() => {});
+  };
+  if (typeof BroadcastChannel !== "undefined") {
+    channel = new BroadcastChannel("medread-workspace");
+    channel.onmessage = reload;
+  }
+  window.addEventListener("focus", reload);
+}
+
+function queueWorkspaceWrite(send: () => Promise<Workspace>): Promise<Workspace> {
   const request = writes.then(async () => {
-    let patch = change;
-    if (typeof change === "function") {
-      const current = cached ?? await loadWorkspace();
-      const next = change(current);
-      if (!next) return current;
-      patch = next;
-    }
-    const result = await apiJson<Workspace>("/api/workspace", {
-      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
-    });
+    const result = await send();
     revision += 1;
     publish(result);
+    channel?.postMessage("changed");
     return result;
   });
   writes = request.catch(() => {});
   return request;
 }
 
-export function addPaperToSynthesis(id: string) {
-  return updateWorkspace(({ selected_paper_ids: ids }) => {
-    if (ids.includes(id)) return null;
-    if (ids.length >= 5) throw new Error("待综合列表最多 5 篇，请先移除一篇");
-    return { selected_paper_ids: [...ids, id] };
-  });
+export function updateWorkspace(change: WorkspaceChange) {
+  return queueWorkspaceWrite(() => apiJson<Workspace>("/api/workspace", {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change),
+  }));
+}
+
+export function setPaperInSynthesis(id: string, selected: boolean, query: string) {
+  return queueWorkspaceWrite(() => apiJson<Workspace>("/api/workspace/selection", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paper_id: id, selected, query }),
+    signal: AbortSignal.timeout(10000),
+  }));
 }
 
 export function useWorkspace() {
@@ -78,6 +91,7 @@ export function useWorkspace() {
   }, []);
   useEffect(() => {
     subscribers.add(setWorkspace);
+    watchOtherTabs();
     if (cached) setWorkspace(cached);
     refresh().catch(() => {});
     return () => { subscribers.delete(setWorkspace); };

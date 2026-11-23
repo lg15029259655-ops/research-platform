@@ -145,6 +145,59 @@ def manual_design_draft(browser, frontend, backend):
     context.close()
 
 
+def shared_selection(browser, frontend, backend):
+    context = browser.new_context()
+    first = context.new_page()
+    first.goto(f"{frontend}/synthesis")
+    first.get_by_role("button", name="更换对比论文").click()
+    second = context.new_page()
+    second.goto(f"{frontend}/synthesis")
+    second.get_by_role("button", name="更换对比论文").click()
+    first_boxes = first.locator(".selectionList input")
+    second_boxes = second.locator(".selectionList input")
+    expect(first.locator(".selectionList input:checked")).to_have_count(3)
+    expect(second.locator(".selectionList input:checked")).to_have_count(3)
+
+    url = f"{backend}/api/workspace/selection"
+    held = []
+    first.route(url, lambda route: held.append(route), times=1)
+    with first.expect_request(url):
+        first_boxes.nth(0).uncheck()
+    expect(first.get_by_text("正在保存论文选择…")).to_be_visible()
+    expect(first.locator("button.primaryButton").first).to_be_disabled()
+    second_boxes.nth(1).uncheck()
+    expect(first_boxes.nth(1)).not_to_be_checked()
+    held[0].continue_()
+    expect(first.locator(".selectionList input:checked")).to_have_count(1)
+    expect(second.locator(".selectionList input:checked")).to_have_count(1)
+    expect(first.get_by_text("正在保存论文选择…")).to_have_count(0)
+    workspace = context.request.get(f"{backend}/api/workspace").json()
+    assert len(workspace["selected_paper_ids"]) == 1
+    assert not first_boxes.nth(0).is_checked() and not second_boxes.nth(0).is_checked()
+    assert not first_boxes.nth(1).is_checked() and not second_boxes.nth(1).is_checked()
+
+    first.route(url, lambda route: route.fulfill(status=503, json={}), times=1)
+    first_boxes.nth(0).click()
+    expect(first.get_by_role("alert").filter(has_text="论文选择未确认保存")).to_be_visible()
+    expect(first_boxes.nth(0)).not_to_be_checked()
+    expect(first.get_by_text("正在保存论文选择…")).to_have_count(0)
+    first_boxes.nth(0).check()
+    expect(second_boxes.nth(0)).to_be_checked()
+    expect(first.get_by_role("alert").filter(has_text="论文选择未确认保存")).to_have_count(0)
+
+    paper_id = workspace["selected_paper_ids"][0]
+    pdf = context.request.get(f"{backend}/api/papers/{paper_id}/file")
+    uploaded = context.request.post(f"{backend}/api/papers", multipart={
+        "file": {"name": "new-selection.pdf", "mimeType": "application/pdf", "buffer": pdf.body()},
+    })
+    assert uploaded.ok, uploaded.text()
+    second.goto(f"{frontend}/read?paper={uploaded.json()['id']}")
+    second.get_by_role("button", name="加入待综合").click()
+    expect(first.locator(".selectionList input")).to_have_count(4)
+    expect(first.locator(".selectionList input:checked")).to_have_count(3)
+    context.close()
+
+
 def compact_reading(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844}, has_touch=True)
     page = context.new_page()
@@ -462,6 +515,7 @@ if __name__ == "__main__":
             background_jobs(browser, args.frontend, args.backend)
             manual_design_draft(browser, args.frontend, args.backend)
             compact_reading(browser, args.frontend, args.backend)
+            shared_selection(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")

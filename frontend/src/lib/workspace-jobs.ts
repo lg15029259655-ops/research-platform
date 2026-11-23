@@ -96,11 +96,10 @@ function createJobStore(scope: Scope) {
         void run(saved.kind, saved.startedAt, saved.draft, async () => saved);
       }
     },
-    start(kind: Kind, params: Record<string, unknown>, options?: { after?: Promise<unknown>; draft?: Draft }) {
+    start(kind: Kind, params: Record<string, unknown>, options?: { draft?: Draft }) {
       const startedAt = Date.now();
       const draft = options?.draft;
       return run(kind, startedAt, draft, async (signal) => {
-        await options?.after;
         signal.throwIfAborted();
         const response = await submitJob(kind, params);
         return { id: response.id, kind, startedAt, draft };

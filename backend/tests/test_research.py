@@ -639,6 +639,65 @@ def test_background_result_cannot_overwrite_changed_workspace():
             clean(client)
 
 
+def test_selection_merges_simultaneous_changes_and_rejects_old_topic(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from app import workspace
+
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        try:
+            client.patch("/api/workspace", json={"query": "Current research"})
+            ids = []
+            for index in range(6):
+                reply = client.post("/api/papers", files={
+                    "file": (f"paper-{index}.pdf", pdf_bytes(f"Evidence paper {index}")),
+                })
+                assert reply.status_code == 200, reply.text
+                ids.append(reply.json()["id"])
+
+            def set_selection(paper_id, selected=True, query="Current research"):
+                return client.post("/api/workspace/selection", json={
+                    "paper_id": paper_id, "selected": selected, "query": query,
+                })
+
+            write = workspace.workspace_for_write
+            barrier = Barrier(2)
+
+            def simultaneous_write(db, owner):
+                barrier.wait(timeout=5)
+                return write(db, owner)
+
+            with monkeypatch.context() as concurrent:
+                concurrent.setattr(workspace, "workspace_for_write", simultaneous_write)
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    responses = list(executor.map(set_selection, ids[:2]))
+            assert [response.status_code for response in responses] == [200, 200]
+            assert set(client.get("/api/workspace").json()["selected_paper_ids"]) == set(ids[:2])
+            assert len(set_selection(ids[0]).json()["selected_paper_ids"]) == 2
+            for paper_id in ids[2:5]:
+                assert set_selection(paper_id).status_code == 200
+            assert set_selection(ids[5]).status_code == 409
+            assert set_selection(ids[0], False).status_code == 200
+            assert set_selection(ids[0], False).status_code == 200
+            assert set_selection(ids[5]).status_code == 200
+            client.patch("/api/workspace", json={"query": "New topic", "selected_paper_ids": []})
+            assert set_selection(ids[0]).status_code == 409
+            assert client.get("/api/workspace").json()["selected_paper_ids"] == []
+
+            with TestClient(app) as other:
+                try:
+                    foreign = other.post("/api/workspace/selection", json={
+                        "paper_id": ids[0], "selected": True, "query": "",
+                    })
+                    assert foreign.status_code == 404
+                finally:
+                    clean(other)
+        finally:
+            clean(client)
+
+
 def test_empty_comparison_claims_are_explicitly_insufficient(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     # A short X-Ray deadline must not cancel the separate multi-paper task.

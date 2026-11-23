@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
 import { apiJson, postJson } from "@/lib/api";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
-import { addPaperToSynthesis, useWorkspace, type Workspace } from "@/lib/workspace";
+import { setPaperInSynthesis, useWorkspace, type Workspace } from "@/lib/workspace";
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import { tabGroup } from "@/lib/tabs";
 import type { SimilarPaper } from "@/components/NoveltySpace";
@@ -235,12 +235,14 @@ export default function DesignPage() {
   async function addWork(paper: SimilarPaper) {
     setBusy(true); setError("");
     try {
-      const ids = workspace?.selected_paper_ids || [];
+      const current = await refresh(true);
+      if (workspace && workspace.query !== current.query) throw new Error("研究主题已变化，请核对当前主题后再加入");
+      const ids = current.selected_paper_ids;
       // 先判上限再 import。原来的顺序是先入库再判上限，超限时论文已经写进论文库，
       // 用户看到报错、回论文库却多了一条自己不想要的记录。
       if (ids.length >= 5) throw new Error("对比篮最多 5 篇论文，请先在文献综合页移除一篇");
       const saved = await importWork(paper);
-      await addPaperToSynthesis(saved.id);
+      await setPaperInSynthesis(saved.id, true, current.query);
     } catch (e) { setError(e instanceof Error ? e.message : "加入对比失败"); }
     finally { setBusy(false); }
   }

@@ -10,7 +10,7 @@ import ThinkingTrail from "@/components/reader/ThinkingTrail";
 import type { MindMapPayload } from "@/components/mindmap/MindMapPanel";
 import type { PaperExperimentsPayload } from "@/components/experiment-map/PaperExperimentsPanel";
 import { submitJob, watchJob, type JobProgress as JobProgressData } from "@/lib/jobs";
-import { addPaperToSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 import { useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import "./enhancements.css";
@@ -517,7 +517,7 @@ export default function ReadPage() {
   async function queueForSynthesis() {
     if (!paper || addingToSynthesis) return;
     setAddingToSynthesis(true); setError("");
-    try { await addPaperToSynthesis(paper.id); }
+    try { await setPaperInSynthesis(paper.id, true, (workspace ?? await refresh()).query); }
     catch (e) { setError(e instanceof Error ? e.message : "无法加入待综合列表"); }
     finally { setAddingToSynthesis(false); }
   }

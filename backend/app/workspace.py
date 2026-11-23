@@ -14,6 +14,7 @@ from .models import Paper, ResearchArtifact, ResearchWorkspace
 
 router = APIRouter(prefix="/api/workspace")
 Owner = Depends(current_owner)
+SELECTION_LIMIT = 5
 ARTIFACT_KINDS = {"synthesis_id": "paper_compare", "novelty_id": "novelty_analysis",
                   "design_version_id": "experiment_design"}
 JOB_CONTEXT_FIELDS = {
@@ -64,6 +65,13 @@ def get_or_create(db, owner: str) -> ResearchWorkspace:
     return item
 
 
+def workspace_for_write(db, owner: str) -> ResearchWorkspace:
+    # Start the SQLite write transaction before reading the current selection.
+    db.execute(insert(ResearchWorkspace).values(id=str(uuid4()), owner_id=owner)
+               .on_conflict_do_nothing(index_elements=[ResearchWorkspace.owner_id]))
+    return db.scalars(select(ResearchWorkspace).where(ResearchWorkspace.owner_id == owner)).one()
+
+
 def prune_stale_idea_results(db, item: ResearchWorkspace) -> None:
     for field, query_field in (("novelty_id", "query"), ("design_version_id", "goal")):
         artifact_id = getattr(item, field)
@@ -80,7 +88,7 @@ class WorkspacePatch(BaseModel):
     query: str | None = Field(default=None, max_length=800)
     domain: str | None = Field(default=None, max_length=50)
     study_type: str | None = Field(default=None, max_length=80)
-    selected_paper_ids: list[str] | None = Field(default=None, max_length=5)
+    selected_paper_ids: list[str] | None = Field(default=None, max_length=SELECTION_LIMIT)
     core_paper_id: str | None = None
     synthesis_id: str | None = None
     research_gap: str | None = Field(default=None, max_length=3000)
@@ -102,7 +110,7 @@ def get_workspace(owner: str = Owner):
 def patch_workspace(patch: WorkspacePatch, owner: str = Owner):
     changes = patch.model_dump(exclude_unset=True)
     with SessionLocal() as db:
-        item = get_or_create(db, owner)
+        item = workspace_for_write(db, owner)
         if "design_idea" in changes and changes["design_idea"] != item.design_idea:
             for field in ("novelty_id", "design_version_id"):
                 if field not in changes:
@@ -135,3 +143,31 @@ def patch_workspace(patch: WorkspacePatch, owner: str = Owner):
         db.commit()
         db.refresh(item)
         return workspace_data(item)
+
+
+class SelectionChange(BaseModel):
+    paper_id: str = Field(min_length=1, max_length=36)
+    selected: bool
+    query: str = Field(max_length=800)
+
+
+@router.post("/selection")
+def change_selection(change: SelectionChange, owner: str = Owner):
+    """Set the membership of one paper without replacing another tab's selection."""
+    with SessionLocal() as db:
+        workspace = workspace_for_write(db, owner)
+        if workspace.query != change.query:
+            raise HTTPException(409, "研究主题已变化，请核对当前主题后再修改待综合列表")
+        ids = json.loads(workspace.selected_paper_ids_json)
+        if change.selected and change.paper_id not in ids:
+            if not db.scalar(select(Paper.id).where(Paper.id == change.paper_id, Paper.owner_id == owner)):
+                raise HTTPException(404, "论文不存在")
+            if len(ids) >= SELECTION_LIMIT:
+                raise HTTPException(409, "待综合列表最多 5 篇，请先移除一篇")
+            ids.append(change.paper_id)
+        elif not change.selected and change.paper_id in ids:
+            ids.remove(change.paper_id)
+        workspace.selected_paper_ids_json = json.dumps(ids)
+        db.commit()
+        db.refresh(workspace)
+        return workspace_data(workspace)

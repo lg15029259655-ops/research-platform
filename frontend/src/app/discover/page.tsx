@@ -7,7 +7,7 @@ import { ChangeEvent, useEffect, useRef, useState } from "react";
 import StepLoading from "@/components/StepLoading";
 import type { LineageResponse } from "@/components/lineage/lineageLayout";
 import { API, ApiError, apiJson, postJson } from "@/lib/api";
-import { addPaperToSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 
 const CitationGraph = dynamic(() => import("@/components/CitationGraph"), { ssr: false });
@@ -214,8 +214,9 @@ export default function DiscoverPage() {
   }
 
   async function addToCompare(work: Work) {
+    const query = (workspace ?? await refresh()).query;
     const paper = await save(work);
-    await addPaperToSynthesis(paper.id);
+    await setPaperInSynthesis(paper.id, true, query);
   }
 
   async function setCore(work: Work) {
@@ -312,6 +313,6 @@ export default function DiscoverPage() {
         </div><aside className="graphAside" key={`${graphView}-${graphView === "lineage" ? lineageCenter : center}`}>{selected ? <><div className="relationSummary"><strong>与中心论文的关系</strong><p>{relationText(selected)}</p></div>{workCard(selected, true)}<button className="moreButton" onClick={() => (graphView === "lineage" ? showLineage(selected.openalex_id) : showGraph(selected.openalex_id))} disabled={busy || selected.openalex_id === (graphView === "lineage" ? lineageCenter : center)} aria-busy={busy}>{busy ? "正在展开…" : selected.openalex_id === (graphView === "lineage" ? lineageCenter : center) ? "当前中心论文" : "以这篇论文为中心展开 →"}</button></> : <p>选择一篇论文查看摘要与可用操作。</p>}</aside></div>
       </>}
 </>}
-    {!!workspace?.selected_paper_ids.length && <div className="compareTray"><strong>待综合 · {workspace.selected_paper_ids.length} / 5</strong><div>{workspace.selected_paper_ids.map((id) => <span key={id} title={saved.find((item) => item.id === id)?.title || "已选论文"}>{saved.find((item) => item.id === id)?.title || "已选论文"}<button title="移出待综合论文" aria-label={`移出 ${saved.find((item) => item.id === id)?.title || "论文"}`} onClick={() => updateWorkspace({selected_paper_ids: workspace.selected_paper_ids.filter((item) => item !== id)}).catch((e) => setError(e.message))}>×</button></span>)}</div><Link href="/synthesis">开始综合 →</Link></div>}
+    {!!workspace?.selected_paper_ids.length && <div className="compareTray"><strong>待综合 · {workspace.selected_paper_ids.length} / 5</strong><div>{workspace.selected_paper_ids.map((id) => <span key={id} title={saved.find((item) => item.id === id)?.title || "已选论文"}>{saved.find((item) => item.id === id)?.title || "已选论文"}<button title="移出待综合论文" aria-label={`移出 ${saved.find((item) => item.id === id)?.title || "论文"}`} onClick={() => setPaperInSynthesis(id, false, workspace.query).catch((e) => setError(e.message))}>×</button></span>)}</div><Link href="/synthesis">开始综合 →</Link></div>}
   </main>;
 }

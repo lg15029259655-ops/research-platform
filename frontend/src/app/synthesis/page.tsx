@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
-import { apiJson } from "@/lib/api";
+import { ApiError, apiJson } from "@/lib/api";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
-import { updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 import EvidenceMap, { type Claim } from "@/components/EvidenceMap";
 import GapPath from "@/components/GapPath";
@@ -27,7 +27,8 @@ export default function SynthesisPage() {
   const tab = view === "evidence" || view === "gaps" ? view : "matrix";
   const [papers, setPapers] = useState<Paper[] | null>(null);
   const [libraryError, setLibraryError] = useState(false);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [pendingChoices, setPendingChoices] = useState<Record<string, boolean>>({});
+  const [selectionError, setSelectionError] = useState("");
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [artifactError, setArtifactError] = useState("");
   const [artifactAttempt, setArtifactAttempt] = useState(0);
@@ -43,8 +44,6 @@ export default function SynthesisPage() {
   const resultRef = useRef<HTMLElement>(null);
   const selectionRef = useRef<HTMLElement>(null);
   const focusNewResult = useRef(false);
-  const selectionWrites = useRef<Promise<unknown>>(Promise.resolve());
-  const pendingSelections = useRef(0);
   const { workspace, workspaceError, refresh } = useWorkspace();
   function setTab(next: "matrix" | "evidence" | "gaps") {
     const params = new URLSearchParams(window.location.search);
@@ -80,31 +79,40 @@ export default function SynthesisPage() {
     return () => controller.abort();
   }, [artifactId, !!workspace, artifactAttempt, sourceArtifact]);
   const fulltext = (papers || []).filter((paper) => paper.status === "parsed");
+  const savedSelection = workspace?.selected_paper_ids ?? [];
+  const missingPapers = papers ? savedSelection.filter((id) => !papers.some((paper) => paper.id === id)).join(",") : "";
   useEffect(() => {
-    if (workspace && papers && pendingSelections.current === 0) setSelected(workspace.selected_paper_ids.filter((id) => papers.some((paper) => paper.id === id && paper.status === "parsed")));
-  }, [workspace?.selected_paper_ids.join(","), papers]);
-  function toggle(id: string) {
-    // 原来是超限就静默 no-op（selected.length < 5 ? … : selected），点了没反应也没提示。
-    if (!selected.includes(id) && selected.length >= 5) { setError("对比篮最多 5 篇论文，请先移除一篇"); return; }
-    const updated = selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id];
-    setError("");
-    setSelected(updated);
+    if (!missingPapers) return;
+    const controller = new AbortController();
+    void loadPapers(controller.signal);
+    return () => controller.abort();
+  }, [missingPapers]);
+  const selected = savedSelection.filter((id) => fulltext.some((paper) => paper.id === id));
+  const awaitingFulltext = savedSelection.filter((id) => !selected.includes(id));
+  const savingSelection = Object.keys(pendingChoices).length > 0;
+  async function changeChoice(id: string, checked: boolean) {
+    if (!workspace || pendingChoices[id] !== undefined) return;
+    setSelectionError("");
+    setPendingChoices((current) => ({ ...current, [id]: checked }));
     setShowSelection(true);
-    pendingSelections.current += 1;
-    selectionWrites.current = selectionWrites.current.catch(() => {}).then(() => updateWorkspace({selected_paper_ids: updated})).finally(() => { pendingSelections.current -= 1; });
-    selectionWrites.current.catch((e) => {
-      setError(e.message);
-      void refresh().catch(() => {});
-    });
+    try {
+      await setPaperInSynthesis(id, checked, workspace.query);
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "暂时无法连接服务，可以重试";
+      setSelectionError(`论文选择未确认保存。${message}`);
+      await refresh(true).catch(() => {});
+    } finally {
+      setPendingChoices(({ [id]: _, ...rest }) => rest);
+    }
   }
   function compare() {
-    if (busy) return;
+    if (busy || savingSelection || selected.length < 2) return;
     if (artifact && !artifact.payload.stale_after_reparse && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
     setError("");
     setTaskCanceled(false);
-    void start("compare", { paper_ids: selected }, { after: selectionWrites.current });
+    void start("compare", { paper_ids: selected });
   }
   useEffect(() => {
     if (!job || job.status === "running") return;
@@ -169,9 +177,31 @@ export default function SynthesisPage() {
     <section className="sectionBox" ref={selectionRef}><div className="selectionHeading"><h2>选择论文 <small> {selected.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
       {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇 PDF 提取的片段；不代表每篇都已完整解析。</p>}
       {showSelection && !libraryReady && <p className="workspaceLoading" role="status">{libraryError ? <button className="quietButton" onClick={() => void loadPapers()}>重试读取论文库</button> : (workspaceError && !workspace) ? "请先重试读取工作区" : "正在读取论文与已选列表…"}</p>}
-      {showSelection && libraryReady && (fulltext.length ? <div className="selectionList">{fulltext.map((paper) => <label key={paper.id}><input type="checkbox" checked={selected.includes(paper.id)} onChange={() => toggle(paper.id)} disabled={!selected.includes(paper.id) && selected.length >= 5} /><span>{paper.title}<small>{paper.domain || "领域待识别"} · 已有 PDF，提取质量需核对</small></span></label>)}</div> : <p>论文库中尚无已解析的 PDF。先去 <Link href="/read" className="inlineLink">上传 PDF</Link>。</p>)}
+      {showSelection && libraryReady && <>
+        {fulltext.length ? <div className="selectionList">
+          {fulltext.map((paper) => <label key={paper.id}>
+            <input type="checkbox" checked={pendingChoices[paper.id] ?? selected.includes(paper.id)}
+              onChange={(event) => void changeChoice(paper.id, event.target.checked)}
+              disabled={pendingChoices[paper.id] !== undefined} />
+            <span>{paper.title}<small>{paper.domain || "领域待识别"} · 已有 PDF，提取质量需核对</small></span>
+          </label>)}
+        </div> : <p>论文库中尚无已解析的 PDF。先去 <Link href="/read" className="inlineLink">上传 PDF</Link>。</p>}
+        {!!awaitingFulltext.length && <div className="selectionSummary">
+          <p>以下已选论文尚无可综合的全文，仍占用待综合名额。</p>
+          <ul>{awaitingFulltext.map((id) => <li key={id}>
+            {papers?.find((paper) => paper.id === id)?.title || "论文暂不可用"}
+            <button type="button" className="quietButton" disabled={pendingChoices[id] !== undefined}
+              onClick={() => void changeChoice(id, false)}>移出待综合</button>
+          </li>)}</ul>
+        </div>}
+      </>}
+      {selectionError && <div className="researchError" role="alert">{selectionError}</div>}
+      {savingSelection && <p className="workspaceLoading" role="status">正在保存论文选择…</p>}
       {libraryReady && selectionChanged && <p className="selectionChanged" role="status">论文选择已改变。下方保留的是上一次综合结果；重新生成后才会反映当前选择。</p>}
-      {showSelection && libraryReady && <button className="primaryButton" onClick={compare} disabled={busy || selected.length < 2} aria-busy={busy}>{busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}</button>}
+      {showSelection && libraryReady && <button className="primaryButton" onClick={compare}
+        disabled={busy || savingSelection || selected.length < 2} aria-busy={busy || savingSelection}>
+        {busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}
+      </button>}
     </section>
     {!data && !loadingArtifact && libraryReady && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
