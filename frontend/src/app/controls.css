@@ -1,0 +1,70 @@
+/* Text actions use a moderate radius. Status tags and icon-only targets keep their own shapes. */
+.searchBox { border-radius: var(--r-2); }
+.searchBox button, .primaryButton, .guideLink, .quietButton, .moreButton,
+.workActions button, .workPrimaryActions :is(button, a, label),
+.actionRow button, .gapUse, .drawerAction, .compareTray > a {
+  border-radius: var(--r-control);
+}
+.searchBox button, .primaryButton { padding: 8px 15px; }
+.quietButton { min-height: 36px; padding: 7px 12px; }
+.workPrimaryActions :is(button, a, label) { padding: 7px 11px; }
+.tabBar { border-radius: var(--r-panel); }
+.tabBar button { border-radius: var(--r-1); }
+
+/* Center text and its visual as one unit. Lists and reading content keep their original alignment. */
+:is(.home-button, .home-header-action, .searchBox > button, .primaryButton, .guideLink,
+    .quietButton, .moreButton, .gapUse, .drawerAction, .compareTray > a,
+    .searchModes button, .tabBar > button, .actionRow button, .versionBar button,
+    .workActions button, .workPrimaryActions :is(button, a, label), .jobProgressCancel,
+    .dse-actions button, .dse-list button, .graphToolbar button, .flowToolbar button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  column-gap: 7px;
+  text-align: center;
+  line-height: 1.25;
+}
+.workPrimaryActions :is(button, a, label) { justify-content: center; }
+.moreButton { display: flex; width: max-content; max-width: 100%; }
+.home-button span { font-size: 1em; line-height: 1; }
+.home-header-action { min-height: 36px; }
+.searchModes button, .versionBar button, .graphToolbar button, .flowToolbar button { border-radius: var(--r-control); }
+.quietButton:hover:not(:disabled), .searchModes button:hover:not(:disabled) {
+  border-color: var(--c-primary-line);
+  background: var(--c-primary-weak);
+}
+
+.researchNav nav a { justify-content: center; text-align: center; min-height: 44px; }
+.researchNav nav a small { display: none; }
+
+.reader .modeSwitch { border-radius: var(--r-panel); }
+.reader .modeSwitch button, .reader .readerViewTabs button { border-radius: var(--r-1); }
+.reader :is(.modeSwitch, .pageTools, .pdfToolbar form, .quickActions, .readerViewTabs, .chatControls form) button,
+.reader :is(.libraryToggle, .readerSynthesis, .uploadBtn, .bigUpload) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  line-height: 1.25;
+}
+.reader .uploadBtn, .reader .bigUpload, .reader .readerSynthesis,
+.reader :is(.pageTools, .pdfToolbar form, .quickActions, .chatControls form) button {
+  border-radius: var(--r-control);
+}
+.reader .uploadBtn { min-height: 36px; padding: 8px 11px; font-weight: 650; }
+.reader .bigUpload { padding: 10px 16px; }
+.reader .chatControls form button { align-self: flex-end; min-height: 42px; }
+@media (max-width: 760px) {
+  .readerCompact .libraryToggle { border-radius: var(--r-control); }
+  .readerCompact .libraryDrawer .uploadBtn { min-height: 44px; }
+  .readerCompact .chatControls form button { min-height: 44px; }
+  .libraryDrawer .libraryClose {
+    padding-inline: 10px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--c-text-mid);
+    font-weight: 500;
+  }
+  .libraryDrawer .libraryClose:hover { background: var(--c-surface); color: var(--c-primary); }
+}

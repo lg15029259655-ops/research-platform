@@ -500,3 +500,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: in a 390 by 844 Chrome viewport, the default paper library occupied about 330px, the PDF started near the fold and the chat composer was below the long answer history. Changing panes remounted the PDF and reset zoom.
 - Action: move the compact library into a native dialog with searchable titles and filenames. Use separate full-width source and commentary views on narrow screens. Retain each visited pane for the current paper and ignore hidden-PDF resize events.
 - Verification: the browser regression checks 320px, 390px, 768px and desktop layouts. It verifies keyboard mode navigation, focus restoration, paper filtering and selection, PDF page/zoom/search retention and chat scroll retention. The feature-only build passes the regression independently of the optional visual polish.
+
+## L-20261123-06 — Keep visual changes reversible
+
+- The user requested a separate rollback for the visual review so functional improvements survive a return to the previous appearance. Commit compact reader behavior first and verify its browser regression without the visual stylesheet. Keep the later visual changes in CSS and the stylesheet import.
+- Use moderate text-button radii and align text and icons together. Keep quiet controls visually lighter. Inspect both phone and desktop renderings instead of assuming that rounded corners alone cure an oversized control.
+- Status: the polished build and full navigation regression passed. Chrome sampled controls on all five pages at 390px and 1440px. The library upload control measures 44px on mobile and 36px on desktop. The pre-polish feature build independently passed the full navigation regression.
+- Local review uses the isolated demo at http://127.0.0.2:3320 with its own API and data, so the browser cookie does not replace the normal 127.0.0.1 session. Keep the running review build in the ignored frontend/.next-audit directory available until the user has reviewed it. Use another build directory for further work while this preview is running.

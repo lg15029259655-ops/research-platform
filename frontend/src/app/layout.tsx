@@ -3,6 +3,7 @@ import "./tokens.css";
 import "./globals.css";
 import "./research.css";
 import "./studio.css";
+import "./controls.css";
 import ResearchShell from "@/components/ResearchShell";
 
 export const metadata: Metadata = {

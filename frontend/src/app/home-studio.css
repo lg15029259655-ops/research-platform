@@ -27,7 +27,7 @@
 .home-nav { display: flex; gap: 28px; margin-left: auto; font-size: var(--fs-label); font-weight: 600; color: var(--c-text-mid); }
 .home-nav a { padding: 12px 0; transition: color var(--dur-1) var(--ease); }
 .home-nav a:hover, .home-nav a:focus-visible { color: var(--accent); }
-.home-header-action { flex: none; padding: 9px 18px; border-radius: var(--r-pill); background: var(--c-ink); color: var(--c-on-primary); font-size: var(--fs-label); font-weight: 700; white-space: nowrap; transition: opacity var(--dur-1) var(--ease); }
+.home-header-action { flex: none; padding: 8px 14px; border-radius: var(--r-control); background: var(--c-ink); color: var(--c-on-primary); font-size: var(--fs-label); font-weight: 700; white-space: nowrap; transition: opacity var(--dur-1) var(--ease); }
 .home-header-action:hover { opacity: .85; }
 /* R4：深色 ink 实底之上，蓝环不可见，必须用内白环 + 外蓝环（offset 归零，保证内白外蓝） */
 .home-header-action:focus-visible { outline: 2px solid var(--c-surface); outline-offset: 0; box-shadow: 0 0 0 4px var(--c-primary); }
@@ -43,7 +43,7 @@
 .home-hero h1 em { color: var(--c-text-mid); font-style: normal; }
 .home-hero > p { max-width: 620px; margin: 0; color: var(--c-text-mid); font-size: var(--fs-body); line-height: 1.95; }
 .home-hero-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 24px; }
-.home-button { display: inline-flex; align-items: center; justify-content: center; gap: 18px; padding: 12px 20px; border-radius: var(--r-pill); font-size: var(--fs-label); font-weight: 700; transition: opacity var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
+.home-button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 42px; padding: 9px 15px; border-radius: var(--r-control); font-size: var(--fs-label); font-weight: 700; transition: opacity var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease); }
 .home-button span { font-size: 18px; line-height: .7; }
 .home-button-primary { background: var(--c-ink); color: var(--c-on-primary); }
 .home-button-primary:hover { opacity: .85; }
@@ -134,7 +134,7 @@
 .home-intro-links { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
 .home-intro-links a { color: var(--c-primary); text-decoration: underline; text-underline-offset: 4px; font-size: var(--fs-label); font-weight: 700; }
 .home-intro-links a:hover { color: var(--c-primary-hover); }
-.home-intro-dialog button { width: 100%; display: flex; justify-content: space-between; align-items: center; margin: 26px 0 12px; padding: 15px 20px; border: 0; border-radius: var(--r-pill); background: var(--c-primary); color: var(--c-on-primary); font: 700 14px var(--font-sans); cursor: pointer; transition: background var(--dur-1) var(--ease); }
+.home-intro-dialog button { width: 100%; display: flex; justify-content: space-between; align-items: center; margin: 26px 0 12px; min-height: 44px; padding: 10px 15px; border: 0; border-radius: var(--r-control); background: var(--c-primary); color: var(--c-on-primary); font: 700 14px var(--font-sans); cursor: pointer; transition: background var(--dur-1) var(--ease); }
 .home-intro-dialog button:hover { background: var(--c-primary-hover); }
 .home-intro-dialog button span { font-size: 19px; }
 .home-intro-dialog small { color: var(--c-text-soft); font-size: var(--fs-caption); }
@@ -193,3 +193,5 @@
   html { scroll-behavior: auto; }
   .home-page *, .home-page *::before, .home-page *::after { transition: none !important; animation: none !important; }
 }
+
+@media (max-width: 680px) { .home-button { min-height: 44px; } }
