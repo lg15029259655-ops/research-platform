@@ -31,6 +31,8 @@ type Mode = "split" | "pdf" | "ai";
 const compactQuery = "(max-width: 760px)";
 const compactModes = ["pdf", "ai"] as const;
 const desktopModes = ["split", "pdf", "ai"] as const;
+// The server sends a heartbeat every 15 seconds, including during model thinking.
+const chatIdleTimeoutMs = 35000;
 
 function subscribeToViewport(listener: () => void) {
   const media = window.matchMedia(compactQuery);
@@ -565,6 +567,17 @@ export default function ReadPage() {
   async function act(action: Action, message?: string) {
     if (!paper || !ready || pending || chatRequest.current) return;
     const controller = new AbortController();
+    const network = new AbortController();
+    const networkSignal = AbortSignal.any([controller.signal, network.signal]);
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    function resetIdleTimer() {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        network.abort();
+      }, chatIdleTimeoutMs);
+    }
     chatRequest.current = controller;
     setChatStartedAt(Date.now());
     setPending(true); setError(""); setStream(""); setThinking(""); setActiveHeading(""); followLatest.current = true;
@@ -575,18 +588,21 @@ export default function ReadPage() {
       const previous = readTabDraft<ChatTurn>(key);
       turn = previous && previous.message === message ? previous : { id: crypto.randomUUID(), message };
       writeTabDraft(key, turn);
+      resetIdleTimer();
       const res = await fetch(`${API}/api/papers/${paper.id}/chat`, {
-        method: "POST", credentials: "include", signal: controller.signal, headers: { "Content-Type": "application/json" },
+        method: "POST", credentials: "include", signal: networkSignal, headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, message, unit_id: action === "NAVIGATE" ? message : undefined, turn_id: turn.id }),
       });
+      resetIdleTimer();
       if (!res.ok) { const data = await res.json(); throw new Error(data.detail || "请求失败"); }
       if (!res.body) throw new Error("浏览器未收到流式响应");
       const reader = res.body.getReader(); const decoder = new TextDecoder();
       let buffer = ""; let answer = "";
-      while (true) {
+      while (!completed) {
         const { done, value } = await reader.read();
         if (controller.signal.aborted) return;
         if (done) break;
+        if (value.byteLength) resetIdleTimer();
         buffer += decoder.decode(value, { stream: true });
         const events = buffer.split("\n\n"); buffer = events.pop() || "";
         for (const raw of events) {
@@ -602,20 +618,24 @@ export default function ReadPage() {
           if (data.type === "done") {
             completed = true;
             setChatStartedAt(null);
+            break;
           }
         }
       }
       if (!completed) throw new Error("流式回复未正常结束");
+      clearTimeout(idleTimer);
+      network.abort();
       await loadPaper(paper.id, false, AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]));
       if (controller.signal.aborted) return;
       setStream("");
-      await loadList().catch(() => {});
+      void loadList().catch(() => {});
     } catch (e) {
+      clearTimeout(idleTimer);
+      network.abort();
       if (!controller.signal.aborted) {
         // The response can disconnect after the server commits both messages.
         // Match the saved turn before suggesting a retry or clearing a draft.
         if (turn && !completed) {
-          setChatStartedAt(null);
           const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
           const detail = await loadPaper(paper.id, false, signal).catch(() => undefined);
           if (controller.signal.aborted) return;
@@ -628,11 +648,13 @@ export default function ReadPage() {
         }
         if (!completed) { setStream(""); setThinking(""); }
         setError(completed ? "回复已保存，暂时无法刷新论文，请重新打开查看。"
+          : timedOut ? "连接长时间无响应，请重试当前操作。"
           : e instanceof TypeError ? "连接中断，请重试当前操作。"
           : e instanceof Error ? e.message : "精读失败");
         controller.abort();
       }
     } finally {
+      clearTimeout(idleTimer);
       if (chatRequest.current === controller) {
         chatRequest.current = null;
         setChatStartedAt(null); setPending(false); setActiveHeading("");

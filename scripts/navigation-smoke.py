@@ -657,6 +657,101 @@ def compact_reading(browser, frontend, backend):
     context.close()
 
 
+def reader_chat_idle_recovery(browser, frontend, backend, *, viewport=None):
+    with browser.new_context(viewport=viewport) as context:
+        page = context.new_page()
+        page.clock.install()
+        page.add_init_script("""(() => {
+            const fetchOriginal = window.fetch.bind(window);
+            const probe = window.chatProbe = { turns: [], opened: 0 };
+            window.fetch = (url, options) => {
+                if (typeof url !== "string" || !url.endsWith("/chat") || options?.method !== "POST") {
+                    return fetchOriginal(url, options);
+                }
+                probe.turns.push(JSON.parse(options.body).turn_id);
+                return new Promise((resolve, reject) => {
+                    let stream;
+                    options.signal.addEventListener("abort", () => {
+                        if (stream) stream.error(options.signal.reason);
+                        else reject(options.signal.reason);
+                    }, { once: true });
+                    if (probe.turns.length === 1) return; // No response headers.
+                    resolve(new Response(new ReadableStream({
+                        start(controller) {
+                            stream = controller;
+                            const emit = (text) => stream.enqueue(new TextEncoder().encode(text));
+                            probe.heartbeat = () => emit(": ping\\n\\n");
+                            probe.finish = () => emit('data: {"type":"done"}\\n\\n');
+                            emit('data: {"type":"delta","content":"Partial reply before the stall"}\\n\\n');
+                            probe.opened += 1;
+                        }
+                    }), { headers: { "Content-Type": "text/event-stream" } }));
+                });
+            };
+        })()""")
+        with page.expect_response(lambda response: response.ok and
+                                  response.url.startswith(f"{backend}/api/papers/") and
+                                  "/" not in response.url.removeprefix(f"{backend}/api/papers/")) as opened:
+            page.goto(f"{frontend}/read")
+        detail_url = opened.value.url
+        if viewport:
+            page.get_by_role("tab", name="AI 讲解", exact=True).click()
+        draft = page.get_by_role("textbox", name="提出你的科研问题")
+        expect(draft).to_be_visible()
+        draft.fill("Keep this question when the connection stalls")
+        send = page.get_by_role("button", name=re.compile(r"^发送"))
+        send.click()
+        page.wait_for_function("window.chatProbe.turns.length === 1")
+        page.clock.fast_forward(36000)
+        timeout = page.get_by_role("alert").filter(has_text="连接长时间无响应")
+        expect(timeout).to_be_visible()
+        expect(draft).to_have_value("Keep this question when the connection stalls")
+
+        detail = context.request.get(detail_url).json()
+        turn_id = page.evaluate("window.chatProbe.turns[0]")
+        answer = "Recovered the saved answer from the stalled connection"
+        detail["messages"].append({
+            "id": "idle-recovered-chat-answer", "role": "assistant", "content": answer,
+            "reading_unit_id": detail["current_unit_id"], "turn_id": turn_id,
+        })
+        context.route(detail_url, lambda route: route.fulfill(json=detail), times=1)
+        send.click()
+        expect(page.get_by_text("Partial reply before the stall", exact=True)).to_be_visible()
+        page.clock.fast_forward(20000)
+        page.evaluate("window.chatProbe.heartbeat()")
+        page.clock.fast_forward(20000)
+        expect(page.get_by_text("Partial reply before the stall", exact=True)).to_be_visible()
+        expect(timeout).to_have_count(0)
+        page.clock.fast_forward(16000)
+        expect(page.locator(".bubble.assistant").filter(has_text=answer)).to_have_count(1)
+        expect(draft).to_have_value("")
+        expect(timeout).to_have_count(0)
+        assert page.evaluate("window.chatProbe.turns") == [turn_id, turn_id]
+
+        draft.fill("Finish before the server closes the connection")
+        send.click()
+        page.wait_for_function("window.chatProbe.opened === 2")
+        finished_turn = page.evaluate("window.chatProbe.turns.at(-1)")
+        finished_answer = "Confirmed without waiting for the connection to close"
+        detail["messages"].append({
+            "id": "confirmed-open-chat-answer", "role": "assistant", "content": finished_answer,
+            "reading_unit_id": detail["current_unit_id"], "turn_id": finished_turn,
+        })
+        context.route(detail_url, lambda route: route.fulfill(json=detail), times=1)
+        page.evaluate("window.chatProbe.finish()")
+        expect(page.locator(".bubble.assistant").filter(has_text=finished_answer)).to_have_count(1)
+        expect(draft).to_have_value("")
+
+        draft.fill("Preserve this question after cancelling")
+        send.click()
+        page.wait_for_function("window.chatProbe.opened === 3")
+        page.get_by_role("button", name="取消", exact=True).click()
+        page.clock.fast_forward(36000)
+        expect(timeout).to_have_count(0)
+        expect(draft).to_have_value("Preserve this question after cancelling")
+        expect(send).to_be_enabled()
+
+
 def smoke(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 1440, "height": 900})
     page = context.new_page()
@@ -1560,6 +1655,7 @@ if __name__ == "__main__":
         browser = playwright.chromium.launch(channel="chrome" if args.chrome else None)
         try:
             smoke(browser, args.frontend, args.backend)
+            reader_chat_idle_recovery(browser, args.frontend, args.backend)
             keyboard_navigation(browser, args.frontend, viewport={"width": 390, "height": 844})
             design_view_navigation(browser, args.frontend, args.backend)
             history_list_navigation(browser, args.frontend, args.backend)
