@@ -1924,6 +1924,16 @@ def synthesis_view_loading(browser, frontend, backend):
     expect(page.get_by_role("button", name="用这个问题设计研究")).to_be_visible()
     assert requested == [path + "?view=gaps"]
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
+
+    absent = "00000000-0000-0000-0000-000000000000"
+    page.goto(f"{frontend}/synthesis?view=evidence&artifact={absent}")
+    expect(page.get_by_role("alert").filter(has_text="找不到已保存的综合结果")).to_be_visible()
+    expect(page.get_by_role("button", name="重试读取视图")).to_have_count(0)
+    expect(page.locator(".selectionHeading")).to_have_count(0)
+    page.get_by_role("link", name="返回当前综合", exact=True).click()
+    expect(page).to_have_url(f"{frontend}/synthesis")
+    expect(page.locator(".comparePaper").first).to_be_visible()
+
     broken = context.request.get(path + "?view=matrix").json()
     broken["payload"]["dimensions"] = None
     context.route(path + "?view=matrix", lambda route: route.fulfill(json=broken), times=1)

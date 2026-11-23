@@ -47,7 +47,7 @@ export default function SynthesisPage() {
   const [pendingChoices, setPendingChoices] = useState<Record<string, boolean>>({});
   const [selectionError, setSelectionError] = useState("");
   const [savedViews, setSavedViews] = useState<{ id: string; views: Partial<Record<View, Artifact>> } | null>(null);
-  const [viewError, setViewError] = useState<{ id: string; view: View; message: string } | null>(null);
+  const [viewError, setViewError] = useState<{ id: string; view: View; missing: boolean } | null>(null);
   const [artifactAttempt, setArtifactAttempt] = useState(0);
   const [showSelection, setShowSelection] = useState(true);
   const [handoffPending, setHandoffPending] = useState(false);
@@ -162,7 +162,7 @@ export default function SynthesisPage() {
     updateSynthesisUrl(params);
   }
   const artifact = activeView || (views && Object.values(views)[0]);
-  const artifactError = viewError && viewError.id === artifactId && viewError.view === tab ? viewError.message : "";
+  const artifactError = viewError && viewError.id === artifactId && viewError.view === tab ? viewError : null;
   useEffect(() => {
     setSavedViews((current) => current?.id === artifactId ? current : null);
   }, [artifactId]);
@@ -181,8 +181,7 @@ export default function SynthesisPage() {
       })
       .catch((error) => {
         if (!controller.signal.aborted) setViewError({
-          id: artifactId, view: tab, message: error instanceof ApiError && error.status === 404
-            ? "找不到已保存的综合结果" : "暂时无法读取这个综合视图",
+          id: artifactId, view: tab, missing: error instanceof ApiError && error.status === 404,
         });
       });
     return () => controller.abort();
@@ -314,7 +313,10 @@ export default function SynthesisPage() {
   const libraryReady = !!papers && !!workspace;
   const loadingArtifact = !!artifactId && !activeView && !artifactError;
   const viewFeedback = artifactError
-    ? <div className="researchError" role="alert">{artifactError} <button className="quietButton" onClick={() => setArtifactAttempt((count) => count + 1)}>重试读取视图</button></div>
+    ? <div className="researchError" role="alert">
+      {artifactError.missing ? "找不到已保存的综合结果。" : "暂时无法读取这个综合视图。"}
+      {!artifactError.missing && <button className="quietButton" onClick={() => setArtifactAttempt((count) => count + 1)}>重试读取视图</button>}
+    </div>
     : loadingArtifact ? <p className="workspaceLoading" role="status">正在打开{tab === "matrix" ? "论文对比" : tab === "evidence" ? "证据关系" : "研究空白"}…</p> : null;
   const displayFinding = (value: string) => artifact?.paper_ids.reduce((text, id, index) => text.replaceAll(id, `「论文 ${String(index + 1).padStart(2, "0")}」`), value) || value;
   function reviseSelection() {
@@ -328,8 +330,9 @@ export default function SynthesisPage() {
       href={(entry) => `/synthesis?artifact=${encodeURIComponent(entry.id)}`}
       label={(entry) => entry.titles.length ? entry.titles.join(" · ") : `${entry.paper_count} 篇论文的综合`}
       metadata={(entry) => `${entry.paper_count} 篇论文`} />
-    {sourceArtifact && <p className="workspaceLoading">正在查看已保存的综合。 <Link className="inlineLink" href="/synthesis">返回当前综合</Link></p>}
-    <section className="sectionBox" ref={selectionRef}><div className="selectionHeading"><h2>选择论文 <small> {savedSelection.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
+    {sourceArtifact && <p className="workspaceLoading">综合历史 · <Link className="inlineLink" href="/synthesis">返回当前综合</Link></p>}
+    {!artifact && viewFeedback}
+    {!(sourceArtifact && artifactError?.missing && !artifact) && <section className="sectionBox" ref={selectionRef}><div className="selectionHeading"><h2>选择论文 <small> {savedSelection.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
       {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇 PDF 提取的片段；不代表每篇都已完整解析。</p>}
       {libraryError && <div className="selectionSummary">
         <p role="alert">{papers ? "暂时无法刷新论文库，当前显示上次读取的论文状态。" : "暂时无法读取论文库。"}</p>
@@ -374,14 +377,13 @@ export default function SynthesisPage() {
         disabled={busy || resultPending || savingSelection || awaitingFulltext.length > 0 || selected.length < 2} aria-busy={busy || savingSelection}>
         {busy ? "正在组织证据…" : selectionChanged ? "按当前选择重新综合 ↗" : "生成对比与研究空白 ↗"}
       </button>}
-    </section>
-    {!data && !loadingArtifact && libraryReady && !libraryError && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div></section>}
+    </section>}
+    {!sourceArtifact && !data && !loadingArtifact && libraryReady && !libraryError && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {resultPending && <JobResultNotice failed={resultReadFailed} onRetry={retryResult} onDismiss={() => dismiss(job)} />}
     {taskCanceled && <p className="workspaceLoading" role="status">任务已取消。</p>}
     {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续，回来还能看到结果。 */}
     <JobProgress variant="fixed" title="正在综合全文证据" stageLabel={job?.stage} progress={job?.progress} startedAt={busy ? job.startedAt : null} onCancel={cancel} cancelPending={job?.cancelPending} cancelError={job?.cancelError} reconnecting={job?.reconnecting} />
-    {!artifact && viewFeedback}
     {data && <section className="sectionBox synthesisResult" ref={resultRef} tabIndex={-1} aria-label="综合结果"><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
       {data.extraction_warnings?.map((warning) => <p className="miniNotice" role="note" key={warning}>{warning}</p>)}
       {data.stale_after_reparse && <p className="miniNotice" role="note">部分论文已重新识别，当前为旧版综合结果，引用位置可能已变化，请重新综合并核对原文。</p>}

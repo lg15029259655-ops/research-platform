@@ -856,3 +856,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: after the comparison and its dimension became restorable, the selected paper card still lived only in component state and closed whenever the reader route replaced the synthesis page.
 - Action: include the selected paper in the comparison URL and scope it to both the artifact and dimension. Validate it against the displayed row. Closing the drawer removes the card selection from the URL and focuses the corresponding card.
 - Verification: Chrome and Edge on both appearances at 320px reopened the same paper's drawer after visiting its PDF, even after the workspace comparison pointer was cleared. Escape returned focus to the originating card and retained the selected dimension. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
+
+## L-20261123-63 — Give missing comparison links a direct recovery path
+
+- Evidence: a historical comparison could return 404, for example after its linked paper and derived artifacts were removed. The page still described the result as open and displayed a retry beside unrelated paper-selection controls.
+- Action: distinguish a missing result from recoverable view reads. Keep the feedback next to the historical link's explicit route back to the current comparison, and reserve read retries for other errors.
+- Verification: Chrome and Edge on both appearances opened a real missing-artifact route, saw the missing status beside the return route, and loaded the active comparison from that link. The same tests recovered an injected temporary evidence-view failure. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
