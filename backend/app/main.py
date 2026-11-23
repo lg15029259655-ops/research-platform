@@ -77,6 +77,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
+    expose_headers=["Accept-Ranges", "Content-Range", "Content-Encoding"],
 )
 app.middleware("http")(anonymous_session)
 app.include_router(papers_router)

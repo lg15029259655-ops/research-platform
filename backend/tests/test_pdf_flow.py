@@ -471,6 +471,51 @@ def test_pdf_search_reuses_extracted_text_and_stops_after_thirty_matches(monkeyp
                         db.commit()
 
 
+def test_authenticated_pdf_revalidation_preserves_ranges_and_uses_replacement_bytes(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+    with TestClient(app) as client:
+        paper = upload(client, "Conditional PDF")
+        owner = owner_of(client)
+        try:
+            detail = f"/api/papers/{paper['id']}"
+            url = detail + "/file"
+            version = client.get(detail).json()["file_version"]
+            first = client.get(url, params={"v": version})
+            assert first.status_code == 200 and first.content.startswith(b"%PDF-")
+            assert first.headers["cache-control"] == "private, no-cache" and "Cookie" in first.headers["vary"]
+            etag = first.headers["etag"]
+            unchanged = client.get(url, params={"v": version}, headers={"If-None-Match": f'W/{etag}, "unrelated"'})
+            assert unchanged.status_code == 304 and not unchanged.content
+            partial = client.get(url, headers={"Range": "bytes=0-4", "If-Range": etag, "Origin": "http://127.0.0.1:3000"})
+            assert partial.status_code == 206 and partial.content == b"%PDF-"
+            assert partial.headers["content-range"].startswith("bytes 0-4/")
+            assert "Accept-Ranges" in partial.headers["access-control-expose-headers"]
+
+            with TestClient(app) as visitor:
+                assert visitor.get(url, headers={"If-None-Match": etag}).status_code == 404
+
+            assert client.post(detail + "/reparse").status_code == 200
+            assert client.get(detail).json()["file_version"] == version
+            with SessionLocal() as db:
+                db.get(Paper, paper["id"]).local_file_path = str(tmp_path / "missing-original.pdf")
+                db.commit()
+            assert client.get(url, headers={"If-None-Match": etag}).status_code == 404
+            replacement = make_pdf("Conditional PDF", figure=False, table=True)
+            reply = client.post(detail + "/attach", files={"file": ("replacement.pdf", replacement, "application/pdf")})
+            assert reply.status_code == 200, reply.text
+            new_version = client.get(detail).json()["file_version"]
+            assert new_version and new_version != version
+            fresh = client.get(url, params={"v": new_version}, headers={"If-None-Match": etag})
+            assert fresh.status_code == 200 and fresh.content == replacement and fresh.headers["etag"] != etag
+            assert client.get(url, headers={"Range": "bytes=0-4", "If-Range": etag}).content == replacement
+        finally:
+            with SessionLocal() as db:
+                user = db.get(User, owner)
+                if user:
+                    db.delete(user)
+                    db.commit()
+
+
 def test_readable_short_pdf_is_not_misreported_as_scanned(tmp_path):
     path = tmp_path / "readable-short.pdf"
     path.write_bytes(make_pdf("Readable short paper"))

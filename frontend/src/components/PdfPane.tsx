@@ -19,7 +19,9 @@ class PdfErrorBoundary extends Component<{ children: ReactNode; fallback: ReactN
 type SearchHit = { page: number; snippet: string };
 type SearchState = { status: "idle" | "pending" } | { status: "ready"; hits: SearchHit[] } | { status: "error"; message: string };
 
-export default function PdfPane({ paperId, page, totalPages, onPageChange }: { paperId: string; page: number; totalPages?: number; onPageChange: (page: number) => void }) {
+export default function PdfPane({ paperId, fileVersion, page, totalPages, onPageChange }: {
+  paperId: string; fileVersion?: string | null; page: number; totalPages?: number; onPageChange: (page: number) => void;
+}) {
   const [pages, setPages] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [fitWidth, setFitWidth] = useState(true);
@@ -33,7 +35,7 @@ export default function PdfPane({ paperId, page, totalPages, onPageChange }: { p
   useEffect(() => {
     setPages(0); setQuery(""); setSearchState({ status: "idle" }); setZoom(1); setFitWidth(true);
     return () => { searchRequest.current?.abort(); searchRequest.current = null; };
-  }, [paperId]);
+  }, [paperId, fileVersion]);
   useEffect(() => {
     if (!canvasRef.current) return;
     const observer = new ResizeObserver(([entry]) => {
@@ -79,6 +81,7 @@ export default function PdfPane({ paperId, page, totalPages, onPageChange }: { p
     }
   }
   const count = pages || totalPages || 0;
+  const fileUrl = `${API}/api/papers/${encodeURIComponent(paperId)}/file${fileVersion ? `?v=${encodeURIComponent(fileVersion)}` : ""}`;
   const searching = searchState.status === "pending";
   const documentError = <div className="pdfError" role="alert">PDF 暂时无法显示。 <button type="button" className="quietButton"
     onClick={() => setDocumentAttempt((attempt) => attempt + 1)}>重试打开 PDF</button></div>;
@@ -106,8 +109,8 @@ export default function PdfPane({ paperId, page, totalPages, onPageChange }: { p
     </>}
     {searchState.status === "error" && <div className="pdfError" role="alert">{searchState.message}</div>}
     <div className="pdfCanvas" ref={canvasRef}>
-      <PdfErrorBoundary key={`${paperId}:${documentAttempt}`} fallback={documentError}>
-        <Document file={`${API}/api/papers/${encodeURIComponent(paperId)}/file`} options={options}
+      <PdfErrorBoundary key={`${fileUrl}:${documentAttempt}`} fallback={documentError}>
+        <Document file={fileUrl} options={options}
           onLoadSuccess={({ numPages }) => setPages(numPages)} error={documentError} loading="正在打开 PDF…">
           <Page pageNumber={Math.max(1, Math.min(count || page, page))} width={fitWidth ? Math.min(availableWidth, 850) : 650} scale={zoom} loading="正在渲染页面…" />
         </Document>

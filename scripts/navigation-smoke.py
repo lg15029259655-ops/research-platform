@@ -287,7 +287,8 @@ def pdf_search_recovery(browser, frontend, backend):
     assert context.request.get(f"{backend}/api/session").ok
     paper_id = context.request.get(f"{backend}/api/workspace").json()["core_paper_id"]
     detail = f"{backend}/api/papers/{paper_id}"
-    context.route(f"{detail}/file", lambda route: route.fulfill(status=503, body="Temporarily unavailable"), times=1)
+    file_request = re.compile(rf"^{re.escape(detail)}/file(?:\?|$)")
+    context.route(file_request, lambda route: route.fulfill(status=503, body="Temporarily unavailable"), times=1)
     page.goto(f"{frontend}/read?paper={paper_id}")
     page.get_by_role("button", name="重试打开 PDF").click()
     expect(page.locator(".pdfCanvas canvas")).to_be_visible()

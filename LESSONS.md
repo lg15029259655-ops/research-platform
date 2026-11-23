@@ -596,3 +596,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: each search re-extracted every page it needed, including work performed for earlier search terms. Reaching 30 matches should continue to stop the first scan early.
 - Action: retain a bounded prefix of extracted pages, keyed to the file signature and content revision. Resume extraction after that prefix as needed. Check that the file signature still matches before returning results, and continue scanning without caching past the text budget.
 - Verification: backend tests cover the 30-match limit, reuse of a partial or complete scan, replacement before and during search, and the uncached fallback. An isolated 240-page synthetic PDF measured median search-function times of 497.6 ms on a cold scan and 0.3 ms for a different query after caching. This measures local extraction and matching without HTTP or browser rendering. The full backend suite passed with 148 tests.
+
+## L-20261123-21 — Revalidate private PDF bytes on reopen
+
+- Evidence: the PDF response supplied validators but always sent the body. The browser also could not read range metadata from a separate frontend origin.
+- Action: authorize before checking the private PDF validator. Return 304 for unchanged bytes, vary the browser cache by session cookie, and expose range metadata to the configured frontend origin. Bind the reader URL to the file fingerprint so replacing a PDF reloads it while reparsing unchanged bytes preserves the address.
+- Verification: a Chrome network trace observed a first 200 response, a 304 on reopen, and a cross-origin 206 response with the expected byte range. Backend tests verify ownership and missing-file checks before a 304, unchanged addresses on reparse, and fresh bytes and validators after an allowed replacement. The production build, source preflight, 149 backend tests and 13 frontend tests passed.

@@ -3,7 +3,9 @@ import base64
 import json
 from contextlib import aclosing
 from datetime import datetime, timezone, timedelta
+from hashlib import sha256
 from pathlib import Path
+from stat import S_ISREG
 from uuid import UUID, uuid4
 import shutil
 import logging
@@ -12,7 +14,7 @@ from difflib import SequenceMatcher
 import pymupdf
 
 from anyio import CancelScope
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -109,6 +111,7 @@ def paper_data(paper: Paper, units: list[ReadingUnit] | None = None, *, image_co
             data["page_count"] = None
         data["file_available"] = (data["page_count"] is not None and data["page_count"] > 0
                                   and paper_source_matches(paper))
+        data["file_version"] = paper.sha256 if data["file_available"] else None
         data["units"] = [{"id": unit.id, "position": unit.position, "kind": unit.kind,
                           "heading": unit.heading, "page_start": unit.page_start,
                           "page_end": unit.page_end,
@@ -414,17 +417,33 @@ async def recover_pending_parses(tickets: list[tuple[str, str, str | None]], sto
 
 
 @router.get("/{paper_id}/file")
-def get_file(paper_id: str, owner: str = Owner):
+def get_file(paper_id: str, request: Request, owner: str = Owner):
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
         if paper.status != "parsed":
             raise HTTPException(422, "请先上传全文 PDF")
         if not paper_source_matches(paper):
             raise HTTPException(409, "当前 PDF 与保存的阅读内容不一致，请重新识别或上传原文件")
-        path = paper.local_file_path
-        if not path or not Path(path).is_file():
-            raise HTTPException(404, "PDF 文件不存在，请重新上传")
-    return FileResponse(path, media_type="application/pdf", filename="paper.pdf", content_disposition_type="inline")
+        path, digest = paper.local_file_path, paper.sha256
+    if not path:
+        raise HTTPException(404, "PDF 文件不存在，请重新上传")
+    try:
+        file_stat = Path(path).stat()
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise HTTPException(404, "PDF 文件不存在，请重新上传") from exc
+    if not S_ISREG(file_stat.st_mode):
+        raise HTTPException(404, "PDF 文件不存在，请重新上传")
+
+    # Revalidate on every open. Authorization is checked even when the browser
+    # already has these bytes, and another anonymous session cannot reuse them.
+    fingerprint = (paper_id, digest, file_stat.st_size, file_stat.st_mtime_ns, file_stat.st_ctime_ns, file_stat.st_ino)
+    etag = '"' + sha256(repr(fingerprint).encode()).hexdigest() + '"'
+    headers = {"Cache-Control": "private, no-cache", "Vary": "Cookie", "ETag": etag}
+    validators = request.headers.get("if-none-match", "").split(",")
+    if any(tag.strip().removeprefix("W/") in {"*", etag} for tag in validators):
+        return Response(status_code=304, headers=headers)
+    return FileResponse(path, media_type="application/pdf", filename="paper.pdf",
+                        content_disposition_type="inline", headers=headers, stat_result=file_stat)
 
 
 @router.get("/{paper_id}/pages/{page_number}/thumbnail")
