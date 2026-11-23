@@ -28,6 +28,7 @@ type Message = { id: string; role: string; content: string; reading_unit_id: str
 type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean; file_version?: string | null; source_matches?: boolean };
 type Action = "START" | "NEXT" | "NAVIGATE" | "FIGURE" | "WHY_DESIGN" | "EVIDENCE" | "QUESTION";
 type Mode = "split" | "pdf" | "ai";
+type PaperDeletion = { status: "pending" | "deleted" } | { status: "failed"; message: string };
 const compactQuery = "(max-width: 760px)";
 const compactModes = ["pdf", "ai"] as const;
 const desktopModes = ["split", "pdf", "ai"] as const;
@@ -119,6 +120,28 @@ async function checkUploadReceipt(requestId: string, signal: AbortSignal) {
     : "暂时无法确认上传结果，可以稍后重试确认。");
 }
 
+async function confirmPaperDeletion(id: string) {
+  const path = `/api/papers/${encodeURIComponent(id)}`;
+  try {
+    const result = await apiJson<{ deleted: boolean }>(path, {
+      method: "DELETE", signal: AbortSignal.timeout(10000),
+    });
+    if (result?.deleted) return;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      if (error.status === 404) return;
+      if (error.status < 500 && error.status !== 408) throw error;
+    }
+  }
+  // The server may have committed before the DELETE response was lost.
+  try {
+    await apiJson(path, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return;
+  }
+  throw new Error("暂时无法确认删除结果。可以稍后核对或重试。");
+}
+
 export default function ReadPage() {
   const searchParams = useSearchParams();
   const paperParam = searchParams.get("paper");
@@ -129,7 +152,10 @@ export default function ReadPage() {
   const { workspace, workspaceError, refresh } = useWorkspace();
   const [lastPaper] = useTabDraft<string>(lastPaperKey);
   const [pendingUpload] = useTabDraft<PendingUpload>(pendingUploadKey);
-  const selectedId = paperParam ?? lastPaper ?? workspace?.core_paper_id ?? null;
+  const [deletions, setDeletions] = useState<Record<string, PaperDeletion>>({});
+  const [deletedTitle, setDeletedTitle] = useState("");
+  const fallbackId = lastPaper ?? workspace?.core_paper_id ?? null;
+  const selectedId = paperParam ?? (fallbackId && deletions[fallbackId]?.status !== "deleted" ? fallbackId : null);
   const [libraryReady, setLibraryReady] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
   const [papers, setPapers] = useState<PaperSummary[]>([]);
@@ -202,6 +228,7 @@ export default function ReadPage() {
   const mindmapAbort = useRef<AbortController | null>(null);
   const experimentsAbort = useRef<AbortController | null>(null);
   const libraryRequest = useRef<AbortController | null>(null);
+  const deleteRequests = useRef(new Set<string>());
   const paperRequest = useRef(0);
   const activePaper = useRef<string | null>(null);
   const active = useRef(false);
@@ -717,21 +744,37 @@ export default function ReadPage() {
     }
   }
 
-  async function removePaper(id: string) {
-    if (!window.confirm("删除这篇论文及其聊天记录？此操作无法恢复。")) return;
-    setError("");
-    const response = await fetch(`${API}/api/papers/${id}`, { method: "DELETE", credentials: "include" });
-    if (!response.ok) { setError("删除论文失败，请重试"); return; }
-    writeTabDraft(questionDraftKey(id), null);
-    writeTabDraft(readingPositionKey(id), null);
-    if (readTabDraft<string>(lastPaperKey) === id) writeTabDraft(lastPaperKey, null);
-    for (const action of chatActions) writeTabDraft(turnDraftKey(id, action), null);
-    await refresh().catch(() => {});
-    if (active.current && activePaper.current === id) {
-      setPaper(null);
-      window.history.replaceState(null, "", "/read");
+  async function removePaper({ id, title }: PaperSummary) {
+    if (deleteRequests.current.has(id) ||
+        !window.confirm("删除这篇论文、聊天记录及引用它的研究结果？此操作无法恢复。")) return;
+    deleteRequests.current.add(id);
+    setDeletedTitle("");
+    setDeletions((current) => ({ ...current, [id]: { status: "pending" } }));
+    try {
+      await confirmPaperDeletion(id);
+      if (active.current) {
+        setDeletions((current) => ({ ...current, [id]: { status: "deleted" } }));
+        setDeletedTitle(title);
+        const currentParam = new URLSearchParams(window.location.search).get("paper");
+        if (currentParam === id || (!currentParam && activePaper.current === id)) {
+          ++paperRequest.current;
+          setPaper(null);
+          window.history.replaceState(null, "", "/read");
+        }
+        void loadList().catch(() => {});
+      }
+      writeTabDraft(questionDraftKey(id), null);
+      writeTabDraft(readingPositionKey(id), null);
+      if (readTabDraft<string>(lastPaperKey) === id) writeTabDraft(lastPaperKey, null);
+      for (const action of chatActions) writeTabDraft(turnDraftKey(id, action), null);
+      void refresh(true).catch(() => {});
+    } catch (error) {
+      if (active.current) setDeletions((current) => ({
+        ...current, [id]: { status: "failed", message: error instanceof Error ? error.message : "暂时无法删除论文。" },
+      }));
+    } finally {
+      deleteRequests.current.delete(id);
     }
-    await loadList().catch(() => {});
   }
 
   const current = paper?.units?.find((unit) => unit.id === paper.current_unit_id);
@@ -749,8 +792,8 @@ export default function ReadPage() {
   const readerLoading = openingPaper || (!paperParam && !workspace && !workspaceError);
   const libraryOpen = compact ? drawerOpen : sidebarOpen;
   const libraryTerm = libraryQuery.trim().toLocaleLowerCase();
-  const visiblePapers = papers.filter((item) => !libraryTerm
-    || [item.title, item.original_filename].some((value) => value?.toLocaleLowerCase().includes(libraryTerm)));
+  const visiblePapers = papers.filter((item) => deletions[item.id]?.status !== "deleted" && (!libraryTerm
+    || [item.title, item.original_filename].some((value) => value?.toLocaleLowerCase().includes(libraryTerm))));
   const libraryContents = <>
     <div className="libraryHeading">
       <strong id="reader-library-title">论文库</strong>
@@ -771,18 +814,27 @@ export default function ReadPage() {
       {centerError && <p className="pdfError" role="alert">{centerError}</p>}
     </div>}
     <div className="libraryList">
+      {deletedTitle && <p className="libraryFilter" role="status">已从论文库移除：{deletedTitle}</p>}
       {libraryError && <div className="libraryFilter">
         <p className="pdfError" role="alert">暂时无法读取论文库。</p>
         <button type="button" className="quietButton" onClick={() => void loadList().catch(() => {})}>重试读取论文库</button>
       </div>}
       {!libraryReady ? (!libraryError && <p className="emptyLibrary" role="status">正在读取论文库…</p>)
-        : visiblePapers.length ? visiblePapers.map((item) => <div className="paperRow" key={item.id}>
-          <button className={`paperItem ${selectedId === item.id ? "selected" : ""}`} disabled={!!parseStage}
-            aria-current={selectedId === item.id ? "true" : undefined} onClick={() => selectPaper(item.id)}>
-            <strong>{item.title}</strong><small>{item.original_filename}</small>
-          </button>
-          <button className="removePaper" title="删除论文" aria-label={`删除 ${item.title}`} onClick={() => removePaper(item.id)}>×</button>
-        </div>)
+        : visiblePapers.length ? visiblePapers.map((item) => {
+          const deletion = deletions[item.id];
+          return <div key={item.id}>
+            <div className="paperRow">
+              <button className={`paperItem ${selectedId === item.id ? "selected" : ""}`} disabled={!!parseStage}
+                aria-current={selectedId === item.id ? "true" : undefined} onClick={() => selectPaper(item.id)}>
+                <strong>{item.title}</strong><small>{item.original_filename}</small>
+              </button>
+              <button className="removePaper" title="删除论文" aria-label={`删除 ${item.title}`}
+                disabled={deletion?.status === "pending"} onClick={() => void removePaper(item)}>×</button>
+            </div>
+            {deletion?.status === "pending" && <p className="libraryFilter" role="status">正在确认删除结果…</p>}
+            {deletion?.status === "failed" && <p className="libraryFilter pdfError" role="alert">{deletion.message}</p>}
+          </div>;
+        })
         : <p className="emptyLibrary" role="status">{libraryTerm ? "没有匹配的论文。试试换个关键词。" : "上传第一篇 PDF，开始建立您的论文库。"}</p>}
       {paper && !libraryTerm && <div className="outline">
         <strong>当前论文目录</strong>

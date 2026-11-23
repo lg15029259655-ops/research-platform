@@ -657,6 +657,70 @@ def compact_reading(browser, frontend, backend):
     context.close()
 
 
+def reader_delete_recovery(browser, frontend, backend, *, viewport=None):
+    with browser.new_context(viewport=viewport) as context:
+        assert context.request.get(f"{backend}/api/session").ok
+        library_url = f"{backend}/api/papers?view=summary"
+        papers = [item for item in context.request.get(library_url).json() if item["status"] == "parsed"]
+        paper, other = papers[:2]
+        path = f"{backend}/api/papers/{paper['id']}"
+        attempts = []
+        removed = False
+
+        def paper_request(route):
+            if route.request.method == "DELETE":
+                attempts.append(route)
+            elif removed:
+                route.fulfill(status=404, json={"detail": "论文不存在"})
+            else:
+                route.continue_()
+
+        context.route(path, paper_request)
+        page = context.new_page()
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.goto(f"{frontend}/read?paper={paper['id']}")
+        if viewport:
+            page.get_by_role("tab", name="AI 讲解", exact=True).click()
+        draft = page.get_by_role("textbox", name="提出你的科研问题")
+        question = "Preserve this draft until deletion is confirmed"
+        key = f"medread-draft:read:{paper['id']}"
+        draft.fill(question)
+        page.wait_for_function("([key, value]) => sessionStorage.getItem(key) === JSON.stringify(value)",
+                               arg=[key, question])
+        toggle = page.get_by_role("button", name="展开论文库", exact=True)
+        if viewport:
+            toggle.click()
+        library = page.get_by_role("dialog", name="论文库") if viewport else page.locator(".library")
+        delete = library.get_by_role("button", name=f"删除 {paper['title']}", exact=True)
+        with page.expect_request(lambda request: request.url == path and request.method == "DELETE"):
+            delete.click()
+        expect(delete).to_be_disabled()
+        expect(library.get_by_role("status").filter(has_text="正在确认删除结果")).to_be_visible()
+        attempts[0].abort("connectionreset")
+        expect(library.get_by_role("alert").filter(has_text="暂时无法确认删除结果")).to_be_visible()
+        expect(delete).to_be_enabled()
+        assert page.evaluate("key => sessionStorage.getItem(key)", key) == json.dumps(question)
+        assert parse_qs(urlsplit(page.url).query)["paper"] == [paper["id"]]
+
+        with page.expect_request(lambda request: request.url == path and request.method == "DELETE"):
+            delete.click()
+        expect(delete).to_be_disabled()
+        if viewport:
+            library.locator(".paperItem").filter(has_text=other["title"]).click()
+            expect(page.get_by_role("heading", name=other["title"], exact=True)).to_be_visible()
+        context.route(library_url, lambda route: route.fulfill(status=503, json={}), times=1)
+        removed = True
+        attempts[1].abort("connectionreset")
+        if viewport:
+            toggle.click()
+        expect(library.get_by_role("alert").filter(has_text="暂时无法读取论文库")).to_be_visible()
+        expect(library.get_by_role("status").filter(has_text=f"已从论文库移除：{paper['title']}")).to_be_visible()
+        expect(delete).to_have_count(0)
+        assert page.evaluate("key => sessionStorage.getItem(key)", key) is None
+        assert parse_qs(urlsplit(page.url).query).get("paper") == ([other["id"]] if viewport else None)
+        assert len(attempts) == 2
+
+
 def reader_chat_idle_recovery(browser, frontend, backend, *, viewport=None):
     with browser.new_context(viewport=viewport) as context:
         page = context.new_page()
@@ -1721,6 +1785,7 @@ if __name__ == "__main__":
         try:
             smoke(browser, args.frontend, args.backend)
             reader_chat_idle_recovery(browser, args.frontend, args.backend)
+            reader_delete_recovery(browser, args.frontend, args.backend)
             keyboard_navigation(browser, args.frontend, viewport={"width": 390, "height": 844})
             design_view_navigation(browser, args.frontend, args.backend)
             history_list_navigation(browser, args.frontend, args.backend)
