@@ -133,7 +133,10 @@ export default function ReadPage() {
   const sourceChanged = !!paper?.file_available && !!sourceFile && sourceFile !== paper.file_version;
   const validLinkPage = validPdfPage(paper, requestedPage);
   const invalidLinkPage = !!paper?.file_available && linkPage !== null && !validLinkPage;
-  const [openingPaper, setOpeningPaper] = useState(false);
+  const [openAttempt, setOpenAttempt] = useState(0);
+  const [paperOpenError, setPaperOpenError] = useState<{ id: string; message: string } | null>(null);
+  const openError = paperOpenError?.id === selectedId ? paperOpenError.message : "";
+  const openingPaper = !!selectedId && !paper && !openError;
   const [savedQuestion, setDraft] = useTabDraft<string>(paper ? questionDraftKey(paper.id) : null);
   const draft = typeof savedQuestion === "string" ? savedQuestion : "";
   const [pending, setPending] = useState(false);
@@ -184,6 +187,7 @@ export default function ReadPage() {
   // abort 会顺带取消服务端任务，切论文时旧结果不会串到新论文上。
   const mindmapAbort = useRef<AbortController | null>(null);
   const experimentsAbort = useRef<AbortController | null>(null);
+  const libraryRequest = useRef<AbortController | null>(null);
   const paperRequest = useRef(0);
   const activePaper = useRef<string | null>(null);
   const active = useRef(false);
@@ -212,13 +216,22 @@ export default function ReadPage() {
   }
 
   const loadList = useCallback(async () => {
+    libraryRequest.current?.abort();
+    const controller = new AbortController();
+    libraryRequest.current = controller;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
     setLibraryError(false);
     try {
-      setPapers(await apiJson<Paper[]>("/api/papers"));
+      const items = await apiJson<Paper[]>("/api/papers", { signal });
+      if (controller.signal.aborted) return;
+      setPapers(items);
       setReady(true);
     } catch (error) {
+      if (controller.signal.aborted) return;
       setLibraryError(true);
       throw error;
+    } finally {
+      if (libraryRequest.current === controller) libraryRequest.current = null;
     }
   }, []);
   const loadPaper = useCallback(async (id: string, opening = false, signal?: AbortSignal) => {
@@ -247,6 +260,7 @@ export default function ReadPage() {
     const saved = Number(window.localStorage.getItem("reader-pdf-width"));
     if (saved >= 30 && saved <= 70) setPdfWidth(saved);
     loadList().catch(() => {});
+    return () => libraryRequest.current?.abort();
   }, [loadList]);
 
   useEffect(() => {
@@ -256,21 +270,24 @@ export default function ReadPage() {
     setPaper(null);
     setReaderTab("read"); setMindmap(null); setExperiments(null);
     setThinking(""); setActiveHeading(""); setError(""); setCenterError(""); setParseProgress("");
-    setOpeningPaper(!!selectedId);
+    setPaperOpenError(null);
     if (!selectedId) return;
     const controller = new AbortController();
-    loadPaper(selectedId, true, controller.signal)
+    const deadline = AbortSignal.timeout(10000);
+    const signal = AbortSignal.any([controller.signal, deadline]);
+    loadPaper(selectedId, true, signal)
       .catch((e) => {
         if (controller.signal.aborted) return;
         if (!paperParam && e instanceof ApiError && e.status === 404 && readTabDraft<string>(lastPaperKey) === selectedId) {
           writeTabDraft(lastPaperKey, null);
           void refresh(true).catch(() => {});
         }
-        setError(e.message);
-      })
-      .finally(() => { if (!controller.signal.aborted) setOpeningPaper(false); });
+        const message = deadline.aborted ? "读取论文超时，请重试。"
+          : e instanceof ApiError ? e.message : "暂时无法读取论文，请重试。";
+        setPaperOpenError({ id: selectedId, message });
+      });
     return () => { ++paperRequest.current; controller.abort(); };
-  }, [selectedId, loadPaper]);
+  }, [selectedId, openAttempt, loadPaper]);
 
   useEffect(() => {
     if (paper?.file_available) setPage(startingPdfPage(paper, requestedPage, sourceFile));
@@ -623,12 +640,9 @@ export default function ReadPage() {
     closeLibraryDrawer();
     if (id === paperParam && paper) return;
     if (id === selectedId && openingPaper) return;
-    if (id === selectedId && !paper && !openingPaper) {
-      setError(""); setOpeningPaper(true);
-      const request = loadPaper(id, true);
-      const generation = paperRequest.current;
-      request.catch((e) => { if (generation === paperRequest.current) setError(e.message); })
-        .finally(() => { if (generation === paperRequest.current) setOpeningPaper(false); });
+    if (id === selectedId && !paper) {
+      setPaperOpenError(null);
+      setOpenAttempt((attempt) => attempt + 1);
       return;
     }
     window.history.pushState(null, "", `/read?paper=${encodeURIComponent(id)}`);
@@ -698,7 +712,7 @@ export default function ReadPage() {
   const figures = units.filter((unit) => unit.kind === "FIGURE");
   const figureIndex = current?.kind === "FIGURE" ? figures.findIndex((unit) => unit.id === current.id) + 1 : 0;
   const nextLabel = !current ? "开始精读 · 题目与摘要" : next?.kind === "FIGURE" ? `进入 ${next.heading}` : next?.kind === "RECAP" ? "全文总结" : next ? next.kind === "DISCUSSION" ? "进入 Discussion" : "下一部分" : "已读完";
-  const readerLoading = openingPaper || (!!selectedId && !paper && !error) || (!paperParam && !workspace && !workspaceError);
+  const readerLoading = openingPaper || (!paperParam && !workspace && !workspaceError);
   const libraryOpen = compact ? drawerOpen : sidebarOpen;
   const libraryTerm = libraryQuery.trim().toLocaleLowerCase();
   const visiblePapers = papers.filter((item) => !libraryTerm
@@ -723,7 +737,10 @@ export default function ReadPage() {
       {centerError && <p className="pdfError" role="alert">{centerError}</p>}
     </div>}
     <div className="libraryList">
-      {libraryError && <button className="quietButton" onClick={() => void loadList().catch(() => {})}>重试读取论文库</button>}
+      {libraryError && <div className="libraryFilter">
+        <p className="pdfError" role="alert">暂时无法读取论文库。</p>
+        <button type="button" className="quietButton" onClick={() => void loadList().catch(() => {})}>重试读取论文库</button>
+      </div>}
       {!ready ? (!libraryError && <p className="emptyLibrary" role="status">正在读取论文库…</p>)
         : visiblePapers.length ? visiblePapers.map((item) => <div className="paperRow" key={item.id}>
           <button className={`paperItem ${selectedId === item.id ? "selected" : ""}`} disabled={!!parseStage}
@@ -758,7 +775,7 @@ export default function ReadPage() {
           </button>
           <div>
             {!compact && <span className="sectionLabel">AI DEEP READING</span>}
-            <h1 title={paper?.title}>{paper?.title || (readerLoading ? "正在打开精读" : "选择或上传一篇论文")}</h1>
+            <h1 title={paper?.title}>{paper?.title || (selectedId ? "深度精读" : readerLoading ? "正在打开精读" : "选择或上传一篇论文")}</h1>
           </div>
         </div>
         {paper?.status === "parsed" && readerTab === "read" && <div className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">
@@ -769,7 +786,7 @@ export default function ReadPage() {
         </div>}
       </header>
       {paper?.status === "parsed" && <div className="readerSubnav"><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">{compact ? "查看待综合 ↗" : "已选入综合 · 查看 ↗"}</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
-      {error && <div className="alert" role="alert">{error}{pendingUpload && !pending && <button className="quietButton" onClick={() => void runUpload(pendingUpload)}>重试确认上传</button>}{selectedId && !paper && !openingPaper && <button className="quietButton" onClick={() => selectPaper(selectedId)}>重试打开论文</button>}</div>}
+      {error && <div className="alert" role="alert">{error}{pendingUpload && !pending && <button className="quietButton" onClick={() => void runUpload(pendingUpload)}>重试确认上传</button>}</div>}
       <JobProgress startedAt={chatStartedAt} hint=""
         title={stream ? "正在生成精读回复" : thinking ? "正在分析原文" : "正在等待精读回复"}
         onCancel={stopChat} />
@@ -779,7 +796,11 @@ export default function ReadPage() {
       {!sourceChanged && invalidLinkPage && <div className="alert" role="status">链接中的页码不在这份 PDF 内。已打开当前阅读位置。 <button type="button" className="quietButton" onClick={() => changePdfPage(page)}>继续阅读</button></div>}
       {needsReplacement && <div className="alert" role="status">{paper.source_matches === false ? "当前 PDF 与保存的阅读内容无法确认对应，已暂停全文分析。可重新识别当前文件，或上传原文件。" : "当前 PDF 文件无法读取或重新识别失败。重新上传后会保留旧精读记录和综合结果，请核对其与原文的对应关系。"}{paper.source_matches === false && <button type="button" onClick={reparse} disabled={pending} className="quietButton">重新识别当前 PDF</button>}<label className="quietButton" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>重新上传 PDF<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label></div>}
       {needsReparse && <div className="alert" role="status">这篇 PDF 的标题或章节可能识别错误，会影响 AI 讲解与文献对比。<button type="button" onClick={reparse} disabled={pending} aria-busy={pending} className="quietButton">重新识别当前 PDF</button></div>}
-      {readerLoading && !parseStage ? <div className="welcome" role="status" aria-busy="true"><h2>正在打开论文…</h2></div> : !paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || (openingPaper ? "正在打开论文…" : "让阅读从原文开始")}</h2><p>上传 PDF 后，可查看原文并按阅读单元逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
+      {selectedId && openError && !paper ? <div className="welcome">
+        <h2>暂时无法打开论文</h2>
+        <p role="alert">{openError}</p>
+        <button type="button" className="quietButton" onClick={() => selectPaper(selectedId)}>重试打开论文</button>
+      </div> : readerLoading && !parseStage ? <div className="welcome" role="status" aria-busy="true"><h2>正在打开论文…</h2></div> : !paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || "让阅读从原文开始"}</h2><p>上传 PDF 后，可查看原文并按阅读单元逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> :
       <>
       {readerTab === "mindmap" && <>

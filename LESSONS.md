@@ -639,3 +639,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Action: bound each PATCH when it begins. After an unconfirmed save, read the workspace and continue to design only when the topic, question and source synthesis match. Keep the selected question and an actionable error near the button when the read cannot confirm the handoff.
 - Verification: Chrome held a PATCH before it reached the server and confirmed the existing draft stayed saved while the same question became retryable. It then sent the retry to the real API, dropped the accepted response, and verified the design opened with the question and source link after exactly two attempted writes. The full navigation smoke test, production build, source preflight, 150 backend tests and 13 frontend tests passed.
 - Boundary: the browser deadline releases the local queue. It cannot cancel a server transaction that already started.
+
+## L-20261123-28 — Let citation opens and library reads recover independently
+
+- Evidence: the reader's initial paper and library requests had no deadline. A timeout displayed through the general error slot would also expose the empty-workspace welcome beneath a failed citation.
+- Action: add separate deadlines and retry feedback. Reuse the cancellable paper-opening effect for retries, preserving the citation URL, and let the newest library request own the library state.
+- Verification: Chrome at 390px withheld both responses after following a source citation. It checked that the original URL survived, retried the detail and rendered the cited page, then retried the library and confirmed it still marked that paper as current. The full navigation smoke test, production build, source preflight, 150 backend tests and 13 frontend tests passed.

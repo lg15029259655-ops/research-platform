@@ -897,10 +897,27 @@ def evidence_source_navigation(browser, frontend, backend):
     link = page.get_by_role("link", name=f"打开原文第 {target} 页 ↗")
     params = parse_qs(urlsplit(link.get_attribute("href")).query)
     assert params["source_file"] == [paper["file_version"]]
+    held_reads = []
+    detail_url = f"{backend}/api/papers/{paper_id}"
+    library_url = f"{backend}/api/papers"
+    context.route(detail_url, lambda route: held_reads.append(route), times=1)
+    context.route(library_url, lambda route: held_reads.append(route), times=1)
     link.click()
+    expect(page.get_by_role("heading", name="正在打开论文…")).to_be_visible()
+    expect(page.get_by_role("alert").filter(has_text="读取论文超时")).to_be_visible(timeout=16000)
+    expect(page.get_by_text("让阅读从原文开始")).to_have_count(0)
+    assert parse_qs(urlsplit(page.url).query) == params
+    assert len(held_reads) == 2
+    page.get_by_role("button", name="重试打开论文").click()
     page_number = page.locator(".pageTools span").first
     expect(page_number).to_have_text(re.compile(rf"^{target} /"))
     expect(page.locator(".pdfCanvas canvas")).to_be_visible()
+    page.get_by_role("button", name="展开论文库").click()
+    drawer = page.get_by_role("dialog", name="论文库")
+    expect(drawer.get_by_role("alert").filter(has_text="暂时无法读取论文库")).to_be_visible()
+    drawer.get_by_role("button", name="重试读取论文库").click()
+    expect(drawer.locator(".paperItem[aria-current=true]")).to_contain_text(paper["title"])
+    drawer.get_by_role("button", name="关闭论文库", exact=True).click()
     assert context.request.get(workspace_url).json()["core_paper_id"] == workspace["core_paper_id"]
     stale = urlencode({"paper": paper_id, "page": target, "source_file": "old-pdf-version"})
     page.goto(f"{frontend}/read?{stale}")
