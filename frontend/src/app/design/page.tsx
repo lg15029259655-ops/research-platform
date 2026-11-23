@@ -103,7 +103,7 @@ function DesignPreview({ id, stage }: { id: string; stage: string | null }) {
   const { workspace, refresh } = useWorkspace();
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [loadError, setLoadError] = useState("");
+  const [loadError, setLoadError] = useState<"missing" | "retryable" | null>(null);
   const [restoreError, setRestoreError] = useState("");
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -119,13 +119,16 @@ function DesignPreview({ id, stage }: { id: string; stage: string | null }) {
   }, [version, linkedStage]);
   useEffect(() => {
     const controller = new AbortController();
-    setLoadError("");
+    setLoadError(null);
     apiJson<DesignVersion[]>(`/api/research/design/versions?artifact_id=${encodeURIComponent(id)}`, {
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]), cache: "no-store",
-    }).then(([entry]) => {
+    }).then((entries) => {
       if (controller.signal.aborted) return;
-      if (entry) setVersion(entry); else setLoadError("找不到这个设计版本");
-    }).catch(() => { if (!controller.signal.aborted) setLoadError("暂时无法读取这个设计版本"); });
+      const entry = entries.find((item) => item.artifact_id === id);
+      if (entry) setVersion(entry); else setLoadError("missing");
+    }).catch((error) => {
+      if (!controller.signal.aborted) setLoadError(error instanceof ApiError && error.status === 404 ? "missing" : "retryable");
+    });
     return () => controller.abort();
   }, [id, attempt]);
 
@@ -172,7 +175,10 @@ function DesignPreview({ id, stage }: { id: string; stage: string | null }) {
       </section>
       {stage && !linkedStage && <p className="workspaceLoading" role="status">这个版本中没有链接指向的阶段。</p>}
       <DesignFlow key={linkedStage ?? ""} design={design} artifactId={id} linkedStage={linkedStage} readOnly />
-    </> : loadError ? <div className="researchError" role="alert">{loadError} <button className="quietButton" onClick={() => setAttempt((count) => count + 1)}>重试读取版本</button></div>
+    </> : loadError ? <div className="researchError" role="alert">
+      {loadError === "missing" ? "找不到这个设计版本。" : "暂时无法读取这个设计版本。"}
+      {loadError === "retryable" && <button type="button" className="quietButton" onClick={() => setAttempt((count) => count + 1)}>重试读取版本</button>}
+    </div>
       : <p className="workspaceLoading" role="status">正在读取设计版本…</p>}
   </PageMain>;
 }

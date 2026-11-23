@@ -862,3 +862,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: a historical comparison could return 404, for example after its linked paper and derived artifacts were removed. The page still described the result as open and displayed a retry beside unrelated paper-selection controls.
 - Action: distinguish a missing result from recoverable view reads. Keep the feedback next to the historical link's explicit route back to the current comparison, and reserve read retries for other errors.
 - Verification: Chrome and Edge on both appearances opened a real missing-artifact route, saw the missing status beside the return route, and loaded the active comparison from that link. The same tests recovered an injected temporary evidence-view failure. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
+
+## L-20261123-64 — Separate missing historical designs from temporary read failures
+
+- Evidence: the historical design view used the same retry control for empty results and interrupted requests. It also accepted the first returned entry without checking its artifact ID.
+- Action: match the requested design artifact. Keep the direct return to the current design for a missing version, and preserve the historical stage link during temporary retries.
+- Verification: Chrome and Edge on both appearances retried an injected historical-view failure and reopened the requested stage. An unknown version used the missing state and returned to the current design. Both production builds and full Chrome navigation regressions, 13 frontend tests, source preflight and the visual rollback patch check passed.
