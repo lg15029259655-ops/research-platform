@@ -700,3 +700,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the claim drawer stored its selection only in component state. Returning from the reader closed the claim and could display a newer active comparison after a workspace change.
 - Action: record the claim index together with its comparison identity in the current history entry. Pin the comparison when following its PDF citation and focus the original claim button when its drawer closes. Validate the selection against the displayed artifact.
 - Verification: Chrome and Edge at 390px opened an exact PDF citation, recovered from delayed reader requests, then went back after the active comparison was cleared. Both returned to the original comparison and claim. Escape closed the drawer and focused the matching claim button. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.
+
+## L-20261123-38 — Keep the discovery graph context within its search
+
+- Evidence: the search list survived reader navigation, while the graph tab and centers reverted on back or reload.
+- Action: remember the view, loaded center and selected paper in the tab, scoped by query, mode and semantic batch. Restore the requested graph data by its saved center. Clear the destination view on an explicit first-page search and use the list for fresh results.
+- Verification: Chrome and Edge at 390px opened a paper from the second search result's lineage, returned to that center and reloaded it. With WebGL disabled, both also joined the reader from a reference node and recovered that selected node and its original center. A different query opened in the list view. Full Chrome navigation smoke, production build, source preflight, 154 backend tests and 13 frontend tests passed.

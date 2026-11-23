@@ -9,6 +9,7 @@ import type { LineageResponse } from "@/components/lineage/lineageLayout";
 import { API, ApiError, apiJson, postJson } from "@/lib/api";
 import { readPaperLibrary } from "@/lib/paper-library";
 import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import { tabGroup } from "@/lib/tabs";
 import { deferredPanel } from "@/components/deferred-panel";
 
@@ -20,10 +21,17 @@ type Work = { openalex_id: string; title: string; authors: string[]; year: numbe
 type Paper = { id: string; title: string; openalex_id: string | null; status: string };
 type Search = { items: Work[]; count: number; page: number; mode: "semantic" | "keyword"; cached?: boolean; stale?: boolean; fetched_at?: string; snapshot?: string };
 type Graph = { nodes: Work[]; links: { source: string; target: string; relation: string }[]; cached?: boolean; fetched_at?: string };
+type DiscoveryView = {
+  tab?: "list" | "graph"; graphView?: "lineage" | "constellation";
+  lineageCenter?: string; graphCenter?: string; lineageSelected?: string; graphSelected?: string;
+};
 
 const domains: Record<string, string> = { biomed: "生物科学", review: "综述", general: "领域待确认" };
 const emptySearch: Search = { items: [], count: 0, page: 0, mode: "semantic" };
 let lastSearch: { query: string; result: Search } | null = null;
+
+const discoveryViewKey = (query: string, result: Search) =>
+  `discover-view:${JSON.stringify([query, result.mode, result.snapshot ?? null])}`;
 
 async function lookup<T>(path: string, controller: AbortController, timeout: number, timeoutMessage: string) {
   const deadline = AbortSignal.timeout(timeout);
@@ -48,15 +56,15 @@ export default function DiscoverPage() {
   const [restoring, setRestoring] = useState(true);
   const [mode, setMode] = useState<"semantic" | "keyword">("semantic");
   const [saved, setSaved] = useState<Paper[]>([]);
-  const [tab, setTab] = useState<"list" | "graph">("list");
+  const viewKey = resultQuery ? discoveryViewKey(resultQuery, result) : null;
+  const [discoveryView, setDiscoveryView] = useTabDraft<DiscoveryView>(viewKey);
+  const tab = discoveryView?.tab ?? "list";
+  const graphView = discoveryView?.graphView ?? "lineage";
   const [graph, setGraph] = useState<Graph | null>(null);
-  const [graphView, setGraphView] = useState<"lineage" | "constellation">("lineage");
   const [lineage, setLineage] = useState<LineageResponse | null>(null);
   const [lineageCenter, setLineageCenter] = useState("");
   const [loadingLineage, setLoadingLineage] = useState(false);
   const [center, setCenter] = useState("");
-  const [graphSelection, setGraphSelection] = useState<Work | null>(null);
-  const [lineageSelection, setLineageSelection] = useState<Work | null>(null);
   const [graphError, setGraphError] = useState("");
   const [lineageError, setLineageError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -75,10 +83,16 @@ export default function DiscoverPage() {
   const active = useRef(false);
   const uploadRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const { workspace, workspaceError, refresh } = useWorkspace();
-  const resultTabs = tabGroup(["list", "graph"] as const, tab, setTab);
-  const relationTabs = tabGroup(["lineage", "constellation"] as const, graphView, setGraphView);
+  function changeView(change: DiscoveryView) {
+    if (viewKey) setDiscoveryView({ ...readTabDraft<DiscoveryView>(viewKey), ...change });
+  }
+  const resultTabs = tabGroup(["list", "graph"] as const, tab, (tab) => changeView({ tab }));
+  const relationTabs = tabGroup(["lineage", "constellation"] as const, graphView, (graphView) => changeView({ graphView }));
   const showingLineage = graphView === "lineage";
-  const selected = showingLineage ? lineageSelection : graphSelection;
+  const selected = showingLineage
+    ? lineage?.nodes.find((item) => item.openalex_id === discoveryView?.lineageSelected) ?? lineage?.center
+    : graph?.nodes.find((item) => item.openalex_id === discoveryView?.graphSelected)
+      ?? graph?.nodes.find((item) => item.openalex_id === center);
   const relationBusy = showingLineage ? loadingLineage : loadingGraph;
   const relationError = showingLineage ? lineageError : graphError;
   const failedCenter = showingLineage ? lineageTried.current : graphTried.current;
@@ -118,7 +132,7 @@ export default function DiscoverPage() {
     setResultQuery(matchingResult ? term : "");
     setTopicConfirmation(null);
     if (urlQuery && !matchingResult) {
-      void search(1, term, false, mode);
+      void search(1, term, false, mode, true);
       return;
     }
     setRestoring(!!term && !matchingResult);
@@ -142,26 +156,26 @@ export default function DiscoverPage() {
     if (tab !== "graph" || !result.items.length) return;
     const first = result.items[0].openalex_id;
     if (graphView === "lineage") {
-      if (!lineage && !loadingLineage && lineageTried.current !== first) showLineage(first);
+      const wanted = discoveryView?.lineageCenter ?? first;
+      if (!lineage && !loadingLineage && lineageTried.current !== wanted) showLineage(wanted);
       return;
     }
-    if (!graph && !loadingGraph && graphTried.current !== first) showGraph(first);
-  }, [tab, graphView, lineage, loadingLineage, graph, loadingGraph, result.items.length]);
+    const wanted = discoveryView?.graphCenter ?? first;
+    if (!graph && !loadingGraph && graphTried.current !== wanted) showGraph(wanted);
+  }, [tab, graphView, lineage, loadingLineage, graph, loadingGraph, result.items.length, discoveryView?.lineageCenter, discoveryView?.graphCenter]);
 
   function resetRelations() {
     graphRequest.current?.abort();
     lineageRequest.current?.abort();
     graphRequest.current = lineageRequest.current = null;
     graphTried.current = lineageTried.current = null;
-    setTab("list");
     setGraph(null); setLineage(null);
     setCenter(""); setLineageCenter("");
-    setGraphSelection(null); setLineageSelection(null);
     setGraphError(""); setLineageError("");
     setLoadingGraph(false); setLoadingLineage(false); setPendingCenter(null);
   }
 
-  async function search(page = 1, term = query, bypassCache = false, searchMode = mode) {
+  async function search(page = 1, term = query, bypassCache = false, searchMode = mode, restoringEntry = false) {
     if (!term.trim()) return;
     searchRequest.current?.abort();
     const controller = new AbortController();
@@ -180,6 +194,7 @@ export default function DiscoverPage() {
       if (searchVersion.current !== version) return;
       window.localStorage.setItem("medread-search-mode", searchMode);
       const completed = { ...data, items: page === 1 ? data.items : [...result.items, ...data.items] };
+      if (page === 1 && !restoringEntry) writeTabDraft(discoveryViewKey(next, completed), null);
       lastSearch = { query: next, result: completed };
       setResult(completed);
       setResultQuery(next);
@@ -238,7 +253,9 @@ export default function DiscoverPage() {
       const data = await lookup<Graph>(`/api/research/graph/${workId}${refresh ? "?refresh=true" : ""}`,
         controller, 45000, "星座视图读取超时，请重试。");
       if (controller.signal.aborted) return;
-      setGraph(data); setCenter(workId); setGraphSelection(data.nodes.find((item) => item.openalex_id === workId) || null);
+      setGraph(data); setCenter(workId);
+      const previous = viewKey ? readTabDraft<DiscoveryView>(viewKey) : null;
+      changeView({ graphCenter: workId, graphSelected: previous?.graphCenter === workId ? previous.graphSelected : workId });
     } catch (e) { if (!controller.signal.aborted) setGraphError(e instanceof Error ? e.message : "关系图读取失败"); }
     finally {
       if (graphRequest.current === controller) {
@@ -249,7 +266,7 @@ export default function DiscoverPage() {
   }
 
   async function showLineage(workId: string, refresh = false) {
-    setTab("graph"); setGraphView("lineage");
+    changeView({ tab: "graph", graphView: "lineage" });
     if (workId === lineageCenter && lineage && !refresh) return;
     if (lineageRequest.current && lineageTried.current === workId) return;
     lineageTried.current = workId;
@@ -262,8 +279,8 @@ export default function DiscoverPage() {
         controller, 45000, "谱系图读取超时，请重试。");
       if (controller.signal.aborted) return;
       setLineage(data); setLineageCenter(workId);
-      const centerNode = data.nodes.find((item) => item.openalex_id === workId);
-      setLineageSelection(centerNode || data.center);
+      const previous = viewKey ? readTabDraft<DiscoveryView>(viewKey) : null;
+      changeView({ lineageCenter: workId, lineageSelected: previous?.lineageCenter === workId ? previous.lineageSelected : workId });
     } catch (e) {
       if (!controller.signal.aborted) setLineageError(e instanceof Error ? e.message : "谱系图读取失败");
     } finally {
@@ -272,13 +289,6 @@ export default function DiscoverPage() {
         setLoadingLineage(false);
       }
     }
-  }
-
-  function selectLineageNode(id: string) {
-    if (!lineage) return;
-    if (lineage.center.openalex_id === id) { setLineageSelection(lineage.center); return; }
-    const node = lineage.nodes.find((item) => item.openalex_id === id);
-    if (node) setLineageSelection(node);
   }
 
   function relationText(work: Work) {
@@ -403,7 +413,7 @@ export default function DiscoverPage() {
               <LineageGraph
                 data={lineage}
                 selectedId={selected?.openalex_id}
-                onSelect={selectLineageNode}
+                onSelect={(lineageSelected) => changeView({ lineageSelected })}
                 onRecenter={(id) => showLineage(id)}
                 loading={loadingLineage}
               />
@@ -411,7 +421,8 @@ export default function DiscoverPage() {
           ) : (
             <>
               {graph?.cached && <p className="graphInstruction">缓存图谱 · {graph.fetched_at ? new Date(graph.fetched_at).toLocaleString("zh-CN") : ""}</p>}
-              {graph && <CitationGraph works={graph.nodes} links={graph.links} center={center} selectedId={selected?.openalex_id} onSelect={(id) => { const work = graph.nodes.find((item) => item.openalex_id === id); if (work) setGraphSelection(work); }} />}
+              {graph && <CitationGraph works={graph.nodes} links={graph.links} center={center} selectedId={selected?.openalex_id}
+                onSelect={(graphSelected) => changeView({ graphSelected })} />}
               {loadingGraph && <div className="graphLoading" role="status"><div className="graphLoadingTrack"><i /></div><span>正在切换中心论文</span><strong>{graph?.nodes.find((item) => item.openalex_id === pendingCenter)?.title || result.items.find((item) => item.openalex_id === pendingCenter)?.title || "正在读取文献关系"}</strong><small>保留当前视图，关系数据就绪后展开新图谱</small></div>}
             </>
           )}

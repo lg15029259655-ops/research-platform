@@ -924,6 +924,70 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     context.close()
 
 
+def discovery_graph_navigation(browser, frontend, backend, *, related_paper=False):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    if related_paper:
+        context.add_init_script("""(() => {
+          const getContext = HTMLCanvasElement.prototype.getContext;
+          HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+            return type === "webgl" || type === "webgl2" ? null : getContext.call(this, type, ...args);
+          };
+        })()""")
+    assert context.request.get(f"{backend}/api/session").ok
+    library_url = f"{backend}/api/papers?view=summary"
+    library = context.request.get(library_url).json()
+    saved = next(paper for paper in library if paper["status"] == "parsed")
+    saved["openalex_id"] = "W101" if related_paper else "W102"
+    context.route(library_url, lambda route: route.fulfill(json=library))
+
+    def work(work_id, title):
+        return {"openalex_id": work_id, "title": title, "authors": [], "year": 2020, "journal": "", "doi": "",
+                "abstract": "", "citation_count": 0, "oa_pdf_url": None}
+
+    first = work("W101", "First search result")
+    center = work("W102", "Chosen lineage center")
+    selected = {**first, "role": "reference"}
+    lookups = []
+
+    def graph_fixture(route):
+        lookups.append(route.request.url.rsplit("/", 1)[-1])
+        route.fulfill(json={"center": center, "nodes": [{**center, "role": "center"}, selected], "edges": [
+            {"source": "W102", "target": "W101", "relation": "cites"},
+        ]})
+
+    def search_fixture(route):
+        term = parse_qs(urlsplit(route.request.url).query)["q"][0]
+        items = [first, center] if term == "Graph round trip" else [first]
+        route.fulfill(json={"items": items, "count": len(items), "page": 1, "mode": "semantic"})
+
+    context.route(re.compile(rf"^{re.escape(backend)}/api/research/discover[?]"), search_fixture)
+    context.route(re.compile(rf"^{re.escape(backend)}/api/research/lineage/"), graph_fixture)
+    page = context.new_page()
+    page.goto(f"{frontend}/discover?{urlencode({'q': 'Graph round trip'})}")
+    card = page.locator(".workCard").filter(has_text="Chosen lineage center")
+    card.get_by_role("button", name="浏览文献谱系").click()
+    aside = page.locator(".graphAside")
+    expect(aside.get_by_role("heading", name="Chosen lineage center")).to_be_visible()
+    expected_title = "Chosen lineage center"
+    if related_paper:
+        page.locator(".lg-fallback-main").filter(has_text="First search result").click()
+        expected_title = "First search result"
+        expect(aside.get_by_role("heading", name=expected_title)).to_be_visible()
+    aside.get_by_role("link", name="打开全文精读").click()
+    expect(page.get_by_role("heading", name=saved["title"], exact=True)).to_be_visible()
+    page.go_back()
+    expect(page.get_by_role("tab", name="谱系图", exact=True)).to_have_attribute("aria-selected", "true")
+    expect(aside.get_by_role("heading", name=expected_title)).to_be_visible()
+    page.reload()
+    expect(aside.get_by_role("heading", name=expected_title)).to_be_visible()
+    assert set(lookups) == {"W102"}
+    page.get_by_role("textbox", name="论文检索").fill("Another query")
+    page.get_by_role("button", name="检索论文").click()
+    expect(page.get_by_role("tab", name="列表", exact=True)).to_have_attribute("aria-selected", "true")
+    expect(aside).to_have_count(0)
+    context.close()
+
+
 def resume_pdf_reading_position(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
@@ -1233,6 +1297,7 @@ if __name__ == "__main__":
             shared_selection(browser, args.frontend, args.backend)
             reader_reparse(browser, args.frontend, args.backend)
             discovery_relation_race(browser, args.frontend, args.backend)
+            discovery_graph_navigation(browser, args.frontend, args.backend)
             synthesis_view_loading(browser, args.frontend, args.backend)
             evidence_source_navigation(browser, args.frontend, args.backend)
             resume_pdf_reading_position(browser, args.frontend, args.backend)
