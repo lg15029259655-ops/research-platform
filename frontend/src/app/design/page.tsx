@@ -42,6 +42,27 @@ function designDraftKey(workspace: Workspace, urlIdea: string | null) {
   return `design:${JSON.stringify([workspace.workspace_id, idea, source ?? null])}`;
 }
 
+async function restoreSavedVersion(
+  version: VersionEntry, expectedUpdatedAt: string, refresh: (afterPending?: boolean) => Promise<Workspace>,
+) {
+  const signal = AbortSignal.timeout(10000);
+  try {
+    return await apiJson<DesignVersion>(`/api/research/design/versions/${encodeURIComponent(version.version_id)}/restore`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_updated_at: expectedUpdatedAt }), signal,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      await refresh(true).catch(() => {});
+      throw error;
+    }
+    if (!signal.aborted && !(error instanceof TypeError)) throw error;
+    const current = await refresh(true).catch(() => null);
+    if (current?.design_version_id === version.artifact_id) return null;
+    throw new Error("暂时无法确认版本是否已恢复，请重试。");
+  }
+}
+
 export default function DesignPage() {
   const historical = useSearchParams().get("version");
   return historical ? <DesignPreview key={historical} id={historical} /> : <DesignWorkspace />;
@@ -57,6 +78,11 @@ function DesignPreview({ id }: { id: string }) {
   const [confirmation, setConfirmation] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const active = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
   useEffect(() => {
     if (version) titleRef.current?.focus();
   }, [version]);
@@ -76,11 +102,11 @@ function DesignPreview({ id }: { id: string }) {
     if (!version || !confirmation || saving) return;
     setSaving(true); setRestoreError("");
     try {
-      await postJson<DesignVersion>(`/api/research/design/versions/${version.version_id}/restore`, { expected_updated_at: confirmation });
-      await refresh(true).catch(() => {});
-      router.replace("/design");
+      const restored = await restoreSavedVersion(version, confirmation, refresh);
+      if (restored) await refresh(true).catch(() => {});
+      if (active.current) router.replace("/design");
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) await refresh(true).catch(() => {});
+      if (!active.current) return;
       setRestoreError(e instanceof Error ? e.message : "暂时无法恢复这个版本");
       setConfirmation(null);
       setSaving(false);
@@ -171,7 +197,9 @@ function DesignWorkspace() {
     if (!currentNoveltyId) { setNovelty(null); setNoveltyReady(true); return; }
     const controller = new AbortController();
     setNoveltyReady(false);
-    apiJson<Artifact<Novelty>[]>(`/api/research/artifacts?kind=novelty_analysis&artifact_id=${currentNoveltyId}`, { signal: controller.signal })
+    apiJson<Artifact<Novelty>[]>(`/api/research/artifacts?kind=novelty_analysis&artifact_id=${currentNoveltyId}`, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+    })
       .then((items) => {
         if (controller.signal.aborted) return;
         const candidate = items.find((item) => item.id === currentNoveltyId)?.payload;
@@ -288,9 +316,14 @@ function DesignWorkspace() {
   }
   async function restoreVersion(version: VersionEntry) {
     setBusy(true); setError("");
-    try { const current = workspace ?? await refresh(true);
-      const restored = await postJson<DesignVersion>(`/api/research/design/versions/${version.version_id}/restore`, { expected_updated_at: current.updated_at });
-      setLoadedVersion(restored); await refresh(true); }
+    try {
+      const current = workspace ?? await refresh(true);
+      const restored = await restoreSavedVersion(version, current.updated_at, refresh);
+      if (restored) {
+        if (active.current) setLoadedVersion(restored);
+        await refresh(true);
+      }
+    }
     catch (e) { setError(e instanceof Error ? e.message : "版本恢复失败"); }
     finally { setBusy(false); }
   }

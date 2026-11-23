@@ -204,13 +204,28 @@ def manual_design_draft(browser, frontend, backend):
     page.get_by_role("button", name="重试版本列表").click()
     expect(page.get_by_role("button", name="重试版本列表")).to_have_count(0)
     expect(editor).to_be_visible()
+    version_label = page.locator(".versionBar strong").inner_text()
     step = editor.get_by_label("新步骤名称")
     notes = editor.get_by_label("目的或操作说明（可选）")
     step.fill("Review the baseline evidence")
     notes.fill("Keep this step in the local draft before creating a new version.")
+    constraints = page.get_by_label("约束条件（可选）")
+    constraints.fill("Keep the study within the current budget")
     save = editor.get_by_role("button", name="保存为新版本")
     expect(save).to_be_disabled()
+    workspace_url = f"{backend}/api/workspace"
+
+    def fail_workspace(route):
+        route.fulfill(status=503, json={})
+
+    context.route(workspace_url, fail_workspace)
     page.reload()
+    expect(constraints).to_be_disabled()
+    retry_workspace = page.get_by_label("当前研究工作区").get_by_role("button", name="重试读取工作区")
+    expect(retry_workspace).to_be_visible()
+    context.unroute(workspace_url, fail_workspace)
+    retry_workspace.click()
+    expect(constraints).to_have_value("Keep the study within the current budget")
     expect(step).to_have_value("Review the baseline evidence")
     expect(notes).to_have_value("Keep this step in the local draft before creating a new version.")
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
@@ -235,6 +250,15 @@ def manual_design_draft(browser, frontend, backend):
     editor.get_by_role("button", name="手动添加或删除实验步骤").click()
     expect(editor.get_by_role("textbox", name="步骤名称：Review the baseline evidence", exact=True)).to_be_visible()
     expect(save).to_be_disabled()
+    restore_url = re.compile(rf"^{re.escape(backend)}/api/research/design/versions/[^/]+/restore$")
+
+    def drop_undo_response(route):
+        assert route.fetch().ok
+        route.abort("connectionreset")
+
+    context.route(restore_url, drop_undo_response, times=1)
+    page.get_by_role("button", name="撤回上一版本").click()
+    expect(page.locator(".versionBar strong")).to_have_text(version_label)
     context.close()
 
 
@@ -838,6 +862,21 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     expect(page.get_by_role("button", name="编辑阶段")).to_have_count(0)
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
     assert context.request.get(workspace_url).json() == changed
+    restore_url = re.compile(rf"^{re.escape(backend)}/api/research/design/versions/[^/]+/restore$")
+    held_restore = []
+    context.route(restore_url, lambda route: held_restore.append(route), times=1)
+    page.get_by_role("button", name="继续编辑此版本").click()
+    page.get_by_role("button", name="确认恢复").click()
+    expect(page.get_by_role("alert").filter(has_text="暂时无法确认版本是否已恢复")).to_be_visible(timeout=16000)
+    held_restore.pop().abort()
+    assert parse_qs(urlsplit(page.url).query)["version"] == [prior_design["id"]]
+    assert context.request.get(workspace_url).json() == changed
+
+    def drop_restore_response(route):
+        assert route.fetch().ok
+        route.abort("connectionreset")
+
+    context.route(restore_url, drop_restore_response, times=1)
     page.get_by_role("button", name="继续编辑此版本").click()
     page.get_by_role("button", name="确认恢复").click()
     expect(page.get_by_label("我的研究想法")).to_have_value(prior_design["goal"])
