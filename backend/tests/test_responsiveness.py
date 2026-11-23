@@ -108,6 +108,43 @@ def test_seeded_visitor_does_not_wait_for_demo_setup(monkeypatch):
                 assert response.status_code == 200
 
 
+def test_library_summary_revalidates_by_owner_and_visible_content():
+    url = "/api/papers?view=summary"
+    with TestClient(app) as first, TestClient(app) as second:
+        first.get("/api/session")
+        second.get("/api/session")
+        with SessionLocal() as db:
+            owner_id = db.scalar(select(User.id).where(User.session_hash == auth.session_hash(first.cookies[auth.COOKIE_NAME])))
+            paper_id = str(uuid4())
+            db.add(Paper(id=paper_id, owner_id=owner_id, title="Library summary", original_filename="source.pdf",
+                         stored_filename="test.pdf", local_file_path="test.pdf", mime_type="application/pdf",
+                         file_size_bytes=0, sha256="0" * 64, status="uploaded", abstract="Long abstract " * 500,
+                         openalex_id="W123", domain="general"))
+            db.commit()
+
+        initial = first.get(url)
+        assert initial.json() == [{"id": paper_id, "title": "Library summary", "original_filename": "source.pdf",
+                                   "status": "uploaded", "warning": None, "openalex_id": "W123", "domain": "general"}]
+        assert initial.headers["Cache-Control"] == "private, no-cache"
+        assert "Cookie" in initial.headers["Vary"]
+        conditional = {"If-None-Match": "W/" + initial.headers["ETag"]}
+        unchanged = first.get(url, headers=conditional)
+        assert unchanged.status_code == 304 and not unchanged.content
+        assert second.get(url, headers=conditional).json() == []
+        assert first.get("/api/papers").json()[0]["abstract"] == "Long abstract " * 500
+
+        with SessionLocal() as db:
+            paper = db.get(Paper, paper_id)
+            paper.status = "parsed"
+            paper.parse_warning = "Check extracted sections"
+            db.commit()
+
+        changed = first.get(url, headers=conditional)
+        assert changed.status_code == 200 and changed.headers["ETag"] != initial.headers["ETag"]
+        assert changed.json()[0]["status"] == "parsed"
+        assert changed.json()[0]["warning"] == "Check extracted sections"
+
+
 def test_concurrent_first_workspace_requests_share_one_row(monkeypatch):
     with TestClient(app) as client:
         client.get("/api/session")

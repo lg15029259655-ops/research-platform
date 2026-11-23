@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { type CSSProperties, type KeyboardEvent, type ReactNode, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { API, ApiError, apiJson } from "@/lib/api";
+import { readPaperLibrary, type PaperSummary } from "@/lib/paper-library";
 import JobProgress from "@/components/jobs/JobProgress";
 import ThinkingTrail from "@/components/reader/ThinkingTrail";
 import type { MindMapPayload } from "@/components/mindmap/MindMapPanel";
@@ -128,7 +129,7 @@ export default function ReadPage() {
   const selectedId = paperParam ?? lastPaper ?? workspace?.core_paper_id ?? null;
   const [ready, setReady] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
-  const [papers, setPapers] = useState<Paper[]>([]);
+  const [papers, setPapers] = useState<PaperSummary[]>([]);
   const [record, setPaper] = useState<Paper | null>(null);
   const paper = record?.id === selectedId ? record : null;
   const sourceChanged = !!paper?.file_available && !!sourceFile && sourceFile !== paper.file_version;
@@ -220,10 +221,9 @@ export default function ReadPage() {
     libraryRequest.current?.abort();
     const controller = new AbortController();
     libraryRequest.current = controller;
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
     setLibraryError(false);
     try {
-      const items = await apiJson<Paper[]>("/api/papers", { signal });
+      const items = await readPaperLibrary(controller.signal);
       if (controller.signal.aborted) return;
       setPapers(items);
       setReady(true);

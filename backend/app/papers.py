@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from hashlib import sha256
 from pathlib import Path
 from stat import S_ISREG
+from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import shutil
 import logging
@@ -15,7 +16,7 @@ import pymupdf
 
 from anyio import CancelScope
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
@@ -350,9 +351,26 @@ def reparse_paper(paper_id: str, background_tasks: BackgroundTasks, owner: str =
     return {"id": paper_id, "status": "uploaded"}
 
 
+def matches_etag(request: Request, etag: str) -> bool:
+    validators = request.headers.get("if-none-match", "").split(",")
+    return any(tag.strip().removeprefix("W/") in {"*", etag} for tag in validators)
+
+
 @router.get("")
-def list_papers(owner: str = Owner):
+def list_papers(request: Request, view: Literal["full", "summary"] = "full", owner: str = Owner):
     with SessionLocal() as db:
+        if view == "summary":
+            rows = db.execute(select(
+                Paper.id, Paper.title, Paper.original_filename, Paper.status,
+                Paper.parse_warning.label("warning"), Paper.openalex_id, Paper.domain,
+            ).where(Paper.owner_id == owner).order_by(Paper.created_at.desc(), Paper.id.desc())).mappings()
+            response = JSONResponse([dict(row) for row in rows])
+            etag = '"' + sha256(owner.encode() + b"\0" + response.body).hexdigest() + '"'
+            headers = {"Cache-Control": "private, no-cache", "Vary": "Cookie", "ETag": etag}
+            if matches_etag(request, etag):
+                return Response(status_code=304, headers=headers)
+            response.headers.update(headers)
+            return response
         count = select(func.count(PaperImage.id)).where(PaperImage.paper_id == Paper.id).scalar_subquery()
         rows = db.execute(select(Paper, count).where(Paper.owner_id == owner).order_by(Paper.created_at.desc())).all()
         return [paper_data(paper, image_count=count) for paper, count in rows]
@@ -465,8 +483,7 @@ def get_file(paper_id: str, request: Request, owner: str = Owner):
     fingerprint = (paper_id, digest, file_stat.st_size, file_stat.st_mtime_ns, file_stat.st_ctime_ns, file_stat.st_ino)
     etag = '"' + sha256(repr(fingerprint).encode()).hexdigest() + '"'
     headers = {"Cache-Control": "private, no-cache", "Vary": "Cookie", "ETag": etag}
-    validators = request.headers.get("if-none-match", "").split(",")
-    if any(tag.strip().removeprefix("W/") in {"*", etag} for tag in validators):
+    if matches_etag(request, etag):
         return Response(status_code=304, headers=headers)
     return FileResponse(path, media_type="application/pdf", filename="paper.pdf",
                         content_disposition_type="inline", headers=headers, stat_result=file_stat)

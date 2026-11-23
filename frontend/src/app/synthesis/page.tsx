@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
 import { ApiError, apiJson } from "@/lib/api";
+import { readPaperLibrary, type PaperSummary } from "@/lib/paper-library";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
 import { setPaperInSynthesis, updateWorkspace, useWorkspace, WorkspaceSaveUnconfirmed } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
@@ -17,7 +18,6 @@ import { deferredPanel } from "@/components/deferred-panel";
 const EvidenceMap = deferredPanel(() => import("@/components/EvidenceMap"), "证据关系");
 const GapPath = deferredPanel(() => import("@/components/GapPath"), "研究空白");
 
-type Paper = { id: string; title: string; status: string; domain: string | null; year: number | null; warning?: string | null };
 type Cell = { paper_id: string; value: string; source: string };
 type Comparison = { papers: { paper_id: string; title: string }[]; dimensions: { name: string; values: Cell[] }[];
   consensus: string[]; differences: string[]; controversies: Claim[];
@@ -32,7 +32,7 @@ export default function SynthesisPage() {
   const view = searchParams.get("view");
   const sourceArtifact = searchParams.get("artifact");
   const tab = view === "evidence" || view === "gaps" ? view : "matrix";
-  const [papers, setPapers] = useState<Paper[] | null>(null);
+  const [papers, setPapers] = useState<PaperSummary[] | null>(null);
   const [libraryError, setLibraryError] = useState(false);
   const [pendingChoices, setPendingChoices] = useState<Record<string, boolean>>({});
   const [selectionError, setSelectionError] = useState("");
@@ -62,7 +62,7 @@ export default function SynthesisPage() {
   useEffect(() => () => { handoff.current?.abort(); }, []);
   async function loadPapers(signal?: AbortSignal) {
     setLibraryError(false);
-    try { setPapers(await apiJson<Paper[]>("/api/papers", { signal })); }
+    try { setPapers(await readPaperLibrary(signal)); }
     catch { if (!signal?.aborted) setLibraryError(true); }
   }
   useEffect(() => {

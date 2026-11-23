@@ -712,7 +712,7 @@ def smoke(browser, frontend, backend):
     page = context.new_page()
     page.set_default_timeout(12000)
     session_url = f"{backend}/api/session"
-    papers_url = f"{backend}/api/papers"
+    papers_url = f"{backend}/api/papers?view=summary"
     context.route(session_url, lambda route: route.fulfill(status=503, json={}), times=1)
     context.route(papers_url, lambda route: route.fulfill(status=503, json={}), times=1)
     page.goto(f"{frontend}/read")
@@ -964,7 +964,7 @@ def evidence_source_navigation(browser, frontend, backend):
     assert params["source_file"] == [paper["file_version"]]
     held_reads = []
     detail_url = f"{backend}/api/papers/{paper_id}"
-    library_url = f"{backend}/api/papers"
+    library_url = f"{backend}/api/papers?view=summary"
     context.route(detail_url, lambda route: held_reads.append(route), times=1)
     context.route(library_url, lambda route: held_reads.append(route), times=1)
     link.click()

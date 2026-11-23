@@ -7,6 +7,7 @@ import { ChangeEvent, useEffect, useRef, useState } from "react";
 import StepLoading from "@/components/StepLoading";
 import type { LineageResponse } from "@/components/lineage/lineageLayout";
 import { API, ApiError, apiJson, postJson } from "@/lib/api";
+import { readPaperLibrary } from "@/lib/paper-library";
 import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 import { deferredPanel } from "@/components/deferred-panel";
@@ -88,9 +89,11 @@ export default function DiscoverPage() {
   const semanticExhausted = mode === "semantic" && result.items.length >= 50;
   useEffect(() => {
     active.current = true;
-    apiJson<Paper[]>("/api/papers").then((items) => { if (active.current) setSaved(items); }).catch(() => {});
+    const library = new AbortController();
+    readPaperLibrary(library.signal).then((items) => { if (!library.signal.aborted) setSaved(items); }).catch(() => {});
     return () => {
       active.current = false;
+      library.abort();
       initializedEntry.current = null;
       ++searchVersion.current;
       searchRequest.current?.abort();

@@ -669,3 +669,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the skip link left focus on the document body, keyboard navigation kept focus in the shared header, browser back retained focus on an unrelated navigation link, and the four workspace pages shared one tab title.
 - Action: make the main landmark focusable, set focus on the committed destination without overriding scroll or a more specific focus target, and supply static route titles. Query-only changes keep their existing focus.
 - Verification: Chrome and Edge at 390px and 1440px verified skip link activation, next Tab, keyboard navigation, browser back, query-only tab changes, home navigation and distinct titles. Chrome also held a route bundle and checked that focus waited for the reader to mount. The full navigation smoke test, production build, source preflight, 151 backend tests and 13 frontend tests passed.
+
+## L-20261123-33 — Revalidate compact library rows when switching pages
+
+- Evidence: discovery, reading and synthesis all downloaded the full library list, including abstracts and image counts unused by their list views.
+- Action: add an opt-in summary that projects only the displayed fields. Revalidate it with a private, owner-scoped ETag and a common browser deadline. Keep the full response available for existing clients.
+- Verification: the backend returned an empty 304 for the same content, rejected reuse of another owner's validator, and returned a new body and ETag after a parse status or warning change. The seeded library response dropped from 1,842 to 773 bytes. At 390px, Chrome and Edge recorded 200, 304 and 304 when navigating between reading, synthesis and discovery, with their library views rendering throughout. Full navigation smoke, production build, source preflight, 152 backend tests and 13 frontend tests passed.
