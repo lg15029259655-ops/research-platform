@@ -25,8 +25,8 @@ function publish(workspace: Workspace) {
   subscribers.forEach((subscriber) => subscriber(workspace));
 }
 
-function loadWorkspace(): Promise<Workspace> {
-  if (pending) return pending;
+function loadWorkspace(afterPending = false): Promise<Workspace> {
+  if (pending) return afterPending ? pending.catch(() => {}).then(() => loadWorkspace()) : pending;
   const started = revision;
   const request = apiJson<Workspace>("/api/workspace").then((result) => {
     if (started === revision) publish(result);
@@ -67,10 +67,10 @@ export function addPaperToSynthesis(id: string) {
 export function useWorkspace() {
   const [workspace, setWorkspace] = useState<Workspace | null>(cached);
   const [workspaceError, setWorkspaceError] = useState("");
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (afterPending = false) => {
     setWorkspaceError("");
     try {
-      return await loadWorkspace();
+      return await loadWorkspace(afterPending);
     } catch (error) {
       setWorkspaceError("研究工作区暂时无法读取");
       throw error;

@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
 import { apiJson } from "@/lib/api";
-import { submitJob, watchJob, type JobProgress as JobProgressData } from "@/lib/jobs";
+import { useWorkspaceJob } from "@/lib/workspace-jobs";
 import { updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 import EvidenceMap, { type Claim } from "@/components/EvidenceMap";
@@ -23,6 +23,7 @@ export default function SynthesisPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const view = searchParams.get("view");
+  const sourceArtifact = searchParams.get("artifact");
   const tab = view === "evidence" || view === "gaps" ? view : "matrix";
   const [papers, setPapers] = useState<Paper[] | null>(null);
   const [libraryError, setLibraryError] = useState(false);
@@ -33,12 +34,8 @@ export default function SynthesisPage() {
   const [showSelection, setShowSelection] = useState(true);
   const [handoffPending, setHandoffPending] = useState(false);
   const handoff = useRef<AbortController | null>(null);
-  const [busy, setBusy] = useState(false);
-  // 慢任务改成后台 job：阶段与进度来自 SSE，开始时间交给 JobProgress 自己算"已等待 N 秒"。
-  const [jobStage, setJobStage] = useState("");
-  const [jobProgress, setJobProgress] = useState<JobProgressData | null>(null);
-  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
-  const compareAbort = useRef<AbortController | null>(null);
+  const { job, start, cancel, dismiss } = useWorkspaceJob("synthesis");
+  const busy = job?.status === "running";
   const [error, setError] = useState("");
   const [selectedCell, setSelectedCell] = useState<{cell: Cell; dimension: string} | null>(null);
   const [activeDimension, setActiveDimension] = useState(0);
@@ -54,8 +51,7 @@ export default function SynthesisPage() {
     window.history.replaceState(null, "", params.size ? `/synthesis?${params}` : "/synthesis");
   }
   const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
-  // 离开页面时取消后台综合任务：用户不会再回来看的任务不该继续占用模型配额。
-  useEffect(() => () => { compareAbort.current?.abort(); handoff.current?.abort(); }, []);
+  useEffect(() => () => { handoff.current?.abort(); }, []);
   async function loadPapers(signal?: AbortSignal) {
     setLibraryError(false);
     try { setPapers(await apiJson<Paper[]>("/api/papers", { signal })); }
@@ -66,9 +62,10 @@ export default function SynthesisPage() {
     void loadPapers(controller.signal);
     return () => controller.abort();
   }, []);
-  const artifactId = workspace?.synthesis_id;
+  const artifactId = sourceArtifact || workspace?.synthesis_id;
   useEffect(() => {
     setArtifactError("");
+    if (sourceArtifact) setArtifact((current) => current?.id === sourceArtifact ? current : null);
     if (!artifactId) { if (workspace) setArtifact(null); return; }
     const controller = new AbortController();
     apiJson<Artifact[]>(`/api/research/artifacts?kind=paper_compare&artifact_id=${artifactId}`, { signal: controller.signal })
@@ -80,7 +77,7 @@ export default function SynthesisPage() {
       })
       .catch(() => { if (!controller.signal.aborted) setArtifactError("暂时无法读取已保存的综合结果"); });
     return () => controller.abort();
-  }, [artifactId, !!workspace, artifactAttempt]);
+  }, [artifactId, !!workspace, artifactAttempt, sourceArtifact]);
   const fulltext = (papers || []).filter((paper) => paper.status === "parsed");
   useEffect(() => {
     if (workspace && papers && pendingSelections.current === 0) setSelected(workspace.selected_paper_ids.filter((id) => papers.some((paper) => paper.id === id && paper.status === "parsed")));
@@ -99,37 +96,37 @@ export default function SynthesisPage() {
       void refresh().catch(() => {});
     });
   }
-  async function compare() {
+  function compare() {
+    if (busy) return;
     if (artifact && !artifact.payload.stale_after_reparse && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
-    // 连点会各自建任务；先取消上一次再提交，避免两个结果互相覆盖。
-    compareAbort.current?.abort();
-    const controller = new AbortController();
-    compareAbort.current = controller;
-    setBusy(true); setError(""); setJobStage("正在提交综合任务"); setJobStartedAt(Date.now()); setJobProgress(null);
-    try {
-      await selectionWrites.current;
-      const job = await submitJob("compare", { paper_ids: selected });
-      const snapshot = await watchJob(job.id, {
-        onStage: (_stage, label) => setJobStage(label),
-        onProgress: (progress) => setJobProgress(progress),
-      }, controller.signal);
-      if (controller.signal.aborted) return;
-      if (snapshot.status !== "done") throw new Error(snapshot.error?.message || "综合分析未完成，请重试");
-      const result = snapshot.result as Artifact | null;
-      if (!result?.payload) throw new Error("综合分析没有返回可用结果");
-      focusNewResult.current = true;
-      setArtifact(result); setActiveDimension(0); setShowSelection(false); setTab("matrix");
-      await refresh();
-    } catch (e) {
-      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "综合分析失败");
-    } finally {
-      if (compareAbort.current === controller) {
-        compareAbort.current = null; setBusy(false); setJobStartedAt(null); setJobProgress(null); setJobStage("");
-      }
-    }
+    setError("");
+    void start("compare", { paper_ids: selected }, { after: selectionWrites.current });
   }
+  useEffect(() => {
+    if (!job || job.status === "running") return;
+    const result = job.result as Artifact | null;
+    if (job.status !== "done" || !result?.payload) {
+      dismiss(job);
+      if (job.status !== "canceled") setError(job.error || "综合分析未完成，请重试");
+      return;
+    }
+    let disposed = false;
+    void refresh(true).then((current) => {
+      if (disposed) return;
+      if (current.synthesis_id !== result.id) {
+        setError("后台综合已完成，当前工作区已切换到其他内容。");
+        return;
+      }
+      focusNewResult.current = true;
+      setArtifact(result); setActiveDimension(0); setShowSelection(false);
+      window.history.replaceState(null, "", "/synthesis");
+    }).catch(() => {
+      if (!disposed) setError("综合结果已保存，请重新打开本页读取。");
+    }).finally(() => { if (!disposed) dismiss(job); });
+    return () => { disposed = true; };
+  }, [job, dismiss, refresh]);
   async function useQuestion(question: string) {
     if (handoff.current) return;
     const controller = new AbortController();
@@ -138,11 +135,11 @@ export default function SynthesisPage() {
     try {
       const sourceIds = artifact?.paper_ids || [];
       const sameQuestion = workspace?.design_idea === question && workspace.gap_context.question === question
-        && JSON.stringify(workspace.gap_context.paper_ids) === JSON.stringify(sourceIds);
+        && workspace.gap_context.synthesis_id === artifact?.id;
       await updateWorkspace({research_gap: data?.gaps[0] || "", design_idea: question,
         ...(sameQuestion ? {} : { novelty_id: null, design_version_id: null }),
         gap_context: {consensus: data?.consensus || [], disagreements: data?.controversies || [],
-          paper_ids: sourceIds, question}});
+          paper_ids: sourceIds, synthesis_id: artifact?.id, question}});
       if (!controller.signal.aborted) router.push("/design");
     } catch (e) { setError(e instanceof Error ? e.message : "无法带入研究问题"); }
     finally { handoff.current = null; setHandoffPending(false); }
@@ -176,7 +173,7 @@ export default function SynthesisPage() {
     {!data && !loadingArtifact && libraryReady && fulltext.length < 2 && !busy && <section className="startGuide" aria-label="文献综合使用引导"><div className="startGuideIntro"><span>BEFORE YOU COMPARE</span><h2>两篇全文，是证据对照的起点。</h2><p>当前只有摘要的记录不会参与全文综合。先上传至少两篇 PDF，系统才会比较方法、结果与研究空白。</p><Link className="guideLink" href="/read">前往论文库上传 PDF →</Link></div></section>}
     {error && <div className="researchError" role="alert">{error}</div>}
     {/* 阶段文案以服务端为准；可取消，也可以离开本页——任务在服务端继续，回来还能看到结果。 */}
-    <JobProgress variant="fixed" title="正在综合全文证据" stageLabel={jobStage} progress={jobProgress} startedAt={jobStartedAt} onCancel={() => compareAbort.current?.abort()} />
+    <JobProgress variant="fixed" title="正在综合全文证据" stageLabel={job?.stage} progress={job?.progress} startedAt={busy ? job.startedAt : null} onCancel={cancel} />
     {loadingArtifact && <p className="workspaceLoading" role="status">正在打开上次综合结果…</p>}
     {artifactError && <div className="researchError" role="alert">{artifactError} <button className="quietButton" onClick={() => setArtifactAttempt((count) => count + 1)}>重试</button></div>}
     {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>

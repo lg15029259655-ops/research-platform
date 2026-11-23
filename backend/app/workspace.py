@@ -16,6 +16,30 @@ router = APIRouter(prefix="/api/workspace")
 Owner = Depends(current_owner)
 ARTIFACT_KINDS = {"synthesis_id": "paper_compare", "novelty_id": "novelty_analysis",
                   "design_version_id": "experiment_design"}
+JOB_CONTEXT_FIELDS = {
+    "compare": ("query", "synthesis_id", "selected_paper_ids_json"),
+    "novelty": ("query", "design_idea", "novelty_id", "design_version_id", "gap_context_json"),
+    "design": ("query", "design_idea", "design_version_id", "gap_context_json"),
+}
+
+
+def job_workspace_context(owner: str, kind: str) -> dict:
+    fields = JOB_CONTEXT_FIELDS.get(kind)
+    if not fields:
+        return {}
+    with SessionLocal() as db:
+        item = get_or_create(db, owner)
+        return {field: getattr(item, field) for field in fields}
+
+
+def job_workspace_conditions(kind: str, context: dict) -> list:
+    return [getattr(ResearchWorkspace, field) == context[field]
+            for field in JOB_CONTEXT_FIELDS[kind] if field in context]
+
+
+def require_job_context(owner: str, kind: str, context: dict | None) -> None:
+    if context is not None and job_workspace_context(owner, kind) != context:
+        raise HTTPException(409, "任务提交后工作区已变化，请按当前内容重新运行")
 
 
 def workspace_data(item: ResearchWorkspace) -> dict:

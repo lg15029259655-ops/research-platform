@@ -31,7 +31,7 @@ async def _run_compare(ctx: worker.JobContext) -> dict:
     if len(paper_ids) < 2:
         raise worker.JobFailed("请选择至少两篇论文", code="invalid_params")
     try:
-        return await execute_compare(ctx.owner, paper_ids, emit=ctx.emit)
+        return await execute_compare(ctx.owner, paper_ids, emit=ctx.emit, workspace_context=ctx.params.get("_workspace_context"))
     except StructuredAIError as exc:
         raise worker.JobFailed(str(exc), code="ai_failed") from exc
     except HTTPException as exc:
@@ -43,7 +43,7 @@ async def _run_novelty(ctx: worker.JobContext) -> dict:
     if len(query) < 5:
         raise worker.JobFailed("请输入至少 5 个字的研究想法", code="invalid_params")
     try:
-        return await execute_novelty(ctx.owner, query, emit=ctx.emit, fallback=False)
+        return await execute_novelty(ctx.owner, query, emit=ctx.emit, fallback=False, workspace_context=ctx.params.get("_workspace_context"))
     except StructuredAIError as exc:
         raise worker.JobFailed(str(exc), code="ai_failed") from exc
     except HTTPException as exc:
@@ -57,7 +57,7 @@ async def _run_design(ctx: worker.JobContext) -> dict:
     except Exception as exc:  # noqa: BLE001 - 参数错误统一成可读提示
         raise worker.JobFailed("研究设计参数不完整", code="invalid_params") from exc
     try:
-        return await execute_design(ctx.owner, request, emit=ctx.emit, fallback=False)
+        return await execute_design(ctx.owner, request, emit=ctx.emit, fallback=False, workspace_context=ctx.params.get("_workspace_context"))
     except StructuredAIError as exc:
         raise worker.JobFailed(str(exc), code="ai_failed") from exc
     except HTTPException as exc:

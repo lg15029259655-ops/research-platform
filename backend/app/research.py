@@ -17,7 +17,7 @@ from sqlalchemy import select, update
 from .auth import current_owner
 from .db import SessionLocal
 from .models import Paper, ReadingUnit, ResearchArtifact, ResearchWorkspace, DesignVersion, DiscoveryCache
-from .workspace import get_or_create
+from .workspace import get_or_create, job_workspace_conditions, require_job_context
 from .papers import owned_paper, paper_data, paper_source_matches, pdf_is_readable, process_paper
 from .services.openalex_service import (
     DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, lineage_for_work, search_works,
@@ -121,7 +121,8 @@ def route_research(title: str, abstract: str = "", field: str = "") -> dict[str,
 
 
 def save_artifact(owner: str, kind: str, paper_ids: list[str], payload: dict, *,
-                  expected_revisions: dict[str, tuple[str | None, str]] | None = None) -> dict:
+                  expected_revisions: dict[str, tuple[str | None, str]] | None = None,
+                  workspace_context: dict | None = None) -> dict:
     artifact = ResearchArtifact(id=str(uuid4()), owner_id=owner, kind=kind,
                                 paper_ids_json=json.dumps(paper_ids),
                                 payload_json=json.dumps(payload, ensure_ascii=False))
@@ -135,16 +136,27 @@ def save_artifact(owner: str, kind: str, paper_ids: list[str], payload: dict, *,
             ).values(updated_at=Paper.updated_at))
             if result.rowcount != 1:
                 raise HTTPException(409, "论文内容在生成过程中发生变化，请重新生成结果")
+        if workspace_context is not None:
+            if kind == "paper_compare":
+                job_kind, updates = "compare", {"synthesis_id": artifact.id}
+            else:
+                job_kind, updates = "novelty", {"novelty_id": artifact.id, "design_idea": payload["query"]}
+            claim = db.execute(update(ResearchWorkspace).where(
+                ResearchWorkspace.owner_id == owner, *job_workspace_conditions(job_kind, workspace_context),
+            ).values(**updates))
+            if claim.rowcount != 1:
+                raise HTTPException(409, "任务提交后工作区已变化，请按当前内容重新运行")
+        else:
+            workspace = get_or_create(db, owner)
+            if kind == "paper_compare":
+                workspace.synthesis_id = artifact.id
+            elif kind == "novelty_analysis":
+                workspace.novelty_id = artifact.id
+                workspace.design_idea = payload.get("query", workspace.design_idea)
+            elif kind == "experiment_design":
+                workspace.design_version_id = artifact.id
+                workspace.design_idea = payload.get("goal", workspace.design_idea)
         db.add(artifact)
-        workspace = get_or_create(db, owner)
-        if kind == "paper_compare":
-            workspace.synthesis_id = artifact.id
-        elif kind == "novelty_analysis":
-            workspace.novelty_id = artifact.id
-            workspace.design_idea = payload.get("query", workspace.design_idea)
-        elif kind == "experiment_design":
-            workspace.design_version_id = artifact.id
-            workspace.design_idea = payload.get("goal", workspace.design_idea)
         db.commit()
     return {"id": artifact.id, "kind": kind, "paper_ids": paper_ids, "payload": payload,
             "created_at": artifact.created_at.isoformat()}
@@ -403,7 +415,9 @@ async def paper_xray(paper_id: str, owner: str = Owner):
         raise HTTPException(503, str(exc)) from exc
 
 
-async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeout: float | None = None) -> dict:
+async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeout: float | None = None,
+                          workspace_context: dict | None = None) -> dict:
+    require_job_context(owner, "compare", workspace_context)
     if emit is not None:
         await emit("stage", {"stage": "preparing", "label": "读取论文片段"})
     papers = await run_in_threadpool(fulltext_papers, owner, paper_ids, compact=True)
@@ -513,7 +527,8 @@ async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeou
             claim["stance"] = "INSUFFICIENT"
             claim["reason"] += " 当前没有来自至少两篇论文的可核对结果原文，不能列为结果不一致。"
         claim["evidence_refs"] = (direct_refs if claim["stance"] != "INSUFFICIENT" else verified_refs)[:6]
-    return save_artifact(owner, "paper_compare", paper_ids, payload, expected_revisions=expected)
+    return save_artifact(owner, "paper_compare", paper_ids, payload,
+                         expected_revisions=expected, workspace_context=workspace_context)
 
 
 @router.post("/compare")
@@ -541,7 +556,8 @@ def search_only_novelty(query: str, works: list[dict]) -> dict:
 
 
 async def execute_novelty(owner: str, query: str, *, emit=None, timeout: float | None = None,
-                          fallback: bool = True) -> dict:
+                          fallback: bool = True, workspace_context: dict | None = None) -> dict:
+    require_job_context(owner, "novelty", workspace_context)
     try:
         if emit is not None:
             await emit("stage", {"stage": "searching", "label": "检索相似研究"})
@@ -586,7 +602,7 @@ async def execute_novelty(owner: str, query: str, *, emit=None, timeout: float |
     payload["evidence_scope"] = "仅依据 OpenAlex 检索元数据及可用摘要，尚未核验全文。"
     payload["search_cached"] = found["cached"]
     payload["search_fetched_at"] = found["fetched_at"]
-    return save_artifact(owner, "novelty_analysis", [], payload)
+    return save_artifact(owner, "novelty_analysis", [], payload, workspace_context=workspace_context)
 
 
 @router.post("/novelty")
@@ -683,7 +699,9 @@ def preserve_step_illustrations(previous: dict, revised: dict) -> None:
 
 
 async def execute_design(owner: str, request: DesignRequest, *, emit=None,
-                         timeout: float | None = None, fallback: bool = True) -> dict:
+                         timeout: float | None = None, fallback: bool = True,
+                         workspace_context: dict | None = None) -> dict:
+    require_job_context(owner, "design", workspace_context)
     actions = {"generate": "生成研究设计", "node": "局部优化节点", "causality": "加强因果识别", "cost": "降低成本",
                "simplify": "简化方案", "mechanism": "增加机制验证", "application": "增强临床或应用意义"}
     if request.action not in actions:
@@ -710,13 +728,20 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
         workspace_id = workspace.id
         initial_idea = workspace.design_idea
         initial_design_id = workspace.design_version_id
-        if workspace.design_idea.strip() == request.goal.strip():
-            selected = json.loads(workspace.selected_paper_ids_json)
+        gap_context = json.loads(workspace.gap_context_json)
+        context_question = gap_context.get("question", request.goal)
+        if (workspace.design_idea.strip() == request.goal.strip()
+                and isinstance(context_question, str) and context_question.strip() == request.goal.strip()):
+            source_id = gap_context.get("synthesis_id") or workspace.synthesis_id
+            source = db.get(ResearchArtifact, source_id) if isinstance(source_id, str) else None
+            if source and (source.owner_id != owner or source.kind != "paper_compare"):
+                source = None
+            selected = json.loads(source.paper_ids_json) if source else json.loads(workspace.selected_paper_ids_json)
             papers = db.scalars(select(Paper).where(Paper.owner_id == owner, Paper.id.in_(selected))).all() if selected else []
             research_context = {
                 "research_gap": workspace.research_gap[:1500],
-                "synthesis_context": json.loads(workspace.gap_context_json),
-                "synthesis_id": workspace.synthesis_id,
+                "synthesis_context": gap_context,
+                "synthesis_id": source.id if source else None,
                 "selected_papers": [{"paper_id": item.id, "title": item.title,
                     "full_text_available": item.status == "parsed" and paper_source_matches(item)} for item in papers],
                 "evidence_note": "此处是前序综合输出和论文状态，不等于已独立核验的直接实验事实。",
@@ -759,6 +784,7 @@ async def execute_design(owner: str, request: DesignRequest, *, emit=None,
             ResearchWorkspace.id == workspace_id, ResearchWorkspace.owner_id == owner,
             ResearchWorkspace.design_idea == initial_idea,
             ResearchWorkspace.design_version_id == initial_design_id,
+            *job_workspace_conditions("design", workspace_context or {}),
         ).values(design_idea=request.goal, design_version_id=artifact_id))
         if claim.rowcount != 1:
             raise HTTPException(409, "研究想法或当前方案已变化，请基于最新内容重新生成")

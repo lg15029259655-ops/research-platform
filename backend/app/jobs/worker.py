@@ -3,7 +3,7 @@
 - 提交：enqueue 落库 + 入队，立即返回快照。
 - 执行：全局并发上限 + 每用户并发上限，避免一个用户同时烧掉所有模型配额。
 - 超时：任务级 deadline（默认 10 分钟），不再用 15/35 秒这种"必然失败"的墙钟。
-- 取消：前端离开页面时调用 DELETE，worker 在下一次 checkpoint 退出。
+- 取消：接到 DELETE 后停止排队或运行中的任务。
 """
 
 import asyncio
@@ -13,6 +13,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from .. import config
+from ..workspace import JOB_CONTEXT_FIELDS, job_workspace_context
 from . import events, store
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,8 @@ def _dedupe_key(owner: str, kind: str, params: dict) -> str:
 async def enqueue(kind: str, owner: str, params: dict) -> dict:
     if kind not in _handlers:
         raise ValueError(f"未注册的任务类型: {kind}")
+    if kind in JOB_CONTEXT_FIELDS:
+        params = {**params, "_workspace_context": job_workspace_context(owner, kind)}
     snapshot, reused = store.create_or_reuse(owner, kind, params, _dedupe_key(owner, kind, params))
     if not reused and _queue is not None:
         _queue.put_nowait(snapshot["id"])

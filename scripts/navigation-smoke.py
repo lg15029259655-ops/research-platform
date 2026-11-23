@@ -1,10 +1,92 @@
 """Browser regression for an isolated MedRead preview with the demo seed enabled."""
 
 import argparse
+import json
 import re
 from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
+
+
+def background_jobs(browser, frontend, backend):
+    context = browser.new_context()
+    page = context.new_page()
+    page.set_default_timeout(12000)
+    page.goto(f"{frontend}/synthesis")
+    expect(page.locator(".synthesisResult")).to_be_visible()
+    workspace = context.request.get(f"{backend}/api/workspace").json()
+    artifact_url = f"{backend}/api/research/artifacts?kind=paper_compare&artifact_id={workspace['synthesis_id']}"
+    artifact = context.request.get(artifact_url).json()[0]
+    artifact["payload"]["consensus"] = ["已恢复后台综合结果"]
+    status = {"comparison": "running", "design": "running"}
+    submissions = []
+    cancellations = []
+
+    def jobs_fixture(route):
+        url = urlsplit(route.request.url)
+        method = route.request.method
+        if method == "POST":
+            kind = route.request.post_data_json["kind"]
+            submissions.append(kind)
+            job_id = "comparison" if kind == "compare" else "design"
+            route.fulfill(status=202, json={"id": job_id, "kind": kind, "status": "queued"})
+            return
+        parts = url.path.split("/")
+        job_id = parts[3]
+        if method == "DELETE":
+            cancellations.append(job_id)
+            status[job_id] = "canceled"
+            route.fulfill(json={"canceled": True})
+            return
+        snapshot = {
+            "id": job_id, "kind": "compare" if job_id == "comparison" else "design", "status": status[job_id],
+            "stage_label": "正在进行后台综合" if job_id == "comparison" else "正在进行后台设计",
+            "result": artifact if job_id == "comparison" and status[job_id] == "done" else None,
+        }
+        if url.path.endswith("/events"):
+            route.fulfill(content_type="text/event-stream",
+                          body="event: snapshot\ndata: " + json.dumps(snapshot) + "\n\n")
+        else:
+            route.fulfill(json=snapshot)
+
+    context.route(re.compile(rf"^{re.escape(backend)}/api/jobs(?:/|$)"), jobs_fixture)
+    page.get_by_role("button", name="更换对比论文").click()
+    boxes = page.locator(".selectionList input")
+    expect(boxes).to_have_count(3)
+    if boxes.nth(2).is_checked():
+        boxes.nth(2).uncheck()
+    else:
+        boxes.nth(2).check()
+    page.get_by_role("button", name="按当前选择重新综合").click()
+    expect(page.get_by_text("正在进行后台综合")).to_be_visible()
+    page.locator(".researchNav nav").get_by_role("link", name="深度精读").click()
+    expect(page.locator(".reader")).to_be_visible()
+    page.locator(".researchNav nav").get_by_role("link", name="文献综合").click()
+    expect(page.get_by_text("正在进行后台综合")).to_be_visible()
+    assert submissions == ["compare"] and not cancellations
+
+    status["comparison"] = "done"
+    page.reload()
+    expect(page.locator(".compareTakeaways p").filter(has_text="已恢复后台综合结果")).to_be_visible()
+    assert submissions == ["compare"] and not cancellations
+
+    page.locator(".researchNav nav").get_by_role("link", name="科研设计").click()
+    page.get_by_label("我的研究想法").fill("A new design for the background job check")
+    page.get_by_label("约束条件（可选）").fill("Six weeks")
+    page.get_by_role("button", name="生成研究设计").click()
+    expect(page.get_by_text("正在进行后台设计")).to_be_visible()
+    page.locator(".researchNav nav").get_by_role("link", name="科研发现").click()
+    expect(page.get_by_role("textbox", name="论文检索")).to_be_visible()
+    page.locator(".researchNav nav").get_by_role("link", name="科研设计").click()
+    expect(page.get_by_text("正在进行后台设计")).to_be_visible()
+    expect(page.get_by_label("我的研究想法")).to_have_value("A new design for the background job check")
+    expect(page.get_by_label("约束条件（可选）")).to_have_value("Six weeks")
+    assert submissions == ["compare", "design"] and not cancellations
+    with page.expect_request(lambda request: request.method == "DELETE" and request.url.endswith("/api/jobs/design")):
+        page.locator(".jobProgress").get_by_role("button", name="取消", exact=True).click()
+    expect(page.locator(".jobProgress")).to_have_count(0)
+    assert cancellations == ["design"]
+    context.close()
 
 
 def smoke(browser, frontend, backend):
@@ -95,7 +177,11 @@ def smoke(browser, frontend, backend):
     patches[0].continue_()
     context.unroute(workspace_url)
     expect(page.get_by_label("我的研究想法")).to_have_value(question)
-    page.get_by_role("link", name="返回研究空白查看依据").click()
+    source_link = page.get_by_role("link", name="返回研究空白查看依据")
+    workspace = context.request.get(workspace_url).json()
+    assert workspace["gap_context"]["synthesis_id"] == workspace["synthesis_id"]
+    expect(source_link).to_have_attribute("href", f"/synthesis?view=gaps&artifact={workspace['synthesis_id']}")
+    source_link.click()
     expect(page.get_by_role("tab", name="研究空白")).to_have_attribute("aria-selected", "true")
 
     # Exercise the homepage search without a dependency on OpenAlex.
@@ -198,6 +284,7 @@ if __name__ == "__main__":
         browser = playwright.chromium.launch(channel="chrome" if args.chrome else None)
         try:
             smoke(browser, args.frontend, args.backend)
+            background_jobs(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")

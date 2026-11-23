@@ -265,6 +265,30 @@ def test_cancel_waiting_job_is_immediate_and_never_runs(monkeypatch):
             _cleanup()
 
 
+def test_queued_research_job_uses_workspace_at_submission(monkeypatch):
+    monkeypatch.setenv("AI_MAX_CONCURRENCY", "2")
+    monkeypatch.setenv("AI_MAX_PER_OWNER", "1")
+
+    async def model_must_not_run(*_args, **_kwargs):
+        raise AssertionError("A stale job should be rejected before contacting the model")
+
+    monkeypatch.setattr("app.research._run_task", model_must_not_run)
+    with TestClient(app) as client:
+        try:
+            client.patch("/api/workspace", json={"query": "original topic"})
+            blocker = client.post("/api/jobs", json={"kind": "test_slow"}).json()
+            job = client.post("/api/jobs", json={"kind": "novelty", "params": {"query": "original idea"}}).json()
+            assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "queued"
+            client.patch("/api/workspace", json={"query": "new topic"})
+            assert client.delete(f"/api/jobs/{blocker['id']}").status_code == 200
+            result = _wait(client, job["id"])
+            assert result["status"] == "failed"
+            assert "工作区已变化" in result["error"]["message"]
+            assert client.get("/api/workspace").json()["query"] == "new topic"
+        finally:
+            _cleanup()
+
+
 def test_graceful_restart_requeues_unfinished_job():
     from app.auth import COOKIE_NAME
 

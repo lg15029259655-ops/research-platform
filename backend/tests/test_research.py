@@ -581,6 +581,64 @@ def test_design_versions_and_local_node_scope(monkeypatch):
             clean(b)
 
 
+def test_design_keeps_pinned_synthesis_after_working_selection_changes(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
+
+    async def fake_run(_name, context):
+        return {"goal": context["goal"], "change_summary": "test", "constraints": [],
+                "nodes": [], "edges": [], "controls": [], "readouts": [], "assumptions": []}
+
+    monkeypatch.setattr("app.research.run_task", fake_run)
+    with TestClient(app) as client:
+        try:
+            source_paper = client.post("/api/papers", files={"file": ("first.pdf", pdf_bytes("First source"))}).json()["id"]
+            newer_paper = client.post("/api/papers", files={"file": ("next.pdf", pdf_bytes("Newer source"))}).json()["id"]
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+            source = save_artifact(owner, "paper_compare", [source_paper], {})
+            newer = save_artifact(owner, "paper_compare", [newer_paper], {})
+            goal = "How to preserve the source of a research question?"
+            response = client.patch("/api/workspace", json={
+                "design_idea": goal, "selected_paper_ids": [newer_paper], "research_gap": "The source gap",
+                "gap_context": {"question": goal, "synthesis_id": source["id"]},
+            })
+            assert response.status_code == 200
+            result = client.post("/api/research/design", json={"goal": goal})
+            assert result.status_code == 200, result.text
+            origin = result.json()["payload"]["research_origin"]
+            assert origin["synthesis_id"] == source["id"]
+            assert [item["paper_id"] for item in origin["selected_papers"]] == [source_paper]
+            assert client.get("/api/workspace").json()["synthesis_id"] == newer["id"]
+        finally:
+            clean(client)
+
+
+def test_background_result_cannot_overwrite_changed_workspace():
+    import pytest
+    from fastapi import HTTPException
+    from app.workspace import job_workspace_context
+
+    with TestClient(app) as client:
+        try:
+            client.patch("/api/workspace", json={"query": "original topic", "design_idea": "original idea"})
+            with SessionLocal() as db:
+                owner = db.scalar(select(User).where(User.session_hash == session_hash(client.cookies.get(COOKIE_NAME)))).id
+            comparison_context = job_workspace_context(owner, "compare")
+            novelty_context = job_workspace_context(owner, "novelty")
+            client.patch("/api/workspace", json={"query": "new topic", "design_idea": "new research idea"})
+            with pytest.raises(HTTPException) as failed_comparison:
+                save_artifact(owner, "paper_compare", [], {}, workspace_context=comparison_context)
+            with pytest.raises(HTTPException) as failed_novelty:
+                save_artifact(owner, "novelty_analysis", [], {"query": "old analysis"}, workspace_context=novelty_context)
+            assert failed_comparison.value.status_code == failed_novelty.value.status_code == 409
+            workspace = client.get("/api/workspace").json()
+            assert workspace["design_idea"] == "new research idea"
+            assert workspace["synthesis_id"] is workspace["novelty_id"] is None
+            assert client.get("/api/research/artifacts").json() == []
+        finally:
+            clean(client)
+
+
 def test_empty_comparison_claims_are_explicitly_insufficient(monkeypatch, tmp_path):
     monkeypatch.setattr("app.services.file_service.upload_dir", lambda: tmp_path)
     # A short X-Ray deadline must not cancel the separate multi-paper task.
