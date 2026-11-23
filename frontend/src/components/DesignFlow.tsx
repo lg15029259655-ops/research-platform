@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import DesignInsights from "./DesignInsights";
 import ExperimentIcon from "./experiment/ExperimentIcon";
 import { specificMethodCategory, stageIllustrationCategory } from "@/lib/experiment-categories";
+import { useTabDraft } from "@/lib/tab-draft";
 import { effectiveCategory, type ExperimentCategory } from "./experimentCategory";
 import "./experiment-route.css";
 
@@ -18,13 +19,14 @@ function StageIcon({ kind, name, stage = false }: { kind: ExperimentCategory; na
 }
 
 export default function DesignFlow({ design, artifactId, onSelectNode, onExpandNode, onAddStep, onRemoveStep, busy = false, readOnly = false }: { design: Design; artifactId: string; onSelectNode?: (id: string) => void; onExpandNode?: (id: string) => void; onAddStep?: (id: string, step: Step) => Promise<void>; onRemoveStep?: (id: string, index: number) => Promise<void>; busy?: boolean; readOnly?: boolean }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [savedStage, setExpanded] = useTabDraft<string>(artifactId ? `design-stage:${artifactId}` : null);
+  const expanded = design.nodes.some((node) => node.id === savedStage) ? savedStage : null;
   const [insight, setInsight] = useState<"review" | "outcomes" | null>(null);
   const [adding, setAdding] = useState(false);
   const [step, setStep] = useState<Step>({name:"", purpose:"", method:"", controls:"", readouts:""});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
-  useEffect(() => { setExpanded(null); setInsight(null); setAdding(false); setStep({name:"", purpose:"", method:"", controls:"", readouts:""}); setSaveError(""); }, [artifactId]);
+  useEffect(() => { setInsight(null); setAdding(false); setStep({name:"", purpose:"", method:"", controls:"", readouts:""}); setSaveError(""); }, [artifactId]);
   async function saveStep() {
     if (!expanded || !step.name.trim() || !onAddStep) return;
     setSaving(true); setSaveError("");

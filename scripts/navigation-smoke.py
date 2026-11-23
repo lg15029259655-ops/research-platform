@@ -1103,6 +1103,60 @@ def synthesis_view_loading(browser, frontend, backend):
     context.close()
 
 
+def design_view_navigation(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace_url = f"{backend}/api/workspace"
+    workspace = context.request.get(workspace_url).json()
+    version_id = workspace["design_version_id"]
+    version_url = f"{backend}/api/research/design/versions?artifact_id={version_id}"
+    version = context.request.get(version_url).json()[0]
+    design = version["payload"]
+    source_id = design["research_origin"]["synthesis_id"]
+    design["research_origin"]["research_gap"] = ""
+    context.route(version_url, lambda route: route.fulfill(json=[version]))
+    novelty_id = "saved-novelty-navigation-fixture"
+    novelty = {"query": workspace["design_idea"], "similar_papers": [], "similarity_level": "待核验",
+               "differences": [], "novel_angles": [], "evidence_scope": "Fixture"}
+    context.route(workspace_url, lambda route: route.fulfill(json={**workspace, "novelty_id": novelty_id}))
+    novelty_url = f"{backend}/api/research/artifacts?kind=novelty_analysis&artifact_id={novelty_id}"
+    context.route(novelty_url, lambda route: route.fulfill(json=[{"id": novelty_id, "payload": novelty}]))
+
+    page = context.new_page()
+    page.goto(f"{frontend}/design")
+    novelty_tab = page.get_by_role("tab", name="新颖性扫描")
+    canvas_tab = page.get_by_role("tab", name="设计沙盘")
+    expect(page.get_by_role("heading", name=re.compile("^新颖性扫描"))).to_be_visible()
+    novelty_tab.focus()
+    novelty_tab.press("ArrowRight")
+    expect(canvas_tab).to_be_focused()
+    expect(canvas_tab).to_have_attribute("aria-selected", "true")
+    expect(page).to_have_url(f"{frontend}/design?view=canvas")
+
+    stage = page.locator(".er-stage-main").first
+    stage.click()
+    expect(stage).to_have_attribute("aria-expanded", "true")
+    constraints = page.get_by_label("约束条件（可选）")
+    constraints.fill("Keep the plan draft while checking the source")
+    page.get_by_text("本版本的研究起点与依据", exact=True).click()
+    page.get_by_role("link", name="打开本版本的文献综合").click()
+    expect(page).to_have_url(f"{frontend}/synthesis?view=gaps&artifact={source_id}")
+    page.go_back()
+    expect(canvas_tab).to_have_attribute("aria-selected", "true")
+    expect(stage).to_have_attribute("aria-expanded", "true")
+    expect(constraints).to_have_value("Keep the plan draft while checking the source")
+
+    novelty_tab.click()
+    expect(page).to_have_url(f"{frontend}/design?view=novelty")
+    page.reload()
+    expect(novelty_tab).to_have_attribute("aria-selected", "true")
+    expect(page.get_by_role("heading", name=re.compile("^新颖性扫描"))).to_be_visible()
+    canvas_tab.click()
+    expect(stage).to_have_attribute("aria-expanded", "true")
+    assert context.request.get(workspace_url).json() == workspace
+    context.close()
+
+
 def keyboard_navigation(browser, frontend, viewport=None):
     context = browser.new_context(viewport=viewport)
     page = context.new_page()
@@ -1153,6 +1207,7 @@ if __name__ == "__main__":
         try:
             smoke(browser, args.frontend, args.backend)
             keyboard_navigation(browser, args.frontend, viewport={"width": 390, "height": 844})
+            design_view_navigation(browser, args.frontend, args.backend)
             background_jobs(browser, args.frontend, args.backend)
             reload_before_job_confirmation(browser, args.frontend, args.backend)
             reload_before_upload_confirmation(browser, args.frontend, args.backend)

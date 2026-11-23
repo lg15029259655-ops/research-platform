@@ -37,6 +37,25 @@ const actionLabels: Record<string, string> = {generate: "生成方案", manual: 
 const sourceHref = (id: string) => `/synthesis?view=gaps&artifact=${encodeURIComponent(id)}`;
 
 type DesignDraft = { idea?: string; constraints?: string };
+type DesignView = "novelty" | "canvas";
+
+function designView(value: string | null): DesignView | null {
+  return value === "novelty" || value === "canvas" ? value : null;
+}
+
+function updateDesignUrl(params: URLSearchParams) {
+  const { pathname, search, hash } = window.location;
+  if (pathname !== "/design") return;
+  const next = params.size ? `?${params}` : "";
+  if (search !== next) window.history.replaceState(null, "", `${pathname}${next}${hash}`);
+}
+
+function setTab(view: DesignView) {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("view") === view) return;
+  params.set("view", view);
+  updateDesignUrl(params);
+}
 
 function designDraftKey(workspace: Workspace, urlIdea: string | null) {
   const idea = urlIdea ?? workspace.design_idea;
@@ -106,7 +125,7 @@ function DesignPreview({ id }: { id: string }) {
     try {
       const restored = await restoreSavedVersion(version, confirmation, refresh);
       if (restored) await refresh(true).catch(() => {});
-      if (active.current) router.replace("/design");
+      if (active.current) router.replace("/design?view=canvas");
     } catch (e) {
       if (!active.current) return;
       setRestoreError(e instanceof Error ? e.message : "暂时无法恢复这个版本");
@@ -149,7 +168,8 @@ function DesignPreview({ id }: { id: string }) {
 
 function DesignWorkspace() {
   const router = useRouter();
-  const urlIdea = useSearchParams().get("idea");
+  const searchParams = useSearchParams();
+  const urlIdea = searchParams.get("idea");
   const { workspace, workspaceError, refresh } = useWorkspace();
   const savedIdea = workspace?.design_idea || "";
   const pinnedSource = workspace?.gap_context.synthesis_id;
@@ -169,7 +189,6 @@ function DesignWorkspace() {
   const design = activeVersion?.payload;
   const constraints = typeof formDraft?.constraints === "string" ? formDraft.constraints
     : (design?.goal.trim() === idea.trim() ? design?.input_constraints || "" : "");
-  const [tab, setTab] = useState<"novelty" | "canvas">("novelty");
   const [localBusy, setBusy] = useState(false);
   const { job, start, cancel, dismiss } = useWorkspaceJob("design");
   const running = job?.status === "running";
@@ -191,10 +210,14 @@ function DesignWorkspace() {
   const restoringNovelty = !!currentNoveltyId && !noveltyReady && !noveltyError;
   const active = useRef(false);
   const pendingStageSave = useRef<{ input: string; requestId: string } | null>(null);
-  const workspaceTabs = tabGroup(["novelty", "canvas"] as const, tab, setTab);
   const sameDesignInput = design?.goal.trim() === idea.trim() && (design.input_constraints || "") === constraints.trim();
   const shownNovelty = novelty?.query.trim() === idea.trim() ? novelty : null;
   const shownDesign = design?.goal.trim() === idea.trim() ? design : null;
+  const origin = shownDesign?.research_origin;
+  const hasOriginNotes = !!(origin?.research_gap || origin?.selected_papers?.length);
+  const tab = designView(searchParams.get("view"))
+    ?? (shownDesign && !shownNovelty && !restoringNovelty ? "canvas" : "novelty");
+  const workspaceTabs = tabGroup(["novelty", "canvas"] as const, tab, setTab);
   useEffect(() => {
     setNoveltyError("");
     if (!currentNoveltyId) { setNovelty(null); setNoveltyReady(true); return; }
@@ -239,9 +262,6 @@ function DesignWorkspace() {
     return () => controller.abort();
   }, [currentDesignId, savedIdea, versionListAttempt]);
   useEffect(() => {
-    if (tab === "novelty" && !shownNovelty && shownDesign && !restoringNovelty && !busy && !error) setTab("canvas");
-  }, [shownNovelty, shownDesign, tab, restoringNovelty, busy, error]);
-  useEffect(() => {
     active.current = true;
     return () => { active.current = false; };
   }, []);
@@ -268,6 +288,7 @@ function DesignWorkspace() {
       if (disposed) return;
       const pointer = job.kind === "novelty" ? current.novelty_id : current.design_version_id;
       if (pointer !== result.id) { setError("后台任务已完成，当前研究想法或方案已变化。"); return; }
+      const params = new URLSearchParams(window.location.search);
       const submitted = job.draft;
       if (submitted?.key) {
         const previous = readTabDraft<DesignDraft>(submitted.key);
@@ -284,15 +305,16 @@ function DesignWorkspace() {
           } else {
             writeTabDraft(submitted.key, null);
           }
-          if (followSavedIdea) window.history.replaceState(null, "", "/design");
+          if (followSavedIdea) params.delete("idea");
         }
       }
       if (job.kind === "novelty") {
-        setNovelty(result.payload as Novelty); setTab("novelty");
+        setNovelty(result.payload as Novelty);
       } else {
         if (result.version) setLoadedVersion(result.version);
-        setTab("canvas");
       }
+      if (!designView(params.get("view"))) params.set("view", job.kind === "novelty" ? "novelty" : "canvas");
+      updateDesignUrl(params);
     }).catch(() => {
       if (!disposed) setError("结果已保存，请重新打开本页读取。");
     }).finally(() => { if (!disposed) dismiss(job); });
@@ -318,6 +340,7 @@ function DesignWorkspace() {
     }, { draft: { idea, constraints, key: draftKey } });
   }
   async function restoreVersion(version: VersionEntry) {
+    setTab("canvas");
     setBusy(true); setError("");
     try {
       const current = workspace ?? await refresh(true);
@@ -404,6 +427,18 @@ function DesignWorkspace() {
     {tab === "canvas" && !shownDesign && !!idea.trim() && !busy && !restoringDesign && !designError && <div className="miniNotice">当前想法「{idea.trim()}」尚无设计草稿。点击上方「生成研究设计」即可创建。</div>}
     {tab === "novelty" && shownNovelty && <section className="sectionBox"><h2>{shownNovelty.search_only ? "相关文献星系" : "新颖性扫描"} {!shownNovelty.search_only && <small>整体相似：{shownNovelty.similarity_level}</small>}</h2>{shownNovelty.search_only && <p className="miniNotice">{shownNovelty.search_message} 单一轨道仅表示检索结果，不代表已完成相似程度判断。{!shownNovelty.similar_papers.length && "请调整关键词后重试。"}</p>}<NoveltySpace novelty={shownNovelty} busy={busy} onView={viewWork} onAdd={addWork} />{shownNovelty.search_only && <button type="button" disabled={busy} onClick={() => scan(true)}>重试模型分析</button>}<button className="primaryButton stepForward" disabled={busy} aria-busy={busy} onClick={() => generate()}>{sameDesignInput ? "打开已有方案 →" : "基于这个想法生成方案 →"}</button></section>}
     {tab === "canvas" && shownDesign && <><div className="versionBar"><strong>方案版本 <span>V{displayVersion}</span></strong><div>{scopedVersions.length > 1 && scopedVersions.map((item) => <button className={item.version_id === currentVersion ? "active" : ""} key={item.version_id} disabled={busy} aria-busy={busy} onClick={() => restoreVersion(item)}>V{item.number} · {actionLabels[item.action] || item.action}</button>)}</div>{priorVersion && <button onClick={() => restoreVersion(priorVersion)} disabled={busy} aria-busy={busy}>撤回上一版本</button>}<button onClick={() => generate("generate", undefined, "", true)} disabled={busy} aria-busy={busy}>重新生成方案</button></div><div className="designGrid"><section className="sectionBox designSidebar"><div className="designSideHeader"><span>方案概览</span><h2>设计调整</h2><p title={shownDesign.goal}>{shownDesign.goal}</p></div><div className="designSummary"><b>本版思路</b><p>{shownDesign.change_summary || "当前为方案草稿。"}</p><details><summary>阅读完整说明</summary><p>{shownDesign.change_summary || "当前为方案草稿。"}</p></details></div><div className="designActions"><b>调整方向</b><div className="actionRow">{actions.map(([action, label]) => <button key={action} disabled={busy} aria-busy={busy} onClick={() => generate(action)}>{label}</button>)}</div></div><details className="designDetails"><summary>本次修改 <small>{activeVersion ? activeVersion.changes.added.length + activeVersion.changes.removed.length + activeVersion.changes.modified.length : 0} 项</small></summary><div className="versionChanges">{activeVersion ? <>{activeVersion.changes.added.map((item) => <button key={`a${item}`} onClick={() => openChange(item, "新增")}>＋ {item} ↗</button>)}{activeVersion.changes.removed.map((item) => <button key={`r${item}`} onClick={() => openChange(item, "移除")}>－ {item} ↗</button>)}{activeVersion.changes.modified.map((item) => <button key={`m${item}`} onClick={() => openChange(item, "修改")}>◌ {item} ↗</button>)}</> : "初始方案"}</div></details><details className="designDetails"><summary>对照与评价 <small>{shownDesign.controls.length + shownDesign.readouts.length} 项</small></summary><h4>对照</h4><ul>{shownDesign.controls.map((item, i) => <li key={i}>{item}</li>)}</ul><h4>评价指标</h4><ul>{shownDesign.readouts.map((item, i) => <li key={i}>{item}</li>)}</ul></details><details className="designDetails"><summary>关键假设 <small>{shownDesign.assumptions.length} 项</small></summary><ul>{shownDesign.assumptions.map((item, i) => <li key={i}>{item}</li>)}</ul></details></section><section><DesignFlow design={shownDesign} artifactId={activeVersion?.artifact_id || ""} onSelectNode={setSelectedNode} busy={busy} onExpandNode={(id) => generate("node", id, "为此阶段补充具体实验或分析步骤，逐项说明目的、方法、对照和检测指标；未知信息明确待确定，并保留其他阶段。" )} onAddStep={async (id, step) => { const node = shownDesign.nodes.find(item => item.id === id); if (!node) throw new Error("当前步骤已变化"); await saveStageSteps(id, [...(node.steps || []), step]); }} onRemoveStep={async (id, index) => { const node = shownDesign.nodes.find(item => item.id === id); if (!node) throw new Error("当前步骤已变化"); await saveStageSteps(id, (node.steps || []).filter((_, i) => i !== index)); }} /><p className="miniNotice">具体参数需预实验、功效分析或领域专家核对。</p></section></div>{nodeDetail && <EvidenceDrawer title={nodeDetail.label} eyebrow="研究设计节点" onClose={() => setSelectedNode(null)}><p>{nodeDetail.detail}</p><div className="nodeRelations"><strong>连接逻辑</strong>{shownDesign.edges.filter((edge) => edge.source === nodeDetail.id || edge.target === nodeDetail.id).map((edge, index) => <p key={index}>{edge.label || `${shownDesign.nodes.find((item) => item.id === edge.source)?.label || edge.source} → ${shownDesign.nodes.find((item) => item.id === edge.target)?.label || edge.target}`}</p>)}</div><dl><dt>节点类型</dt><dd>{nodeDetail.type}</dd><dt>版本</dt><dd>V{displayVersion}</dd></dl><label className="fieldLabel">希望怎样修改这个节点？</label><textarea className="largeTextarea" value={nodeInstruction} onChange={(e) => setNodeInstruction(e.target.value)} placeholder="例如：改用成本更低的数据来源，并保持评估目标不变" /><button className="drawerAction" disabled={busy || !nodeInstruction.trim()} aria-busy={busy} onClick={() => generate("node", nodeDetail.id, nodeInstruction)}>AI 优化此节点 →</button></EvidenceDrawer>}{selectedChange && <EvidenceDrawer title={selectedChange.label} eyebrow={`版本差异 · ${selectedChange.kind}`} onClose={() => setSelectedChange(null)}><p>这条记录属于 V{displayVersion} 的版本变化。当前方案中没有同名节点；可切换历史版本查看当时的完整结构。</p></EvidenceDrawer>}</>}
-    {tab === "canvas" && shownDesign && activeVersion && <><details className="di-origin"><summary>本版本的研究起点与依据</summary>{shownDesign.research_origin?.research_gap ? <><p><b>研究空白：</b>{shownDesign.research_origin.research_gap}</p><ul>{shownDesign.research_origin.selected_papers?.map(paper => <li key={paper.paper_id}>{paper.title}</li>)}</ul><p>以上为生成时带入的综合线索，需回到文献核对；尚未逐条绑定到方案节点。</p>{shownDesign.research_origin.synthesis_id && <Link className="quietButton" href={sourceHref(shownDesign.research_origin.synthesis_id)}>打开本版本的文献综合 ↗</Link>}</> : <p>本版本未记录可用的文献综合依据。研究问题可能由用户输入，或来自旧版方案；请自行补充并核对依据。</p>}</details><DesignStepEditor key={activeVersion.artifact_id} artifactId={activeVersion.artifact_id} design={shownDesign} onSaved={() => { void refresh(true).catch(() => setError("新版本已保存，请重新打开页面读取。")); }} /></>}
+    {tab === "canvas" && shownDesign && activeVersion && <>
+      <details className="di-origin">
+        <summary>本版本的研究起点与依据</summary>
+        {origin?.research_gap && <p><b>研究空白：</b>{origin.research_gap}</p>}
+        {!!origin?.selected_papers?.length && <ul>{origin.selected_papers.map((paper) => <li key={paper.paper_id}>{paper.title}</li>)}</ul>}
+        {hasOriginNotes && <p>以上为生成方案时带入的综合线索，可据此核对原文。</p>}
+        {origin?.synthesis_id
+          ? <Link className="quietButton" href={sourceHref(origin.synthesis_id)}>打开本版本的文献综合 ↗</Link>
+          : !hasOriginNotes && <p>本版本未记录可用的文献综合依据，请补充并核对依据。</p>}
+      </details>
+      <DesignStepEditor key={activeVersion.artifact_id} artifactId={activeVersion.artifact_id} design={shownDesign}
+        onSaved={() => { void refresh(true).catch(() => setError("新版本已保存，请重新打开页面读取。")); }} />
+    </>}
   </PageMain>;
 }
