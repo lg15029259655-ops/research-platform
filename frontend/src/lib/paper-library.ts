@@ -12,6 +12,9 @@ export type PaperSummary = {
 };
 
 type PaperStatus = { status: string; source_matches?: boolean };
+type PaperLibraryChange = { paperId: string; removed: boolean };
+const paperLibraryChannel = "medread-paper-library";
+let librarySource: string | undefined;
 const parsingStatuses = new Set(["uploaded", "reading", "structure", "figures", "manifest", "images"]);
 
 export function isPdfParsing(status: string) {
@@ -34,4 +37,22 @@ export function readPaperLibrary(signal?: AbortSignal) {
   return apiJson<PaperSummary[]>("/api/papers?view=summary", {
     signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
   });
+}
+
+export function notifyPaperLibraryChange(paperId: string, removed = false) {
+  if (typeof BroadcastChannel === "undefined") return;
+  librarySource ??= crypto.randomUUID();
+  const channel = new BroadcastChannel(paperLibraryChannel);
+  channel.postMessage({ paperId, removed, source: librarySource });
+  channel.close();
+}
+
+export function subscribeToPaperLibrary(listener: (change: PaperLibraryChange) => void) {
+  if (typeof BroadcastChannel === "undefined") return;
+  const channel = new BroadcastChannel(paperLibraryChannel);
+  channel.onmessage = ({ data }) => {
+    if (typeof data?.paperId === "string" && typeof data.removed === "boolean" &&
+        typeof data.source === "string" && data.source !== librarySource) listener(data);
+  };
+  return () => channel.close();
 }

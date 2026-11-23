@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { type CSSProperties, type KeyboardEvent, type ReactNode, ChangeEvent, lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { API, ApiError, apiJson } from "@/lib/api";
-import { readPaperLibrary, type PaperSummary } from "@/lib/paper-library";
+import { notifyPaperLibraryChange, readPaperLibrary, subscribeToPaperLibrary, type PaperSummary } from "@/lib/paper-library";
 import JobProgress from "@/components/jobs/JobProgress";
 import ThinkingTrail from "@/components/reader/ThinkingTrail";
 import type { MindMapPayload } from "@/components/mindmap/MindMapPanel";
@@ -160,6 +160,7 @@ export default function ReadPage() {
   const [libraryReady, setLibraryReady] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
   const [papers, setPapers] = useState<PaperSummary[]>([]);
+  const [paperToRefresh, setPaperToRefresh] = useState<{ id: string; removed: boolean } | null>(null);
   const [record, setPaper] = useState<Paper | null>(null);
   const paper = record?.id === selectedId ? record : null;
   const sourceChanged = !!paper?.file_available && !!sourceFile && sourceFile !== paper.file_version;
@@ -305,9 +306,32 @@ export default function ReadPage() {
     loadList().catch(() => {});
     return () => libraryRequest.current?.abort();
   }, [loadList]);
+  useEffect(() => subscribeToPaperLibrary(({ paperId, removed }) => {
+    void loadList().catch(() => {});
+    if (removed) void refresh(true).catch(() => {});
+    if (activePaper.current === paperId) setPaperToRefresh({ id: paperId, removed });
+  }), [loadList, refresh]);
+  useEffect(() => {
+    if (pending || !paperToRefresh) return;
+    const { id, removed } = paperToRefresh;
+    if (id !== selectedId) return;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]);
+    void loadPaper(id, false, signal).catch((error) => {
+      if (removed && !controller.signal.aborted && activePaper.current === id &&
+          error instanceof ApiError && error.status === 404) {
+        setPaper(null);
+        setPaperOpenError({ id, message: "这篇论文已从论文库移除。" });
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted) setPaperToRefresh((current) => current === paperToRefresh ? null : current);
+    });
+    return () => controller.abort();
+  }, [pending, selectedId, paperToRefresh, loadPaper]);
 
   useEffect(() => {
     activePaper.current = selectedId;
+    setPaperToRefresh(null);
     stopChat();
     if (parseRequest.current) {
       parseRequest.current.abort();
@@ -376,6 +400,7 @@ export default function ReadPage() {
           await loadPaper(id, false, signal);
           if (!isCurrent()) return;
           setParseProgress("");
+          notifyPaperLibraryChange(id);
           void loadList().catch(() => {});
           return;
         }
@@ -477,6 +502,7 @@ export default function ReadPage() {
       }
       if (!current()) return;
       writeTabDraft(pendingUploadKey, null);
+      notifyPaperLibraryChange(result.id);
       if (new URLSearchParams(window.location.search).get("paper") === openingPaperId) selectPaper(result.id);
       void loadList().catch(() => {});
     } catch (e) {
@@ -532,6 +558,7 @@ export default function ReadPage() {
       abortReaderJobs();
       setReaderTab("read"); setMindmap(null); setExperiments(null);
       setParseProgress(parseStages[status] || "");
+      notifyPaperLibraryChange(id);
     } catch (error) {
       if (isCurrent()) setError(error instanceof ApiError ? error.message : "暂时无法提交 PDF 解析请求。");
     } finally {
@@ -806,6 +833,7 @@ export default function ReadPage() {
       writeTabDraft(readingPositionKey(id), null);
       if (readTabDraft<string>(lastPaperKey) === id) writeTabDraft(lastPaperKey, null);
       for (const action of chatActions) writeTabDraft(turnDraftKey(id, action), null);
+      notifyPaperLibraryChange(id, true);
       void refresh(true).catch(() => {});
     } catch (error) {
       if (active.current) setDeletions((current) => ({

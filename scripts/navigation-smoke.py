@@ -492,6 +492,75 @@ def reader_reparse_recovery(browser, frontend, backend, *, viewport=None):
         expect(page.locator(".pdfCanvas canvas")).to_be_visible()
 
 
+def cross_tab_paper_library(browser, frontend, backend, *, viewport=None):
+    with browser.new_context(viewport=viewport) as context:
+        assert context.request.get(f"{backend}/api/session").ok
+        workspace_url = f"{backend}/api/workspace"
+        workspace = context.request.get(workspace_url).json()
+        paper_id = workspace["core_paper_id"]
+        library_url = f"{backend}/api/papers?view=summary"
+        papers = context.request.get(library_url).json()
+        target = next(item for item in papers if item["id"] == paper_id)
+        target["openalex_id"] = "W209"
+        detail_url = f"{backend}/api/papers/{paper_id}"
+        detail = {**context.request.get(detail_url).json(), "warning": "未可靠识别论文章节"}
+        work = {"openalex_id": "W209", "title": target["title"], "authors": [], "year": 2021,
+                "journal": "", "doi": "", "abstract": "", "citation_count": 0, "oa_pdf_url": None}
+
+        def paper_request(route):
+            if route.request.method == "DELETE":
+                papers.remove(target)
+                workspace["selected_paper_ids"].remove(paper_id)
+                workspace.update(core_paper_id=None, synthesis_id=None)
+                route.fulfill(json={"deleted": True})
+            elif target in papers:
+                route.fulfill(json=detail)
+            else:
+                route.fulfill(status=404, json={"detail": "论文不存在"})
+
+        def reparse(route):
+            target["status"] = detail["status"] = "reading"
+            route.fulfill(json={"id": paper_id, "status": "uploaded"})
+
+        context.route(library_url, lambda route: route.fulfill(json=papers))
+        context.route(workspace_url, lambda route: route.fulfill(json=workspace))
+        context.route(detail_url, paper_request)
+        context.route(detail_url + "/reparse", reparse)
+        context.route(detail_url + "/status", lambda route: route.fulfill(json={"status": detail["status"]}))
+        context.route(re.compile(rf"^{re.escape(backend)}/api/research/discover[?]"),
+                      lambda route: route.fulfill(json={"items": [work], "count": 1, "page": 1, "mode": "semantic"}))
+        discover = context.new_page()
+        discover.goto(f"{frontend}/discover?q=library-sync")
+        expect(discover.get_by_role("link", name="打开全文精读")).to_be_visible()
+        synthesis = context.new_page()
+        synthesis.goto(f"{frontend}/synthesis")
+        synthesis.get_by_role("button", name="更换对比论文", exact=True).click()
+        checkbox = synthesis.locator(".selectionList label").filter(has_text=target["title"]).get_by_role("checkbox")
+        expect(checkbox).to_be_checked()
+        peer_reader = context.new_page()
+        peer_reader.goto(f"{frontend}/read?paper={paper_id}")
+        expect(peer_reader.get_by_role("heading", name=target["title"], exact=True)).to_be_visible()
+
+        reader = context.new_page()
+        reader.on("dialog", lambda dialog: dialog.accept())
+        reader.goto(f"{frontend}/read?paper={paper_id}")
+        reader.get_by_role("button", name="重新识别当前 PDF", exact=True).click()
+        expect(discover.get_by_role("link", name="查看解析进度")).to_be_visible()
+        expect(synthesis.get_by_text(f"{target['title']} · PDF 正在解析", exact=True)).to_be_visible()
+        expect(peer_reader.get_by_text("PDF 正在解析。", exact=False)).to_be_visible()
+
+        if viewport:
+            reader.get_by_role("button", name="展开论文库", exact=True).click()
+        reader.get_by_role("button", name=f"删除 {target['title']}", exact=True).click()
+        expect(discover.locator(".workCard").get_by_text("尚无全文", exact=True)).to_be_visible()
+        expect(discover.get_by_role("link", name="查看解析进度")).to_have_count(0)
+        expect(peer_reader.get_by_text("这篇论文已从论文库移除。", exact=True)).to_be_visible()
+        expect(synthesis.get_by_text(f"{target['title']} · PDF 正在解析", exact=True)).to_have_count(0)
+        expect(synthesis.get_by_role("heading", name=re.compile("^选择论文"))).to_contain_text(
+            f"{len(workspace['selected_paper_ids'])} / 5"
+        )
+
+
 def pending_pdf_selection(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     assert context.request.get(f"{backend}/api/session").ok
@@ -1860,6 +1929,7 @@ if __name__ == "__main__":
             pdf_search_recovery(browser, args.frontend, args.backend)
             compact_reading(browser, args.frontend, args.backend)
             shared_selection(browser, args.frontend, args.backend)
+            cross_tab_paper_library(browser, args.frontend, args.backend)
             pending_pdf_selection(browser, args.frontend, args.backend)
             reader_reparse(browser, args.frontend, args.backend)
             reader_reparse_recovery(browser, args.frontend, args.backend)

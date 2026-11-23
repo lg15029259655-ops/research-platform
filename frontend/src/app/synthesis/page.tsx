@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
 import JobResultNotice from "@/components/jobs/JobResultNotice";
 import { ApiError, apiJson } from "@/lib/api";
-import { hasParsedPdf, isPdfParsing, paperLibraryIssue, readPaperLibrary, type PaperSummary } from "@/lib/paper-library";
+import { hasParsedPdf, isPdfParsing, paperLibraryIssue, readPaperLibrary, subscribeToPaperLibrary, type PaperSummary } from "@/lib/paper-library";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
 import { setPaperInSynthesis, updateWorkspace, useWorkspace, WorkspaceSaveUnconfirmed } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
@@ -72,8 +72,9 @@ export default function SynthesisPage() {
   }
   const resultTabs = tabGroup(["matrix", "evidence", "gaps"] as const, tab, setTab);
   useEffect(() => () => { handoff.current?.abort(); }, []);
-  const loadPapers = useCallback(() => {
-    if (libraryRead.current) return libraryRead.current.promise;
+  const loadPapers = useCallback((invalidate = false) => {
+    if (libraryRead.current && !invalidate) return libraryRead.current.promise;
+    libraryRead.current?.controller.abort();
     const controller = new AbortController();
     setLibraryLoading(true);
     const promise = readPaperLibrary(controller.signal).then((next) => {
@@ -94,12 +95,17 @@ export default function SynthesisPage() {
     const refreshLibrary = () => void loadPapers();
     refreshLibrary();
     window.addEventListener("focus", refreshLibrary);
+    const unsubscribe = subscribeToPaperLibrary(({ removed }) => {
+      void loadPapers(true);
+      if (removed) void refresh(true).catch(() => {});
+    });
     return () => {
+      unsubscribe?.();
       window.removeEventListener("focus", refreshLibrary);
       libraryRead.current?.controller.abort();
       libraryRead.current = null;
     };
-  }, [loadPapers]);
+  }, [loadPapers, refresh]);
   const artifactId = sourceArtifact || workspace?.synthesis_id;
   const views = savedViews?.id === artifactId ? savedViews?.views : undefined;
   const activeView = views?.[tab];

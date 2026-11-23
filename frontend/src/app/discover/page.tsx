@@ -7,7 +7,7 @@ import { ChangeEvent, useEffect, useRef, useState } from "react";
 import StepLoading from "@/components/StepLoading";
 import type { LineageResponse } from "@/components/lineage/lineageLayout";
 import { ApiError, apiJson, postJson } from "@/lib/api";
-import { hasParsedPdf, isPdfParsing, paperLibraryIssue, readPaperLibrary } from "@/lib/paper-library";
+import { hasParsedPdf, isPdfParsing, notifyPaperLibraryChange, paperLibraryIssue, readPaperLibrary, subscribeToPaperLibrary } from "@/lib/paper-library";
 import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import { tabGroup } from "@/lib/tabs";
@@ -58,6 +58,7 @@ export default function DiscoverPage() {
   const [saved, setSaved] = useState<Paper[]>([]);
   const [libraryStatus, setLibraryStatus] = useState<"loading" | "ready" | "error">("loading");
   const [libraryAttempt, setLibraryAttempt] = useState(0);
+  const libraryWrites = useRef<Map<string, Paper> | null>(null);
   const viewKey = resultQuery ? discoveryViewKey(resultQuery, result) : null;
   const [discoveryView, setDiscoveryView] = useTabDraft<DiscoveryView>(viewKey);
   const tab = discoveryView?.tab ?? "list";
@@ -117,18 +118,26 @@ export default function DiscoverPage() {
   }, []);
   useEffect(() => {
     const controller = new AbortController();
-    setLibraryStatus("loading");
+    const writes = new Map<string, Paper>();
+    libraryWrites.current = writes;
     readPaperLibrary(controller.signal).then((items) => {
       if (controller.signal.aborted) return;
-      const received = new Set(items.map((item) => item.id));
-      // An import can succeed while this library snapshot is in flight.
-      setSaved((current) => [...items, ...current.filter((item) => !received.has(item.id))]);
+      setSaved([...items.filter((item) => !writes.has(item.id)), ...writes.values()]);
       setLibraryStatus("ready");
     }).catch(() => {
       if (!controller.signal.aborted) setLibraryStatus("error");
+    }).finally(() => {
+      if (libraryWrites.current === writes) libraryWrites.current = null;
     });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (libraryWrites.current === writes) libraryWrites.current = null;
+    };
   }, [libraryAttempt]);
+  useEffect(() => subscribeToPaperLibrary(({ removed }) => {
+    setLibraryAttempt((attempt) => attempt + 1);
+    if (removed) void refresh(true).catch(() => {});
+  }), [refresh]);
   useEffect(() => {
     if ((!urlQuery && !workspace && !workspaceError) || initializedEntry.current === urlQuery) return;
     initializedEntry.current = urlQuery;
@@ -317,11 +326,17 @@ export default function DiscoverPage() {
     return "OpenAlex 标记的相关研究；具体研究重合点需查看摘要或原文。";
   }
 
+  function rememberPaper(paper: Paper) {
+    libraryWrites.current?.set(paper.id, paper);
+    setSaved((prior) => [...prior.filter((item) => item.id !== paper.id), paper]);
+  }
+
   async function save(work: Work): Promise<Paper> {
     const existing = saved.find((item) => item.openalex_id === work.openalex_id);
     if (existing) return existing;
     const paper = await postJson<Paper>("/api/research/import", { openalex_id: work.openalex_id });
-    setSaved((prior) => [...prior.filter((item) => item.id !== paper.id), paper]);
+    rememberPaper(paper);
+    notifyPaperLibraryChange(paper.id);
     return paper;
   }
 
@@ -367,6 +382,7 @@ export default function DiscoverPage() {
         if (active.current) await checkAttachment(paper);
         return;
       }
+      notifyPaperLibraryChange(paper.id);
       openReader(paper.id);
     } catch (e) { if (active.current) setError(e instanceof Error ? e.message : "上传失败"); }
     finally { if (active.current) setBusy(false); }
@@ -380,7 +396,8 @@ export default function DiscoverPage() {
       });
       if (!active.current) return;
       if (status === "parsed" || isPdfParsing(status) || (status === "failed" && paper.status !== "failed")) {
-        setSaved((current) => current.map((item) => item.id === paper.id ? { ...item, status } : item));
+        rememberPaper({ ...paper, status });
+        notifyPaperLibraryChange(paper.id);
         setUnconfirmedAttachment(null);
         openReader(paper.id);
         return;
@@ -404,7 +421,8 @@ export default function DiscoverPage() {
     setBusy(true); setBusyLabel("正在获取开放 PDF"); setError("");
     try {
       const result = await postJson<Paper>("/api/research/import-pdf", { openalex_id: work.openalex_id });
-      setSaved((items) => [...items.filter((item) => item.id !== result.id), result]);
+      rememberPaper(result);
+      notifyPaperLibraryChange(result.id);
       openReader(result.id);
     } catch (e) { setError(e instanceof Error ? e.message : "开放 PDF 暂时不可用，请手动上传"); }
     finally { setBusy(false); }
