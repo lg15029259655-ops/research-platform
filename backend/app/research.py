@@ -517,7 +517,7 @@ async def execute_compare(owner: str, paper_ids: list[str], *, emit=None, timeou
                     "section": source["heading"], "page": precise_page,
                     "page_start": page_start, "page_end": page_end,
                     "snippet": quote[:500] if quote_verified else source_text[:260],
-                    "quote_verified": quote_verified}
+                    "quote_verified": quote_verified, "file_version": expected[ref["paper_id"]][1]}
                 verified_refs.append(verified)
                 if quote_verified and source["kind"] in {"RESULTS", "DISCUSSION", "CONCLUSION"}:
                     direct_refs.append(verified)

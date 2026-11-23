@@ -774,6 +774,50 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     context.close()
 
 
+def evidence_source_navigation(browser, frontend, backend):
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    assert context.request.get(f"{backend}/api/session").ok
+    workspace = context.request.get(f"{backend}/api/workspace").json()
+    paper_id = workspace["core_paper_id"]
+    paper = context.request.get(f"{backend}/api/papers/{paper_id}").json()
+    starting_page = next((unit["page_start"] for unit in paper["units"] if unit["id"] == paper["current_unit_id"]), 1) or 1
+    target = 2 if starting_page != 2 else 1
+    assert paper["page_count"] >= 2
+    view_url = f"{backend}/api/research/comparisons/{workspace['synthesis_id']}?view=evidence"
+    result = context.request.get(view_url).json()
+    reference = {"paper_id": paper_id, "unit_id": "fixture", "section": "Results",
+                 "page": target, "page_start": target, "page_end": target, "snippet": "Example citation.",
+                 "quote_verified": True, "file_version": paper["file_version"]}
+    result["payload"]["controversies"] = [{
+        "claim": "Evidence navigation check", "reason": "Compare source versions", "stance": "SUPPORTS",
+        "paper_ids": [paper_id], "evidence_refs": [reference, {**reference, "page": None, "page_end": target + 1}],
+    }]
+    context.route(view_url, lambda route: route.fulfill(json=result))
+    page.goto(f"{frontend}/synthesis?view=evidence")
+    page.get_by_role("button", name=re.compile("Evidence navigation check")).click()
+    expect(page.get_by_role("link", name=f"从第 {target} 页开始核对 ↗")).to_be_visible()
+    link = page.get_by_role("link", name=f"打开原文第 {target} 页 ↗")
+    params = parse_qs(urlsplit(link.get_attribute("href")).query)
+    assert params["source_file"] == [paper["file_version"]]
+    link.click()
+    page_number = page.locator(".pageTools span").first
+    expect(page_number).to_have_text(re.compile(rf"^{target} /"))
+    expect(page.locator(".pdfCanvas canvas")).to_be_visible()
+    stale = urlencode({"paper": paper_id, "page": target, "source_file": "old-pdf-version"})
+    page.goto(f"{frontend}/read?{stale}")
+    expect(page.get_by_role("status").filter(has_text="旧引用的页码与当前 PDF 无法确认对应")).to_be_visible()
+    expect(page_number).to_have_text(re.compile(rf"^{starting_page} /"))
+    page.get_by_role("button", name="按当前 PDF 继续").click()
+    expect(page.get_by_role("status").filter(has_text="旧引用的页码与当前 PDF 无法确认对应")).to_have_count(0)
+    assert "source_file" not in parse_qs(urlsplit(page.url).query)
+    invalid = urlencode({"paper": paper_id, "page": paper["page_count"] + 1})
+    page.goto(f"{frontend}/read?{invalid}")
+    expect(page.get_by_role("status").filter(has_text="页码不在这份 PDF 内")).to_be_visible()
+    expect(page_number).to_have_text(re.compile(rf"^{starting_page} /"))
+    context.close()
+
+
 def synthesis_view_loading(browser, frontend, backend):
     context = browser.new_context(viewport={"width": 390, "height": 844})
     page = context.new_page()
@@ -852,6 +896,7 @@ if __name__ == "__main__":
             reader_reparse(browser, args.frontend, args.backend)
             discovery_relation_race(browser, args.frontend, args.backend)
             synthesis_view_loading(browser, args.frontend, args.backend)
+            evidence_source_navigation(browser, args.frontend, args.backend)
         finally:
             browser.close()
     print("MedRead navigation smoke passed")

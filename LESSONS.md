@@ -602,3 +602,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the PDF response supplied validators but always sent the body. The browser also could not read range metadata from a separate frontend origin.
 - Action: authorize before checking the private PDF validator. Return 304 for unchanged bytes, vary the browser cache by session cookie, and expose range metadata to the configured frontend origin. Bind the reader URL to the file fingerprint so replacing a PDF reloads it while reparsing unchanged bytes preserves the address.
 - Verification: a Chrome network trace observed a first 200 response, a 304 on reopen, and a cross-origin 206 response with the expected byte range. Backend tests verify ownership and missing-file checks before a 304, unchanged addresses on reparse, and fresh bytes and validators after an allowed replacement. The production build, source preflight, 149 backend tests and 13 frontend tests passed.
+
+## L-20261123-22 — Bind evidence page links to their source PDF
+
+- Evidence: evidence links used a bare page number. After a PDF replacement the old link could jump to an unrelated page. A page range also used the same action label as an exact page.
+- Action: save the source file fingerprint on new comparison citations, and validate it in the reader before jumping. Distinguish exact pages from the start of a range. Open the current reading position when the linked page is invalid or an older citation has no available matching source.
+- Verification: Chrome at 390px followed an exact link, checked the range label, and confirmed that a mismatched fingerprint and a page outside the current PDF both kept the saved reading position. Backend tests verify the exact persisted citation fingerprint. The production build, source preflight, 149 backend tests and 13 frontend tests passed.

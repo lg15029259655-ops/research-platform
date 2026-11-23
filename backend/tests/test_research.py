@@ -1033,6 +1033,7 @@ def test_comparison_requires_direct_result_refs_for_stance(monkeypatch, tmp_path
             assert support["evidence_refs"][0]["page"] is None
             assert support["evidence_refs"][0]["page_start"] == 1
             assert support["evidence_refs"][0]["page_end"] == 2
+            assert support["evidence_refs"][0]["file_version"] == client.get(f"/api/papers/{ids[0]}").json()["file_version"]
             assert inconsistent["stance"] == "INSUFFICIENT"
             assert "不能列为结果不一致" in inconsistent["reason"]
             assert fabricated["stance"] == "INSUFFICIENT"

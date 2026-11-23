@@ -4,15 +4,28 @@ import Link from "next/link";
 import { useState } from "react";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
 
-type Ref = { paper_id: string; unit_id: string; section: string; page: number | null; page_start?: number | null; page_end?: number | null; snippet: string; quote_verified?: boolean };
+type Ref = { paper_id: string; unit_id: string; section: string; page: number | null; page_start?: number | null; page_end?: number | null; snippet: string; quote_verified?: boolean; file_version?: string | null };
 export type Claim = { claim: string; paper_ids: string[]; stance: "SUPPORTS" | "REFUTES" | "INSUFFICIENT";
   reason: string; evidence_refs?: Ref[] };
 type Paper = { paper_id: string; title: string };
 const columns = [["SUPPORTS", "支持", "现有证据支持"], ["REFUTES", "结果不一致", "存在相反或不一致的结果"],
   ["INSUFFICIENT", "证据不足", "当前资料不足以判断"]] as const;
 
-export default function EvidenceMap({ claims, papers, onReviseSelection }: {
-  claims: Claim[]; papers: Paper[]; onReviseSelection?: () => void;
+function sourceLink(ref: Ref, stale: boolean) {
+  const params = new URLSearchParams({ paper: ref.paper_id });
+  const page = ref.page || ref.page_start;
+  if (ref.file_version) params.set("source_file", ref.file_version);
+  if (stale && !ref.file_version) {
+    params.set("source_file", "unknown");
+    return { href: `/read?${params}`, label: "打开当前 PDF 核对" };
+  }
+  if (page) params.set("page", String(page));
+  const label = ref.page ? `打开原文第 ${ref.page} 页` : page ? `从第 ${page} 页开始核对` : "打开 PDF 核对";
+  return { href: `/read?${params}`, label };
+}
+
+export default function EvidenceMap({ claims, papers, onReviseSelection, stale = false }: {
+  claims: Claim[]; papers: Paper[]; onReviseSelection?: () => void; stale?: boolean;
 }) {
   const [selected, setSelected] = useState<Claim | null>(null);
   const visibleClaims = claims;
@@ -36,7 +49,15 @@ export default function EvidenceMap({ claims, papers, onReviseSelection }: {
       <div>{visibleClaims.filter((item) => item.stance === key).map((item, index) => <button key={index} className="evidenceNode" onClick={() => setSelected(item)}><strong>{item.claim}</strong><span>{item.paper_ids.map(title).join(" · ")}</span></button>)}
       {!visibleClaims.some((item) => item.stance === key) && <p className="emptyLane">{emptyMessage[key as keyof typeof emptyMessage]}</p>}</div></section>)}</div>}
     {selected && <EvidenceDrawer title={selected.claim} eyebrow="证据关系" onClose={() => setSelected(null)}><p>{selected.reason}</p><dl><dt>状态</dt><dd>{columns.find((row) => row[0] === selected.stance)?.[1]}</dd><dt>涉及论文</dt><dd>{selected.paper_ids.map(title).join("；")}</dd></dl>
-      {selected.evidence_refs?.length ? selected.evidence_refs.map((ref, index) => <div className="evidenceCitation" key={index}><strong>{title(ref.paper_id)}</strong><small>{ref.section} · {ref.page ? `PDF ${ref.page} 页` : ref.page_start && ref.page_end ? `PDF ${ref.page_start}–${ref.page_end} 页范围，具体页待核对` : "页码待核对"}</small><p>{ref.quote_verified ? "匹配到的原文（支持关系仍需核对）" : "单元开头（未核对为该命题的依据）"}：{ref.snippet}</p><Link href={`/read?paper=${ref.paper_id}${ref.page || ref.page_start ? `&page=${ref.page || ref.page_start}` : ""}`}>查看原文 ↗</Link></div>) : <p className="miniNotice">未定位到具体原文位置；当前为 AI 对已提供论文片段的解释，需核对原文。</p>}
+      {selected.evidence_refs?.length ? selected.evidence_refs.map((ref, index) => {
+        const { href, label } = sourceLink(ref, stale);
+        return <div className="evidenceCitation" key={index}>
+          <strong>{title(ref.paper_id)}</strong>
+          <small>{ref.section} · {ref.page ? `PDF ${ref.page} 页` : ref.page_start && ref.page_end ? `PDF ${ref.page_start}–${ref.page_end} 页范围，具体页待核对` : "页码待核对"}</small>
+          <p>{ref.quote_verified ? "匹配到的原文（支持关系仍需核对）" : "单元开头（未核对为该命题的依据）"}：{ref.snippet}</p>
+          <Link href={href}>{label} ↗</Link>
+        </div>;
+      }) : <p className="miniNotice">未定位到具体原文位置；当前为 AI 对已提供论文片段的解释，需核对原文。</p>}
     </EvidenceDrawer>}
   </div>;
 }

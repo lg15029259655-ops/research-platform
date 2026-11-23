@@ -83,7 +83,9 @@ function reconcileChatTurns(paper: Paper) {
 export default function ReadPage() {
   const searchParams = useSearchParams();
   const paperParam = searchParams.get("paper");
-  const requestedPage = Number(searchParams.get("page"));
+  const linkPage = searchParams.get("page");
+  const requestedPage = Number(linkPage);
+  const sourceFile = searchParams.get("source_file");
   const { workspace, workspaceError, refresh } = useWorkspace();
   const selectedId = paperParam ?? workspace?.core_paper_id ?? null;
   const [ready, setReady] = useState(false);
@@ -91,6 +93,10 @@ export default function ReadPage() {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [record, setPaper] = useState<Paper | null>(null);
   const paper = record?.id === selectedId ? record : null;
+  const sourceChanged = !!paper?.file_available && !!sourceFile && sourceFile !== paper.file_version;
+  const validLinkPage = !!paper?.file_available && Number.isInteger(requestedPage)
+    && requestedPage > 0 && requestedPage <= (paper.page_count || 0);
+  const invalidLinkPage = !!paper?.file_available && linkPage !== null && !validLinkPage;
   const [openingPaper, setOpeningPaper] = useState(false);
   const [savedQuestion, setDraft] = useTabDraft<string>(paper ? questionDraftKey(paper.id) : null);
   const draft = typeof savedQuestion === "string" ? savedQuestion : "";
@@ -227,9 +233,8 @@ export default function ReadPage() {
   }, [selectedId, loadPaper]);
 
   useEffect(() => {
-    if (!paper || paper.id !== selectedId || !requestedPage) return;
-    if (Number.isInteger(requestedPage) && requestedPage <= (paper.page_count || 0) && requestedPage > 0) setPage(requestedPage);
-  }, [selectedId, requestedPage, paper?.id, paper?.page_count]);
+    if (paper?.id && validLinkPage && !sourceChanged) setPage(requestedPage);
+  }, [paper?.id, requestedPage, validLinkPage, sourceChanged]);
 
   // 组件卸载（跳到别的页面）时取消后台任务，避免服务端为一个没人看的任务继续花钱。
   useEffect(() => {
@@ -548,6 +553,7 @@ export default function ReadPage() {
     setPage(next);
     const params = new URLSearchParams(window.location.search);
     params.set("page", String(next));
+    params.delete("source_file");
     window.history.replaceState(null, "", `/read?${params}`);
   }
 
@@ -656,6 +662,8 @@ export default function ReadPage() {
         onCancel={stopChat} />
       {(parseStage || parseProgress) && paper && <div className="parseNotice" role="status">{parseStage || parseProgress}</div>}
       {paper?.warning && <div className="alert" role="status">{paper.warning}</div>}
+      {sourceChanged && <div className="alert" role="status">旧引用的页码与当前 PDF 无法确认对应。已打开当前 PDF，请重新核对原文。 <button type="button" className="quietButton" onClick={() => changePdfPage(page)}>按当前 PDF 继续</button></div>}
+      {!sourceChanged && invalidLinkPage && <div className="alert" role="status">链接中的页码不在这份 PDF 内。已打开当前阅读位置。 <button type="button" className="quietButton" onClick={() => changePdfPage(page)}>继续阅读</button></div>}
       {needsReplacement && <div className="alert" role="status">{paper.source_matches === false ? "当前 PDF 与保存的阅读内容无法确认对应，已暂停全文分析。可重新识别当前文件，或上传原文件。" : "当前 PDF 文件无法读取或重新识别失败。重新上传后会保留旧精读记录和综合结果，请核对其与原文的对应关系。"}{paper.source_matches === false && <button type="button" onClick={reparse} disabled={pending} className="quietButton">重新识别当前 PDF</button>}<label className="quietButton" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>重新上传 PDF<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label></div>}
       {needsReparse && <div className="alert" role="status">这篇 PDF 的标题或章节可能识别错误，会影响 AI 讲解与文献对比。<button type="button" onClick={reparse} disabled={pending} aria-busy={pending} className="quietButton">重新识别当前 PDF</button></div>}
       {readerLoading && !parseStage ? <div className="welcome" role="status" aria-busy="true"><h2>正在打开论文…</h2></div> : !paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || (openingPaper ? "正在打开论文…" : "让阅读从原文开始")}</h2><p>上传 PDF 后，可查看原文并按阅读单元逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending || !ready} hidden /></label></div> : paper.status !== "parsed" ?
