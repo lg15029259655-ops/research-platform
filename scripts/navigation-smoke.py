@@ -273,8 +273,8 @@ def reload_before_upload_confirmation(browser, frontend, backend):
     context.close()
 
 
-def stage_experiment_draft(browser, frontend, backend):
-    context = browser.new_context(viewport={"width": 390, "height": 844})
+def stage_experiment_draft(browser, frontend, backend, *, viewport=None):
+    context = browser.new_context(viewport=viewport or {"width": 390, "height": 844})
     assert context.request.get(f"{backend}/api/session").ok
     workspace_url = f"{backend}/api/workspace"
     base_id = context.request.get(workspace_url).json()["design_version_id"]
@@ -284,12 +284,26 @@ def stage_experiment_draft(browser, frontend, backend):
     page.goto(f"{frontend}/design?view=canvas")
     version_label = page.locator(".versionBar strong").inner_text()
     stages = page.locator(".er-stage-main")
+    page.emulate_media(reduced_motion="reduce")
+    preview = page.locator(".er-preview-item").first
+    group_id = preview.evaluate("(button) => button.closest('.er-stage-group').id")
+    preview_stage = page.locator(f"[id={json.dumps(group_id)}] .er-stage-main")
+    preview.focus()
+    preview.press("Enter")
+    expect(preview_stage).to_be_focused()
+    expect(preview_stage).to_have_attribute("aria-expanded", "true")
+    preview_stage.press("Enter")
+    expect(preview_stage).to_have_attribute("aria-expanded", "false")
+
     stages.first.click()
     details = page.locator(".er-detail")
-    details.get_by_role("button", name="添加实验").click()
+    add = details.get_by_role("button", name="添加实验")
+    add.focus()
+    add.press("Enter")
     form = page.locator(".er-add")
     name = form.get_by_label("实验名称", exact=True)
     purpose = form.get_by_label("目的", exact=True)
+    expect(name).to_be_focused()
     name.fill("Check saved input")
     purpose.fill("Confirm the draft survives a source check")
     stages.nth(1).click()
