@@ -651,6 +651,22 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     assert changed["query"] == newer and changed["selected_paper_ids"] == []
     archived = context.request.get(f"{backend}/api/research/artifacts?artifact_id={original['synthesis_id']}").json()
     assert archived and archived[0]["id"] == original["synthesis_id"]
+    history_url = f"{backend}/api/research/comparisons"
+    context.route(history_url, lambda route: route.fulfill(status=503, json={}), times=1)
+    page.locator(".researchNav nav").get_by_role("link", name="文献综合").click()
+    page.get_by_text("综合历史", exact=True).click()
+    page.get_by_role("button", name="重试读取历史").click()
+    history = page.locator(".synthesisHistory")
+    saved_result = history.locator(f'a[href="/synthesis?artifact={original["synthesis_id"]}"]')
+    expect(saved_result).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
+    saved_result.click()
+    expect(page.locator(".synthesisResult")).to_be_focused()
+    expect(page.locator(".comparePaper").first).to_be_visible()
+    expect(saved_result).to_have_attribute("aria-current", "page")
+    assert context.request.get(workspace_url).json() == changed
+    page.get_by_role("link", name="返回当前综合").click()
+    expect(page.locator(".synthesisResult")).to_have_count(0)
     context.close()
 
 

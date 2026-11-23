@@ -9,10 +9,10 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import func, select, tuple_, update
 
 from .auth import current_owner
 from .db import SessionLocal
@@ -942,6 +942,32 @@ def restore_design_version(version_id: str, owner: str = Owner):
         workspace.design_version_id = artifact.id
         db.commit()
         return version_data(version, artifact)
+
+
+@router.get("/comparisons")
+def comparison_history(before: str | None = Query(default=None, max_length=36), owner: str = Owner):
+    artifact = ResearchArtifact
+    scope = (artifact.owner_id == owner, artifact.kind == "paper_compare")
+    page_size = 12
+    with SessionLocal() as db:
+        query = select(
+            artifact.id, artifact.created_at, artifact.paper_ids_json,
+            func.json_extract(artifact.payload_json, "$.papers").label("papers"),
+        ).where(*scope)
+        if before:
+            cursor = db.execute(select(artifact.created_at, artifact.id).where(*scope, artifact.id == before)).one_or_none()
+            if cursor is None:
+                raise HTTPException(404, "该位置的综合历史不可用")
+            query = query.where(tuple_(artifact.created_at, artifact.id) < tuple_(cursor.created_at, cursor.id))
+        rows = db.execute(query.order_by(artifact.created_at.desc(), artifact.id.desc()).limit(page_size + 1)).all()
+        items = []
+        for row in rows[:page_size]:
+            titles = [paper["title"] for paper in json.loads(row.papers or "[]") if paper.get("title")]
+            items.append({
+                "id": row.id, "created_at": row.created_at.replace(tzinfo=timezone.utc).isoformat(),
+                "paper_count": len(json.loads(row.paper_ids_json)), "titles": titles,
+            })
+        return {"items": items, "next_before": items[-1]["id"] if len(rows) > page_size else None}
 
 
 @router.get("/artifacts")

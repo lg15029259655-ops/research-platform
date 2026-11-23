@@ -825,6 +825,46 @@ def test_artifact_pointer_outside_list_window_stays_reachable():
             clean(a)
 
 
+def test_comparison_history_paginates_summaries_with_stable_order_and_owner_scope():
+    import json
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    from app.models import ResearchArtifact
+
+    with TestClient(app) as owner_client, TestClient(app) as other_client:
+        try:
+            owner_client.get("/api/session")
+            other_client.get("/api/session")
+            same_time = datetime(2026, 10, 1, tzinfo=timezone.utc)
+            with SessionLocal() as db:
+                owner = db.scalar(select(User.id).where(User.session_hash == session_hash(owner_client.cookies.get(COOKIE_NAME))))
+                other = db.scalar(select(User.id).where(User.session_hash == session_hash(other_client.cookies.get(COOKIE_NAME))))
+                records = [(str(uuid4()), owner, "paper_compare") for _ in range(13)]
+                foreign_id = str(uuid4())
+                for artifact_id, user_id, kind in [*records, (foreign_id, other, "paper_compare"), (str(uuid4()), owner, "experiment_design")]:
+                    db.add(ResearchArtifact(
+                        id=artifact_id, owner_id=user_id, kind=kind, created_at=same_time,
+                        paper_ids_json=json.dumps(["paper-one", "paper-two"]),
+                        payload_json=json.dumps({"papers": [{"title": "Saved paper"}], "consensus": ["Full result"]}),
+                    ))
+                db.commit()
+            path = "/api/research/comparisons"
+            first = owner_client.get(path).json()
+            assert len(first["items"]) == 12
+            assert first["items"][0].keys() == {"id", "created_at", "paper_count", "titles"}
+            assert first["items"][0]["paper_count"] == 2 and first["items"][0]["titles"] == ["Saved paper"]
+            second = owner_client.get(path, params={"before": first["next_before"]}).json()
+            assert second["next_before"] is None
+            assert [item["id"] for item in first["items"] + second["items"]] == sorted(
+                (record[0] for record in records), reverse=True,
+            )
+            assert owner_client.get(path, params={"before": foreign_id}).status_code == 404
+            assert [item["id"] for item in other_client.get(path).json()["items"]] == [foreign_id]
+        finally:
+            clean(owner_client)
+            clean(other_client)
+
+
 def test_design_version_pointer_outside_list_window_stays_reachable():
     """当前工作区指向较早的设计版本时，前端仍能按 artifact_id 还原画布。"""
     import json

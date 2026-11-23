@@ -541,3 +541,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: loading search results, including following a search link or finding no matches, also changed the active topic and could reset the comparison basket, central paper and design pointers.
 - Action: keep the search query and results independent of the active workspace. Offer an explicit topic change with confirmation for an existing topic. Check the confirmed workspace timestamp within the write transaction. Require the active topic to match when assigning a central paper from discovery.
 - Verification: Chrome at 390px exercised browsing, canceling a topic change, rejecting an outdated confirmation and retrying against the latest workspace. Check the actual active topic after the response, since the confirmation itself contains the new topic's text. The browser also verified the previous synthesis artifact remained accessible by its ID. Backend 145 tests, frontend 13 tests, local production build and source preflight passed.
+
+## L-20261123-12 — Make saved comparisons reachable from the workbench
+
+- Evidence: switching topics removed the active comparison pointer, and saved comparisons could only be reopened with a known artifact URL. Historical views could also be replaced when another comparison finished.
+- Action: offer an on-demand list of comparison summaries with owner-scoped cursor pagination. Open a specific comparison by ID, keep the current workspace unchanged while browsing, and keep the historical view anchored while background work completes.
+- Verification: the backend regression checks summaries, ownership and complete pagination across equal timestamps. Chrome switches topics, injects a history request failure, retries, reopens the previous comparison, checks focus and returns to the current workspace. The flow also passes at 390px. Backend 146 tests, frontend 13 tests, local production build and source preflight passed.

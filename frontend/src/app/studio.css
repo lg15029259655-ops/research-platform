@@ -483,6 +483,12 @@ body { background: var(--c-bg); color: var(--c-text); }
 }
 @keyframes showNavPending { to { opacity: 1; } }
 .workspaceLoading { color: var(--c-text-mid); font-size: 14px; padding-block: 12px; }
+.sectionBox.synthesisHistory { padding-block: 0; }
+.synthesisHistory > summary { padding-block: 12px; cursor: pointer; font-weight: 650; }
+.synthesisHistory[open] { padding-bottom: 12px; }
+.synthesisHistory ul { margin: 0; padding: 0; list-style: none; }
+.synthesisHistory li { border-top: 1px solid var(--c-line); overflow-wrap: anywhere; }
+.synthesisHistory li small { color: var(--c-text-mid); }
 .routeLoading { width: 100%; }
 .readerShell { height: 100dvh; }
 

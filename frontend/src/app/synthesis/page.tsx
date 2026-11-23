@@ -11,6 +11,7 @@ import { tabGroup } from "@/lib/tabs";
 import EvidenceMap, { type Claim } from "@/components/EvidenceMap";
 import GapPath from "@/components/GapPath";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
+import SynthesisHistory from "@/components/SynthesisHistory";
 
 type Paper = { id: string; title: string; status: string; domain: string | null; year: number | null; warning?: string | null };
 type Cell = { paper_id: string; value: string; source: string };
@@ -29,7 +30,7 @@ export default function SynthesisPage() {
   const [libraryError, setLibraryError] = useState(false);
   const [pendingChoices, setPendingChoices] = useState<Record<string, boolean>>({});
   const [selectionError, setSelectionError] = useState("");
-  const [artifact, setArtifact] = useState<Artifact | null>(null);
+  const [loadedArtifact, setArtifact] = useState<Artifact | null>(null);
   const [artifactError, setArtifactError] = useState("");
   const [artifactAttempt, setArtifactAttempt] = useState(0);
   const [showSelection, setShowSelection] = useState(true);
@@ -63,9 +64,13 @@ export default function SynthesisPage() {
     return () => controller.abort();
   }, []);
   const artifactId = sourceArtifact || workspace?.synthesis_id;
+  const artifact = loadedArtifact?.id === artifactId ? loadedArtifact : null;
+  useEffect(() => {
+    setSelectedCell(null);
+    setActiveDimension(0);
+  }, [artifactId]);
   useEffect(() => {
     setArtifactError("");
-    if (sourceArtifact) setArtifact((current) => current?.id === sourceArtifact ? current : null);
     if (!artifactId) { if (workspace) setArtifact(null); return; }
     const controller = new AbortController();
     apiJson<Artifact[]>(`/api/research/artifacts?kind=paper_compare&artifact_id=${artifactId}`, { signal: controller.signal })
@@ -77,7 +82,7 @@ export default function SynthesisPage() {
       })
       .catch(() => { if (!controller.signal.aborted) setArtifactError("暂时无法读取已保存的综合结果"); });
     return () => controller.abort();
-  }, [artifactId, !!workspace, artifactAttempt, sourceArtifact]);
+  }, [artifactId, !!workspace, artifactAttempt]);
   const fulltext = (papers || []).filter((paper) => paper.status === "parsed");
   const savedSelection = workspace?.selected_paper_ids ?? [];
   const missingPapers = papers ? savedSelection.filter((id) => !papers.some((paper) => paper.id === id)).join(",") : "";
@@ -107,11 +112,12 @@ export default function SynthesisPage() {
   }
   function compare() {
     if (busy || savingSelection || selected.length < 2) return;
-    if (artifact && !artifact.payload.stale_after_reparse && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
+    if (!sourceArtifact && artifact && !artifact.payload.stale_after_reparse && artifact.paper_ids.slice().sort().join("|") === selected.slice().sort().join("|")) {
       setShowSelection(false); setTab("matrix"); resultRef.current?.scrollIntoView({block: "start"}); return;
     }
     setError("");
     setTaskCanceled(false);
+    if (sourceArtifact) window.history.replaceState(null, "", "/synthesis");
     void start("compare", { paper_ids: selected });
   }
   useEffect(() => {
@@ -130,6 +136,7 @@ export default function SynthesisPage() {
         setError("后台综合已完成，当前工作区已切换到其他内容。");
         return;
       }
+      if (new URLSearchParams(window.location.search).has("artifact")) return;
       focusNewResult.current = true;
       setArtifact(result); setActiveDimension(0); setShowSelection(false);
       window.history.replaceState(null, "", "/synthesis");
@@ -139,31 +146,33 @@ export default function SynthesisPage() {
     return () => { disposed = true; };
   }, [job, dismiss, refresh]);
   async function useQuestion(question: string) {
-    if (handoff.current) return;
+    if (handoff.current || !artifact) return;
     const controller = new AbortController();
     handoff.current = controller;
     setHandoffPending(true); setError("");
     try {
+      const current = workspace ?? await refresh();
       const sourceIds = artifact?.paper_ids || [];
-      const sameQuestion = workspace?.design_idea === question && workspace.gap_context.question === question
-        && workspace.gap_context.synthesis_id === artifact?.id;
+      const sameQuestion = current.design_idea === question && current.gap_context.question === question
+        && current.gap_context.synthesis_id === artifact.id;
       await updateWorkspace({research_gap: data?.gaps[0] || "", design_idea: question,
         ...(sameQuestion ? {} : { novelty_id: null, design_version_id: null }),
         gap_context: {consensus: data?.consensus || [], disagreements: data?.controversies || [],
-          paper_ids: sourceIds, synthesis_id: artifact?.id, question}});
+          paper_ids: sourceIds, synthesis_id: artifact.id, question}}, current.query);
       if (!controller.signal.aborted) router.push("/design");
     } catch (e) { setError(e instanceof Error ? e.message : "无法带入研究问题"); }
     finally { handoff.current = null; setHandoffPending(false); }
   }
   const data = artifact?.payload;
-  const selectionChanged = !!artifact && artifact.paper_ids.slice().sort().join("|") !== selected.slice().sort().join("|");
+  const selectionChanged = !sourceArtifact && !!artifact && artifact.paper_ids.slice().sort().join("|") !== selected.slice().sort().join("|");
   useEffect(() => { if (artifact?.id) setShowSelection(false); }, [artifact?.id]);
   useEffect(() => {
-    if (data && focusNewResult.current) {
+    if (data && (focusNewResult.current || sourceArtifact)) {
       focusNewResult.current = false;
+      if (sourceArtifact) resultRef.current?.focus({ preventScroll: true });
       resultRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
     }
-  }, [data]);
+  }, [data, sourceArtifact]);
   const label = (id: string) => papers?.find((paper) => paper.id === id)?.title || data?.papers.find((paper) => paper.paper_id === id)?.title || "论文";
   const libraryReady = !!papers && !!workspace;
   const loadingArtifact = !!artifactId && artifact?.id !== artifactId && !artifactError;
@@ -174,6 +183,8 @@ export default function SynthesisPage() {
   }
   return <main id="main" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">03 / SYNTHESIZE</div><h1>把多篇论文放在同一张证据桌上。</h1><p>选取 2–5 篇已有可解析 PDF 的论文，比较研究问题、方法、结论与证据边界。</p></div>
+    <SynthesisHistory currentId={workspace?.synthesis_id} viewingId={artifactId} />
+    {sourceArtifact && <p className="workspaceLoading">正在查看已保存的综合。 <Link className="inlineLink" href="/synthesis">返回当前综合</Link></p>}
     <section className="sectionBox" ref={selectionRef}><div className="selectionHeading"><h2>选择论文 <small> {selected.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
       {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇 PDF 提取的片段；不代表每篇都已完整解析。</p>}
       {showSelection && !libraryReady && <p className="workspaceLoading" role="status">{libraryError ? <button className="quietButton" onClick={() => void loadPapers()}>重试读取论文库</button> : (workspaceError && !workspace) ? "请先重试读取工作区" : "正在读取论文与已选列表…"}</p>}
@@ -210,7 +221,7 @@ export default function SynthesisPage() {
     <JobProgress variant="fixed" title="正在综合全文证据" stageLabel={job?.stage} progress={job?.progress} startedAt={busy ? job.startedAt : null} onCancel={cancel} cancelPending={job?.cancelPending} cancelError={job?.cancelError} reconnecting={job?.reconnecting} />
     {loadingArtifact && <p className="workspaceLoading" role="status">正在打开上次综合结果…</p>}
     {artifactError && <div className="researchError" role="alert">{artifactError} <button className="quietButton" onClick={() => setArtifactAttempt((count) => count + 1)}>重试</button></div>}
-    {data && <section className="sectionBox synthesisResult" ref={resultRef}><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
+    {data && <section className="sectionBox synthesisResult" ref={resultRef} tabIndex={-1} aria-label="综合结果"><div className="resultBar"><div><strong>综合结果</strong>{selectionChanged && <b className="resultVersion">上一次选择</b>}<span> · 根据上传 PDF 提取的文字生成，请与原文核对</span></div><div className="tabBar" {...resultTabs.list} aria-label="综合结果视图"><button {...resultTabs.item("matrix")}>论文对比</button><button {...resultTabs.item("evidence")}>证据关系</button><button {...resultTabs.item("gaps")}>研究空白</button></div></div>
       {data.extraction_warnings?.map((warning) => <p className="miniNotice" role="note" key={warning}>{warning}</p>)}
       {data.stale_after_reparse && <p className="miniNotice" role="note">部分论文已重新识别，当前为旧版综合结果，引用位置可能已变化，请重新综合并核对原文。</p>}
       {!data.extraction_warnings && artifact?.paper_ids.map((id) => papers?.find((paper) => paper.id === id)).filter((paper) => paper?.warning).map((paper) => <p className="miniNotice" role="note" key={paper!.id}>《{paper!.title}》：{paper!.warning} 请核对综合结果与原文。</p>)}
@@ -222,7 +233,7 @@ export default function SynthesisPage() {
         <div className="compareTakeaways"><section><span>SHARED SIGNAL</span><h3>共同点</h3><p>{displayFinding(data.consensus[0] || "当前资料尚未形成可核对的共同结论。")}</p>{data.consensus.length > 0 && <details><summary>查看全部 {data.consensus.length} 条</summary><ul>{data.consensus.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section><section><span>WHERE THEY DIFFER</span><h3>关键差异</h3><p>{displayFinding(data.differences[0] || "当前资料尚未形成可核对的差异结论。")}</p>{data.differences.length > 0 && <details><summary>查看全部 {data.differences.length} 条</summary><ul>{data.differences.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section></div>
       </>}
       {tab === "evidence" && <EvidenceMap claims={data.controversies} papers={data.papers} onReviseSelection={reviseSelection} />}
-      {tab === "gaps" && <GapPath data={data} onUseQuestion={useQuestion} handoffPending={handoffPending} />}
+      {tab === "gaps" && <GapPath key={artifactId} data={data} onUseQuestion={useQuestion} handoffPending={handoffPending} />}
     </section>}
     {selectedCell && <EvidenceDrawer title={selectedCell.dimension} eyebrow={label(selectedCell.cell.paper_id)} onClose={() => setSelectedCell(null)}><p>{selectedCell.cell.value || "未提取到证据"}</p><p className="miniNotice">此单元格是综合分析的概述，请核对原文；来源标记不能代替可点击的原文定位。</p>{selectedCell.cell.source && <dl><dt>来源标记</dt><dd>{selectedCell.cell.source}</dd></dl>}<Link className="drawerAction" href={`/read?paper=${selectedCell.cell.paper_id}`}>打开论文核对 ↗</Link></EvidenceDrawer>}
   </main>;
