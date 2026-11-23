@@ -632,3 +632,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the discovery page itself fit at 320px and 360px, while its horizontally scrolling selection tray placed the last remove button outside the visible area. An absolutely positioned touch target could also overlap the title.
 - Action: wrap the paper list and stack its rows on narrow screens. Give the title and remove button separate columns. Check individual control bounds in the browser alongside the page's overall width.
 - Verification: Chrome at 320, 360, 390, 480, 720 and 1440 CSS pixels kept each remove button within the viewport and separate from its title. At 320px the last remove action updated the saved selection, then the synthesis link opened its page. The full Chrome navigation smoke test, production build, source preflight, 150 backend tests and 13 frontend tests passed.
+
+## L-20261123-27 — Confirm workspace state when the design handoff loses its response
+
+- Evidence: a workspace PATCH without a deadline kept its button disabled and blocked later writes in the same tab's queue.
+- Action: bound each PATCH when it begins. After an unconfirmed save, read the workspace and continue to design only when the topic, question and source synthesis match. Keep the selected question and an actionable error near the button when the read cannot confirm the handoff.
+- Verification: Chrome held a PATCH before it reached the server and confirmed the existing draft stayed saved while the same question became retryable. It then sent the retry to the real API, dropped the accepted response, and verified the design opened with the question and source link after exactly two attempted writes. The full navigation smoke test, production build, source preflight, 150 backend tests and 13 frontend tests passed.
+- Boundary: the browser deadline releases the local queue. It cannot cancel a server transaction that already started.

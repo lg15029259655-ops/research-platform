@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
 import { ApiError, apiJson } from "@/lib/api";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
-import { setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/workspace";
+import { setPaperInSynthesis, updateWorkspace, useWorkspace, WorkspaceSaveUnconfirmed } from "@/lib/workspace";
 import { tabGroup } from "@/lib/tabs";
 import type { Claim } from "@/components/EvidenceMap";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
@@ -40,6 +40,7 @@ export default function SynthesisPage() {
   const [artifactAttempt, setArtifactAttempt] = useState(0);
   const [showSelection, setShowSelection] = useState(true);
   const [handoffPending, setHandoffPending] = useState(false);
+  const [handoffError, setHandoffError] = useState<{ artifactId: string; message: string } | null>(null);
   const handoff = useRef<AbortController | null>(null);
   const { job, start, cancel, dismiss } = useWorkspaceJob("synthesis");
   const busy = job?.status === "running";
@@ -166,20 +167,36 @@ export default function SynthesisPage() {
     if (handoff.current || !activeView) return;
     const controller = new AbortController();
     handoff.current = controller;
-    setHandoffPending(true); setError("");
+    setHandoffPending(true); setHandoffError(null);
     try {
       const current = workspace ?? await refresh();
+      if (controller.signal.aborted) return;
       const sourceIds = activeView.paper_ids;
+      const gap = activeView.payload.gaps[0] || "";
       const sameQuestion = current.design_idea === question && current.gap_context.question === question
         && current.gap_context.synthesis_id === activeView.id;
-      await updateWorkspace({research_gap: activeView.payload.gaps[0] || "", design_idea: question,
-        ...(sameQuestion ? {} : { novelty_id: null, design_version_id: null }),
-        gap_context: {consensus: activeView.payload.consensus,
-          disagreements: activeView.payload.controversies.map(({ evidence_refs: _, ...claim }) => claim),
-          paper_ids: sourceIds, synthesis_id: activeView.id, question}}, current.query);
+      try {
+        await updateWorkspace({research_gap: gap, design_idea: question,
+          ...(sameQuestion ? {} : { novelty_id: null, design_version_id: null }),
+          gap_context: {consensus: activeView.payload.consensus,
+            disagreements: activeView.payload.controversies.map(({ evidence_refs: _, ...claim }) => claim),
+            paper_ids: sourceIds, synthesis_id: activeView.id, question}}, current.query);
+      } catch (error) {
+        // A lost response may still have committed the handoff. Read before asking for another write.
+        if (!(error instanceof WorkspaceSaveUnconfirmed) || controller.signal.aborted) throw error;
+        const saved = await refresh(true).catch(() => null);
+        if (!saved || saved.query !== current.query || saved.research_gap !== gap || saved.design_idea !== question
+          || saved.gap_context.question !== question || saved.gap_context.synthesis_id !== activeView.id) throw error;
+      }
       if (!controller.signal.aborted) router.push("/design");
-    } catch (e) { setError(e instanceof Error ? e.message : "无法带入研究问题"); }
-    finally { handoff.current = null; setHandoffPending(false); }
+    } catch (e) {
+      if (!controller.signal.aborted) setHandoffError({
+        artifactId: activeView.id, message: e instanceof Error ? e.message : "无法带入研究问题",
+      });
+    } finally {
+      handoff.current = null;
+      if (!controller.signal.aborted) setHandoffPending(false);
+    }
   }
   const data = artifact?.payload;
   const selectionChanged = !sourceArtifact && !!artifact && artifact.paper_ids.slice().sort().join("|") !== selected.slice().sort().join("|");
@@ -257,7 +274,8 @@ export default function SynthesisPage() {
         <div className="compareTakeaways"><section><span>SHARED SIGNAL</span><h3>共同点</h3><p>{displayFinding(data.consensus[0] || "当前资料尚未形成可核对的共同结论。")}</p>{data.consensus.length > 0 && <details><summary>查看全部 {data.consensus.length} 条</summary><ul>{data.consensus.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section><section><span>WHERE THEY DIFFER</span><h3>关键差异</h3><p>{displayFinding(data.differences[0] || "当前资料尚未形成可核对的差异结论。")}</p>{data.differences.length > 0 && <details><summary>查看全部 {data.differences.length} 条</summary><ul>{data.differences.map((item, i) => <li key={i}>{displayFinding(item)}</li>)}</ul></details>}</section></div>
       </>}
       {tab === "evidence" && activeView && <EvidenceMap claims={data.controversies} papers={data.papers} stale={data.stale_after_reparse} onReviseSelection={reviseSelection} />}
-      {tab === "gaps" && activeView && <GapPath key={artifactId} data={data} onUseQuestion={useQuestion} handoffPending={handoffPending} />}
+      {tab === "gaps" && activeView && <GapPath key={artifactId} data={data} onUseQuestion={useQuestion} handoffPending={handoffPending}
+        handoffError={handoffError?.artifactId === artifactId ? handoffError?.message : undefined} />}
     </section>}
     {selectedCell && <EvidenceDrawer title={selectedCell.dimension} eyebrow={label(selectedCell.cell.paper_id)} onClose={() => setSelectedCell(null)}><p>{selectedCell.cell.value || "未提取到证据"}</p><p className="miniNotice">此单元格是综合分析的概述，请核对原文；来源标记不能代替可点击的原文定位。</p>{selectedCell.cell.source && <dl><dt>来源标记</dt><dd>{selectedCell.cell.source}</dd></dl>}<Link className="drawerAction" href={`/read?paper=${selectedCell.cell.paper_id}`}>打开论文核对 ↗</Link></EvidenceDrawer>}
   </main>;

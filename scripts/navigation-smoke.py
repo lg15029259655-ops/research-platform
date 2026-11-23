@@ -545,22 +545,30 @@ def smoke(browser, frontend, backend):
     question = page.locator(".gapStep").filter(has_text="潜在研究问题").locator(".gapLead").inner_text()
     patches = []
 
-    def hold_handoff(route):
+    def interrupt_handoff(route):
         if route.request.method == "PATCH":
-            patches.append(route)
+            patches.append(route.request.post_data_json)
+            if len(patches) == 2:
+                assert route.fetch().ok
+                route.abort("connectionreset")
         else:
             route.continue_()
 
     workspace_url = f"{backend}/api/workspace"
-    context.route(workspace_url, hold_handoff)
+    assert context.request.patch(workspace_url, data={"design_idea": "Existing draft before the handoff"}).ok
+    context.route(workspace_url, interrupt_handoff)
     with page.expect_request(lambda request: request.method == "PATCH" and request.url == workspace_url):
         use_question.click()
     expect(page.get_by_role("button", name="正在带入研究问题…")).to_be_disabled()
-    patches[0].continue_()
-    context.unroute(workspace_url)
+    expect(page.get_by_role("alert").filter(has_text="暂时无法确认工作区是否已保存")).to_be_visible(timeout=16000)
+    expect(use_question).to_be_enabled()
+    assert context.request.get(workspace_url).json()["design_idea"] == "Existing draft before the handoff"
+    use_question.click()
     idea = page.get_by_label("我的研究想法")
     constraints = page.get_by_label("约束条件（可选）")
     expect(idea).to_have_value(question)
+    assert len(patches) == 2
+    context.unroute(workspace_url)
     idea.fill("")  # An intentionally blank draft must also survive a reload.
     constraints.fill("Draft constraints for the current evidence")
     page.locator(".researchNav nav").get_by_role("link", name="深度精读").click()

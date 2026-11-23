@@ -63,11 +63,23 @@ function queueWorkspaceWrite(send: () => Promise<Workspace>): Promise<Workspace>
   return request;
 }
 
+export class WorkspaceSaveUnconfirmed extends Error {
+  constructor() { super("暂时无法确认工作区是否已保存，请重试。"); }
+}
+
 export function updateWorkspace(change: WorkspaceChange, expectedQuery?: string) {
-  return queueWorkspaceWrite(() => apiJson<Workspace>("/api/workspace", {
-    method: "PATCH", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...change, expected_query: expectedQuery }),
-  }));
+  return queueWorkspaceWrite(async () => {
+    const signal = AbortSignal.timeout(10000);
+    try {
+      return await apiJson<Workspace>("/api/workspace", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...change, expected_query: expectedQuery }), signal,
+      });
+    } catch (error) {
+      if (signal.aborted || error instanceof TypeError) throw new WorkspaceSaveUnconfirmed();
+      throw error;
+    }
+  });
 }
 
 export function setPaperInSynthesis(id: string, selected: boolean, query: string) {
