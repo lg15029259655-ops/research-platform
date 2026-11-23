@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import JobProgress from "@/components/jobs/JobProgress";
 import { ApiError, apiJson, postJson } from "@/lib/api";
 import { useWorkspaceJob } from "@/lib/workspace-jobs";
+import { saveManualDesign } from "@/lib/manual-design";
 import { setPaperInSynthesis, useWorkspace, type Workspace } from "@/lib/workspace";
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import { tabGroup } from "@/lib/tabs";
@@ -188,6 +189,7 @@ function DesignWorkspace() {
   const restoringDesign = !!currentDesignId && !activeVersion && !designError;
   const restoringNovelty = !!currentNoveltyId && !noveltyReady && !noveltyError;
   const active = useRef(false);
+  const pendingStageSave = useRef<{ input: string; requestId: string } | null>(null);
   const workspaceTabs = tabGroup(["novelty", "canvas"] as const, tab, setTab);
   const sameDesignInput = design?.goal.trim() === idea.trim() && (design.input_constraints || "") === constraints.trim();
   const shownNovelty = novelty?.query.trim() === idea.trim() ? novelty : null;
@@ -370,7 +372,11 @@ function DesignWorkspace() {
   async function saveStageSteps(id: string, steps: Step[]) {
     if (!activeVersion || !shownDesign) throw new Error("当前版本尚未加载");
     const draft = { ...shownDesign, nodes: shownDesign.nodes.map(node => node.id === id ? { ...node, steps } : node) };
-    const result = await postJson<{payload: Design; version: DesignVersion}>("/api/research/design/manual", { artifact_id: activeVersion.artifact_id, design: draft });
+    const input = JSON.stringify([activeVersion.artifact_id, draft]);
+    const requestId = pendingStageSave.current?.input === input ? pendingStageSave.current.requestId : crypto.randomUUID();
+    pendingStageSave.current = { input, requestId };
+    const result = await saveManualDesign<{ version: DesignVersion }>(activeVersion.artifact_id, draft, requestId);
+    if (pendingStageSave.current?.requestId === requestId) pendingStageSave.current = null;
     setLoadedVersion(result.version);
     await refresh().catch(() => {});
   }

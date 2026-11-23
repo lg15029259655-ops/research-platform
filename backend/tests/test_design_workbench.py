@@ -1,4 +1,6 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -42,6 +44,35 @@ def test_manual_edit_creates_version_and_checks_owner_and_staleness(monkeypatch)
         assert a.get("/api/workspace").json()["design_version_id"] == result["id"]
         assert a.post("/api/research/design/manual", json=request).status_code == 409
         assert a.post(f"/api/research/design/versions/{first['version']['version_id']}/restore").status_code == 200
+
+
+def test_manual_save_receipt_replays_without_creating_or_reactivating_a_version(monkeypatch):
+    async def fake_generate(_name, context):
+        return research.quick_design(context["goal"], "")
+
+    monkeypatch.setattr(research, "run_task", fake_generate)
+    with TestClient(app) as client, TestClient(app) as other:
+        first = client.post("/api/research/design", json={"goal": "Review design edits"}).json()
+        owner = owner_of(client)
+        draft = {**first["payload"], "nodes": [*first["payload"]["nodes"],
+                 {"id": "manual-new", "label": "Check the inputs", "type": "method", "detail": ""}]}
+        body = {"artifact_id": first["id"], "design": draft, "request_id": str(uuid4())}
+        path = f"/api/research/design/manual/receipts/{body['request_id']}"
+        assert client.get(path).status_code == 404
+        request = research.ManualDesignRequest.model_validate(body)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_save, replay = executor.map(lambda _: research.save_manual_design(request, owner), range(2))
+        assert first_save == replay == client.get(path).json()
+        assert other.get(path).status_code == 404
+        assert len(client.get("/api/research/design/history").json()["items"]) == 2
+
+        changed = {**draft, "nodes": [{**draft["nodes"][0], "label": "Different input"}, *draft["nodes"][1:]]}
+        assert client.post("/api/research/design/manual", json={**body, "design": changed}).status_code == 409
+        assert client.post("/api/research/design/manual", json={**body, "artifact_id": first_save["id"]}).status_code == 409
+        assert client.post(f"/api/research/design/versions/{first['version']['version_id']}/restore").status_code == 200
+        assert client.post("/api/research/design/manual", json=body).json() == first_save
+        assert client.get("/api/workspace").json()["design_version_id"] == first["id"]
+        assert len(client.get("/api/research/design/history").json()["items"]) == 2
 
 
 def test_design_insights_reject_wrong_owner_node_and_changed_version(monkeypatch):

@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { postJson } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { readManualDesignReceipt, saveManualDesign } from "@/lib/manual-design";
 import { readTabDraft, useTabDraft } from "@/lib/tab-draft";
 import "./design-insights.css";
 
 type Node = { id: string; label: string; type: string; detail: string };
 type Design = { goal: string; change_summary: string; constraints: string[]; nodes: Node[]; edges: { source: string; target: string; label: string }[]; controls: string[]; readouts: string[]; assumptions: string[]; input_constraints?: string };
-type EditDraft = { design?: Design; label?: string; detail?: string; parent?: string };
+type EditDraft = { design?: Design; label?: string; detail?: string; parent?: string; requestId?: string };
 
 export default function DesignStepEditor({ artifactId, design, onSaved }: { artifactId: string; design: Design; onSaved: () => void }) {
   const key = `design-steps:${artifactId}`;
@@ -22,8 +22,16 @@ export default function DesignStepEditor({ artifactId, design, onSaved }: { arti
   const invalidNames = draft.nodes.some((node) => !node.label.trim());
   const canSave = !!stored?.design && !hasPendingStep && !invalidNames;
 
+  useEffect(() => {
+    const resumed = readTabDraft<EditDraft>(key)?.requestId;
+    if (!resumed) return;
+    void readManualDesignReceipt(resumed).then(() => {
+      if (readTabDraft<EditDraft>(key)?.requestId === resumed) setStored(null);
+    }).catch(() => {});
+  }, [key, setStored]);
+
   function edit(change: EditDraft) {
-    const next = { ...readTabDraft<EditDraft>(key), ...change };
+    const next = { ...readTabDraft<EditDraft>(key), ...change, requestId: undefined };
     setStored(next.design || next.label || next.detail || next.parent ? next : null);
   }
   function add() {
@@ -40,10 +48,12 @@ export default function DesignStepEditor({ artifactId, design, onSaved }: { arti
   }
   async function save() {
     if (!canSave || saving) return;
+    const requestId = stored?.requestId ?? crypto.randomUUID();
+    setStored({ ...stored, requestId });
     setSaving(true); setError("");
     try {
-      await postJson("/api/research/design/manual", { artifact_id: artifactId, design: draft });
-      if (JSON.stringify(readTabDraft(key)) === JSON.stringify(stored)) setStored(null);
+      await saveManualDesign(artifactId, draft, requestId);
+      if (readTabDraft<EditDraft>(key)?.requestId === requestId) setStored(null);
       onSaved(); setOpen(false);
     } catch (e) { setError(e instanceof Error ? e.message : "保存失败，请重试"); }
     finally { setSaving(false); }

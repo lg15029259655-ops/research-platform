@@ -238,14 +238,27 @@ def manual_design_draft(browser, frontend, backend):
     expect(save).to_be_enabled()
 
     save_url = f"{backend}/api/research/design/manual"
+    history_url = f"{backend}/api/research/design/history"
+    version_count = len(context.request.get(history_url).json()["items"])
     context.route(save_url, lambda route: route.fulfill(status=503, json={"detail": "步骤保存暂不可用"}), times=1)
-    save.click()
+    with page.expect_request(save_url) as first:
+        save.click()
     expect(editor.get_by_role("alert").filter(has_text="步骤保存暂不可用")).to_be_visible()
     expect(editor.get_by_role("textbox", name="步骤名称：Review the baseline evidence", exact=True)).to_be_visible()
-    with page.expect_response(lambda response: response.url == save_url) as saved:
+    request_id = first.value.post_data_json["request_id"]
+    page.reload()
+    receipt_url = f"{save_url}/receipts/{request_id}"
+
+    def drop_save_response(route):
+        assert route.request.post_data_json["request_id"] == request_id
+        assert route.fetch().ok
+        route.abort("connectionreset")
+
+    context.route(save_url, drop_save_response, times=1)
+    with page.expect_response(lambda response: response.url == receipt_url and response.ok):
         save.click()
-    assert saved.value.ok, saved.value.text()
     expect(page.locator(".versionBar button.active")).to_contain_text("手动编辑")
+    assert len(context.request.get(history_url).json()["items"]) == version_count + 1
     page.reload()
     editor.get_by_role("button", name="手动添加或删除实验步骤").click()
     expect(editor.get_by_role("textbox", name="步骤名称：Review the baseline evidence", exact=True)).to_be_visible()

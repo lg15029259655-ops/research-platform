@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
@@ -851,6 +851,31 @@ async def execute_design_insight(owner: str, artifact_id: str, kind: str, node_i
 class ManualDesignRequest(BaseModel):
     artifact_id: str
     design: dict
+    request_id: UUID | None = None
+
+
+def manual_design_id(owner: str, request_id: UUID) -> str:
+    return str(uuid5(NAMESPACE_URL, f"medread:manual-design:{owner}:{request_id}"))
+
+
+def manual_design_result(version: DesignVersion, artifact: ResearchArtifact) -> dict:
+    saved = version_data(version, artifact)
+    saved["created_at"] = cache_time(version.created_at)
+    return {"id": artifact.id, "kind": artifact.kind, "paper_ids": [],
+            "payload": saved["payload"], "created_at": cache_time(artifact.created_at), "version": saved}
+
+
+@router.get("/design/manual/receipts/{request_id}")
+def manual_design_receipt(request_id: UUID, owner: str = Owner):
+    with SessionLocal() as db:
+        result = db.execute(select(DesignVersion, ResearchArtifact).join(
+            ResearchArtifact, ResearchArtifact.id == DesignVersion.artifact_id,
+        ).where(DesignVersion.artifact_id == manual_design_id(owner, request_id),
+                DesignVersion.owner_id == owner, ResearchArtifact.owner_id == owner,
+                DesignVersion.action == "manual")).one_or_none()
+        if result is None:
+            raise HTTPException(404, "未找到这次保存的版本")
+        return manual_design_result(*result)
 
 
 @router.post("/design/manual")
@@ -865,9 +890,11 @@ def save_manual_design(request: ManualDesignRequest, owner: str = Owner):
         raise HTTPException(422, "请保留 1 到 50 个名称有效且编号不同的步骤")
     if any(edge["source"] not in ids or edge["target"] not in ids for edge in payload["edges"]):
         raise HTTPException(422, "步骤连接引用了不存在的节点")
-    new_id = str(uuid4())
+    new_id = manual_design_id(owner, request.request_id) if request.request_id else str(uuid4())
+    version_id = (str(uuid5(NAMESPACE_URL, f"medread:manual-design-version:{new_id}:{request.artifact_id}"))
+                  if request.request_id else str(uuid4()))
     with SessionLocal() as db:
-        workspace = get_or_create(db, owner)
+        workspace = workspace_for_write(db, owner)
         old = db.get(ResearchArtifact, request.artifact_id)
         if not old or old.owner_id != owner or old.kind != "experiment_design":
             raise HTTPException(404, "研究方案不存在")
@@ -878,6 +905,14 @@ def save_manual_design(request: ManualDesignRequest, owner: str = Owner):
         payload["input_constraints"] = original.get("input_constraints", "")
         payload["research_origin"] = original.get("research_origin", {})
         payload["change_summary"] = "手动调整实验步骤；请重新检查方案与文献依据。"
+        if request.request_id:
+            accepted = db.get(ResearchArtifact, new_id)
+            if accepted:
+                version = db.get(DesignVersion, version_id)
+                if (not version or version.artifact_id != new_id or version.owner_id != owner
+                        or accepted.owner_id != owner or json.loads(accepted.payload_json) != payload):
+                    raise HTTPException(409, "这次保存已用于不同的方案内容")
+                return manual_design_result(version, accepted)
         claim = db.execute(update(ResearchWorkspace).where(
             ResearchWorkspace.id == workspace.id, ResearchWorkspace.owner_id == owner,
             ResearchWorkspace.design_version_id == request.artifact_id,
@@ -890,13 +925,12 @@ def save_manual_design(request: ManualDesignRequest, owner: str = Owner):
             DesignVersion.workspace_id == workspace.id).order_by(DesignVersion.version_number.desc()))
         artifact = ResearchArtifact(id=new_id, owner_id=owner, kind="experiment_design",
             paper_ids_json="[]", payload_json=json.dumps(payload, ensure_ascii=False))
-        version = DesignVersion(id=str(uuid4()), owner_id=owner, workspace_id=workspace.id,
+        version = DesignVersion(id=version_id, owner_id=owner, workspace_id=workspace.id,
             artifact_id=new_id, version_number=(previous.version_number + 1 if previous else 1),
             parent_version_id=parent.id if parent else None, action="manual",
             changed_nodes_json=json.dumps(design_changes(original, payload), ensure_ascii=False))
         db.add(artifact); db.flush(); db.add(version); db.commit()
-        return {"id": artifact.id, "kind": artifact.kind, "paper_ids": [], "payload": payload,
-                "created_at": artifact.created_at.isoformat(), "version": version_data(version, artifact)}
+        return manual_design_result(version, artifact)
 
 
 @router.post("/design")
