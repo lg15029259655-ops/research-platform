@@ -11,7 +11,7 @@ import { tabGroup } from "@/lib/tabs";
 import EvidenceMap, { type Claim } from "@/components/EvidenceMap";
 import GapPath from "@/components/GapPath";
 import EvidenceDrawer from "@/components/EvidenceDrawer";
-import SynthesisHistory from "@/components/SynthesisHistory";
+import SavedHistory from "@/components/SavedHistory";
 
 type Paper = { id: string; title: string; status: string; domain: string | null; year: number | null; warning?: string | null };
 type Cell = { paper_id: string; value: string; source: string };
@@ -19,6 +19,7 @@ type Comparison = { papers: { paper_id: string; title: string }[]; dimensions: {
   consensus: string[]; differences: string[]; controversies: Claim[];
   gaps: string[]; questions: string[]; next_steps: string[]; extraction_warnings?: string[]; stale_after_reparse?: boolean };
 type Artifact = { id: string; payload: Comparison; paper_ids: string[]; created_at: string };
+type SavedComparison = { id: string; created_at: string; paper_count: number; titles: string[] };
 
 export default function SynthesisPage() {
   const router = useRouter();
@@ -183,7 +184,10 @@ export default function SynthesisPage() {
   }
   return <main id="main" className="researchPage">
     <div className="pageIntro"><div className="eyebrow">03 / SYNTHESIZE</div><h1>把多篇论文放在同一张证据桌上。</h1><p>选取 2–5 篇已有可解析 PDF 的论文，比较研究问题、方法、结论与证据边界。</p></div>
-    <SynthesisHistory currentId={workspace?.synthesis_id} viewingId={artifactId} />
+    <SavedHistory<SavedComparison> title="综合历史" endpoint="/api/research/comparisons" currentId={workspace?.synthesis_id} viewingId={artifactId} scroll={false}
+      href={(entry) => `/synthesis?artifact=${encodeURIComponent(entry.id)}`}
+      label={(entry) => entry.titles.length ? entry.titles.join(" · ") : `${entry.paper_count} 篇论文的综合`}
+      metadata={(entry) => `${entry.paper_count} 篇论文`} />
     {sourceArtifact && <p className="workspaceLoading">正在查看已保存的综合。 <Link className="inlineLink" href="/synthesis">返回当前综合</Link></p>}
     <section className="sectionBox" ref={selectionRef}><div className="selectionHeading"><h2>选择论文 <small> {selected.length} / 5</small></h2>{data && <button className="quietButton" onClick={() => setShowSelection((open) => !open)}>{showSelection ? "收起论文列表" : "更换对比论文"}</button>}</div>
       {data && !showSelection && <p className="selectionSummary">当前综合基于 {artifact?.paper_ids.length} 篇 PDF 提取的片段；不代表每篇都已完整解析。</p>}

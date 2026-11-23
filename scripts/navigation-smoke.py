@@ -667,6 +667,22 @@ def discovery_relation_race(browser, frontend, backend, *, viewport=None):
     assert context.request.get(workspace_url).json() == changed
     page.get_by_role("link", name="返回当前综合").click()
     expect(page.locator(".synthesisResult")).to_have_count(0)
+    versions = context.request.get(f"{backend}/api/research/design/history").json()["items"]
+    assert versions
+    prior_design = versions[0]
+    page.locator(".researchNav nav").get_by_role("link", name="科研设计").click()
+    page.get_by_text("设计历史", exact=True).click()
+    page.locator(f'a[href="/design?version={prior_design["id"]}"]').click()
+    expect(page.get_by_role("heading", name=prior_design["goal"], exact=True)).to_be_focused()
+    page.locator(".er-stage-main").first.click()
+    expect(page.get_by_role("button", name="编辑阶段")).to_have_count(0)
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 2")
+    assert context.request.get(workspace_url).json() == changed
+    page.get_by_role("button", name="继续编辑此版本").click()
+    page.get_by_role("button", name="确认恢复").click()
+    expect(page.get_by_label("我的研究想法")).to_have_value(prior_design["goal"])
+    expect(page.locator(".designGrid")).to_be_visible()
+    assert context.request.get(workspace_url).json()["design_version_id"] == prior_design["id"]
     context.close()
 
 

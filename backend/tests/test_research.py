@@ -324,13 +324,32 @@ def test_restore_design_from_different_idea_updates_workspace(monkeypatch):
     monkeypatch.setattr(research, "run_task", fake_run)
     with TestClient(app) as client:
         try:
+            client.get("/api/session")
+            with SessionLocal() as db:
+                owner = db.scalar(select(User.id).where(User.session_hash == session_hash(client.cookies.get(COOKIE_NAME))))
+            source = save_artifact(owner, "paper_compare", [], {})["id"]
+            client.patch("/api/workspace", json={
+                "design_idea": "Original idea", "research_gap": "Pinned evidence gap",
+                "gap_context": {"synthesis_id": source, "question": "Original idea", "consensus": ["Evidence"]},
+            })
             first = client.post("/api/research/design", json={"goal": "Original idea"}).json()
+            before = client.get("/api/workspace").json()
             client.post("/api/research/design", json={"goal": "Different idea"})
-            response = client.post(f"/api/research/design/versions/{first['version']['version_id']}/restore")
+            path = f"/api/research/design/versions/{first['version']['version_id']}/restore"
+            latest = client.get("/api/workspace").json()
+            assert client.post(path, json={"expected_updated_at": before["updated_at"]}).status_code == 409
+            assert client.get("/api/workspace").json() == latest
+            summaries = client.get("/api/research/design/history").json()["items"]
+            assert [entry["goal"] for entry in summaries] == ["Different idea", "Original idea"]
+            assert "payload" not in summaries[0]
+            response = client.post(path, json={"expected_updated_at": latest["updated_at"]})
             assert response.status_code == 200
             workspace = client.get("/api/workspace").json()
             assert workspace["design_idea"] == "Original idea"
             assert workspace["design_version_id"] == first["id"]
+            assert workspace["research_gap"] == "Pinned evidence gap"
+            assert workspace["gap_context"]["synthesis_id"] == source
+            assert workspace["gap_context"]["consensus"] == ["Evidence"]
         finally:
             clean(client)
 

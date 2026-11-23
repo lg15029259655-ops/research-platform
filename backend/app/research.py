@@ -17,7 +17,7 @@ from sqlalchemy import func, select, tuple_, update
 from .auth import current_owner
 from .db import SessionLocal
 from .models import Paper, ReadingUnit, ResearchArtifact, ResearchWorkspace, DesignVersion, DiscoveryCache
-from .workspace import get_or_create, job_workspace_conditions, require_job_context
+from .workspace import get_or_create, job_workspace_conditions, require_job_context, workspace_for_write
 from .papers import owned_paper, paper_data, paper_source_matches, pdf_is_readable, process_paper
 from .services.openalex_service import (
     DiscoveryError, DiscoveryRateLimited, get_work, graph_for_work, lineage_for_work, search_works,
@@ -924,24 +924,63 @@ def design_versions(artifact_id: str | None = None, goal: str | None = None, own
         return result
 
 
+class RestoreDesign(BaseModel):
+    expected_updated_at: str = Field(min_length=1, max_length=40)
+
+
 @router.post("/design/versions/{version_id}/restore")
-def restore_design_version(version_id: str, owner: str = Owner):
+def restore_design_version(version_id: str, request: RestoreDesign | None = None, owner: str = Owner):
     with SessionLocal() as db:
         version = db.scalar(select(DesignVersion).where(
             DesignVersion.id == version_id, DesignVersion.owner_id == owner))
         if not version:
             raise HTTPException(404, "设计版本不存在")
-        workspace = get_or_create(db, owner)
+        workspace = workspace_for_write(db, owner)
         if version.workspace_id != workspace.id:
             raise HTTPException(404, "设计版本不存在")
+        if request and workspace.updated_at.isoformat() != request.expected_updated_at:
+            raise HTTPException(409, "工作区已有新进度，请核对后再恢复设计")
         artifact = db.get(ResearchArtifact, version.artifact_id)
-        restored_goal = json.loads(artifact.payload_json).get("goal", "").strip()
+        payload = json.loads(artifact.payload_json)
+        restored_goal = payload.get("goal", "").strip()
         if restored_goal != workspace.design_idea.strip():
             workspace.design_idea = restored_goal
             workspace.novelty_id = None
+        origin = payload.get("research_origin") or {}
+        source_id = origin.get("synthesis_id")
+        source = db.get(ResearchArtifact, source_id) if isinstance(source_id, str) else None
+        if source and source.owner_id == owner and source.kind == "paper_compare":
+            context = {**(origin.get("synthesis_context") or {}), "question": restored_goal, "synthesis_id": source.id}
+            workspace.research_gap = origin.get("research_gap", "")
+            workspace.gap_context_json = json.dumps(context, ensure_ascii=False)
+        else:
+            workspace.research_gap = ""
+            workspace.gap_context_json = "{}"
         workspace.design_version_id = artifact.id
         db.commit()
         return version_data(version, artifact)
+
+
+@router.get("/design/history")
+def design_history(before: str | None = Query(default=None, max_length=36), owner: str = Owner):
+    version = DesignVersion
+    page_size = 12
+    with SessionLocal() as db:
+        query = select(version.artifact_id, version.created_at, version.version_number, version.action,
+                       func.json_extract(ResearchArtifact.payload_json, "$.goal").label("goal")).join(
+            ResearchArtifact, ResearchArtifact.id == version.artifact_id,
+        ).where(version.owner_id == owner)
+        if before:
+            cursor = db.execute(select(version.created_at, version.artifact_id).where(
+                version.owner_id == owner, version.artifact_id == before,
+            )).one_or_none()
+            if cursor is None:
+                raise HTTPException(404, "该位置的设计历史不可用")
+            query = query.where(tuple_(version.created_at, version.artifact_id) < tuple_(cursor.created_at, cursor.artifact_id))
+        rows = db.execute(query.order_by(version.created_at.desc(), version.artifact_id.desc()).limit(page_size + 1)).all()
+        items = [{"id": row.artifact_id, "created_at": row.created_at.replace(tzinfo=timezone.utc).isoformat(),
+                  "number": row.version_number, "action": row.action, "goal": row.goal or ""} for row in rows[:page_size]]
+        return {"items": items, "next_before": items[-1]["id"] if len(rows) > page_size else None}
 
 
 @router.get("/comparisons")
