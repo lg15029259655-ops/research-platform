@@ -935,3 +935,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Action: retain the current reader while the next detail request is pending, and keep it visible when that request can be retried. Fetch paper details from discovery before navigating and reuse that short-lived result across the reader mount. Render query-dependent workspace shells on demand so their first response uses the actual URL.
 - Verification: Chrome at desktop and mobile widths held the next detail request, forced a failure and retried without removing the current PDF. A frame-by-frame check covered the discovery-to-reader handoff, including one detail fetch and a rendered PDF. The production build and 14 frontend tests passed.
 - Boundary: a cold direct link or a slow PDF can still show opening feedback. This change has been verified in the local preview.
+
+## L-20261123-75 — Test the three-paper default in an existing session
+
+- Evidence: a public browser with five saved papers still showed five, although fresh browsers showed three. The previous switch test covered the PDF view and missed that selecting another paper reset the experiment or writing map tab.
+- Action: prefer the three prepared papers as the default reader list once they are all present. Existing papers remain searchable. Fetch the next paper and the currently selected saved map together and commit them in one render.
+- Verification: desktop and mobile smoke tests started with five library rows and a legacy last-paper preference. The reader showed exactly three. Holding either saved-map response left the first paper and view visible until the second was ready.

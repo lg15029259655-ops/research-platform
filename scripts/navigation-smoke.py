@@ -2255,6 +2255,62 @@ def paper_transitions(browser, frontend, backend, width):
         context.close()
 
 
+def prepared_reader_legacy_session(browser, frontend, backend, width):
+    context = browser.new_context(viewport={"width": width, "height": 900})
+    try:
+        library_url = f"{backend}/api/papers?view=summary"
+        rows = context.request.get(library_url).json()
+        by_name = {paper["original_filename"]: paper for paper in rows}
+        first = by_name["39875519.pdf"]
+        second = by_name["42008043.pdf"]
+        legacy = [
+            {**first, "id": "legacy-a", "title": "Compensatory hepatic legacy example", "original_filename": "34233187.pdf"},
+            {**first, "id": "legacy-b", "title": "Physiological and pathological legacy example", "original_filename": "35349740.pdf"},
+        ]
+        context.route(re.compile(r"/api/papers\?view=summary$"), lambda route: route.fulfill(json=legacy + rows))
+        context.add_init_script("sessionStorage.setItem('medread-draft:read-last-paper', JSON.stringify('legacy-b'));")
+        page = context.new_page()
+        page.goto(f"{frontend}/read")
+        expect(page.locator(".paperItem")).to_have_count(3)
+        expect(page.get_by_role("heading", name=first["title"], exact=True)).to_be_visible()
+
+        def choose_paper(paper):
+            if width < 760:
+                page.get_by_role("button", name="展开论文库").click()
+            page.locator(".paperItem").filter(has_text=paper["title"]).click()
+
+        for view, tab_name, panel in [
+            ("experiments", "实验导图", ".pe-card"),
+            ("mindmap", "行文导图", ".mindmapPanel"),
+        ]:
+            page.get_by_role("tab", name=tab_name).click()
+            if view == "experiments":
+                expect(page.locator(panel).first).to_be_visible()
+            else:
+                expect(page.get_by_role("button", name="展开全部")).to_be_enabled()
+            held = []
+            target = f"{backend}/api/papers/{second['id']}/saved-map/{view}"
+            context.route(target, lambda route: held.append(route))
+            with page.expect_request(target):
+                choose_paper(second)
+            expect(page.get_by_role("heading", name=first["title"], exact=True)).to_be_visible()
+            expect(page.locator(".readerViewTabs [aria-selected='true']")).to_have_text(tab_name)
+            if view == "experiments":
+                expect(page.locator(panel)).to_have_count(10)
+            held[0].fulfill(json=context.request.get(target).json())
+            context.unroute(target)
+            expect(page.get_by_role("heading", name=second["title"], exact=True)).to_be_visible()
+            expect(page.get_by_role("tab", name=tab_name)).to_have_attribute("aria-selected", "true")
+            if view == "experiments":
+                expect(page.locator(panel)).to_have_count(8)
+            else:
+                expect(page.get_by_role("button", name="展开全部")).to_be_enabled()
+            choose_paper(first)
+            expect(page.get_by_role("heading", name=first["title"], exact=True)).to_be_visible()
+    finally:
+        context.close()
+
+
 def prepared_demo(browser, frontend, backend, width):
     context = browser.new_context(viewport={"width": width, "height": 900})
     unexpected = []
@@ -2360,6 +2416,7 @@ if __name__ == "__main__":
                 for width in (390, 1440):
                     prepared_demo(browser, args.frontend, args.backend, width)
                     paper_transitions(browser, args.frontend, args.backend, width)
+                    prepared_reader_legacy_session(browser, args.frontend, args.backend, width)
                 print("MedRead prepared demo passed")
                 raise SystemExit(0)
             smoke(browser, args.frontend, args.backend)

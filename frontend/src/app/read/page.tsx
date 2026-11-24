@@ -35,6 +35,7 @@ type PaperDeletion = { status: "pending" | "deleted" } | { status: "failed"; mes
 const compactQuery = "(max-width: 760px)";
 const compactModes = ["pdf", "ai"] as const;
 const desktopModes = ["split", "pdf", "ai"] as const;
+const preparedFiles = ["39875519.pdf", "42008043.pdf", "35064256.pdf"];
 // The server sends a heartbeat every 15 seconds, including during model thinking.
 const chatIdleTimeoutMs = 35000;
 
@@ -166,11 +167,15 @@ export default function ReadPage() {
   const [pendingUpload] = useTabDraft<PendingUpload>(pendingUploadKey);
   const [deletions, setDeletions] = useState<Record<string, PaperDeletion>>({});
   const [deletedTitle, setDeletedTitle] = useState("");
-  const fallbackId = lastPaper ?? workspace?.core_paper_id ?? null;
-  const selectedId = paperParam ?? (fallbackId && deletions[fallbackId]?.status !== "deleted" ? fallbackId : null);
   const [libraryReady, setLibraryReady] = useState(false);
   const [libraryError, setLibraryError] = useState(false);
   const [papers, setPapers] = useState<PaperSummary[]>([]);
+  const preparedPapers = preparedFiles.map((name) => papers.find((item) =>
+    item.original_filename === name && item.status === "parsed" && deletions[item.id]?.status !== "deleted"));
+  const showPrepared = preparedPapers.every((item) => !!item);
+  const fallbackId = [lastPaper, workspace?.core_paper_id, preparedPapers[0]?.id].find((id) =>
+    id && deletions[id]?.status !== "deleted" && (!showPrepared || preparedPapers.some((item) => item?.id === id)));
+  const selectedId = paperParam ?? ((libraryReady || libraryError) ? fallbackId ?? null : null);
   const [paperToRefresh, setPaperToRefresh] = useState<{ id: string; removed: boolean } | null>(null);
   const [record, setPaper] = useState<Paper | null>(() => paperParam ? getReaderEntry<Paper>(paperParam) ?? null : null);
   const paper = selectedId && record && deletions[record.id]?.status !== "deleted" ? record : null;
@@ -211,7 +216,12 @@ export default function ReadPage() {
   const [pdfWidth, setPdfWidth] = useState(38);
   const [activeHeading, setActiveHeading] = useState("");
   const [page, setPage] = useState(() => record ? startingPdfPage(record, requestedPage, sourceFile) : 1);
-  const [readerTab, setReaderTab] = useState<ReaderTab>("read");
+  const [readerTab, setReaderTabState] = useState<ReaderTab>("read");
+  const readerTabRef = useRef<ReaderTab>("read");
+  const setReaderTab = useCallback((next: ReaderTab) => {
+    readerTabRef.current = next;
+    setReaderTabState(next);
+  }, []);
   const [thinking, setThinking] = useState("");
   const [chatStartedAt, setChatStartedAt] = useState<number | null>(null);
   const [mindmap, setMindmap] = useState<MindMapPayload | null>(null);
@@ -305,10 +315,21 @@ export default function ReadPage() {
     if (id !== activePaper.current) return;
     const request = ++paperRequest.current;
     let data: Paper;
+    let nextTab: ReaderTab = "read";
+    let nextMindmap: MindMapPayload | null = null;
+    let nextExperiments: PaperExperimentsPayload | null = null;
     try {
       if (!opening) invalidateReaderEntry(id);
       const prepared = opening ? getReaderEntry<Paper>(id) : undefined;
-      data = prepared ?? await apiJson<Paper>(`/api/papers/${encodeURIComponent(id)}`, { signal, cache: "no-store" });
+      const detail = prepared ?? apiJson<Paper>(`/api/papers/${encodeURIComponent(id)}`, { signal, cache: "no-store" });
+      if (opening && signal) {
+        const params = new URLSearchParams(window.location.search);
+        if (!params.has("page") && !params.has("citation") && !params.has("source_file")) nextTab = readerTabRef.current;
+      }
+      if (nextTab === "mindmap" && signal) [data, nextMindmap] = await Promise.all([detail, readSavedMap<MindMapPayload>(id, nextTab, signal)]);
+      else if (nextTab === "experiments" && signal) [data, nextExperiments] = await Promise.all([detail, readSavedMap<PaperExperimentsPayload>(id, nextTab, signal)]);
+      else data = await detail;
+      if (data.status !== "parsed") nextTab = "read";
     } catch (error) {
       if (request !== paperRequest.current) return;
       throw error;
@@ -320,13 +341,13 @@ export default function ReadPage() {
     if (opening) {
       const params = new URLSearchParams(window.location.search);
       setPage(startingPdfPage(data, Number(params.get("page")), params.get("source_file")));
-      setReaderTab("read");
-      setMindmap(null);
-      setExperiments(null);
+      setMindmap(nextMindmap);
+      setExperiments(nextExperiments);
+      setReaderTab(nextTab);
       if (readTabDraft<string>(lastPaperKey) !== id) writeTabDraft(lastPaperKey, id);
     }
     return data;
-  }, []);
+  }, [setReaderTab]);
 
   useEffect(() => {
     const saved = Number(window.localStorage.getItem("reader-pdf-width"));
@@ -690,6 +711,12 @@ export default function ReadPage() {
     void loadExperiments();
   }
 
+  useEffect(() => {
+    if (switchingPaper) return;
+    if (readerTab === "mindmap") void loadMindmap();
+    if (readerTab === "experiments") void loadExperiments();
+  }, [paper?.id, readerTab, switchingPaper]);
+
   function jumpTo(unitId: string) {
     const unit = paper?.units?.find((item) => item.id === unitId);
     jumpToPdfPage(unit?.page_start ?? undefined);
@@ -904,10 +931,11 @@ export default function ReadPage() {
   const figures = units.filter((unit) => unit.kind === "FIGURE");
   const figureIndex = current?.kind === "FIGURE" ? figures.findIndex((unit) => unit.id === current.id) + 1 : 0;
   const nextLabel = !current ? "开始精读 · 题目与摘要" : next?.kind === "FIGURE" ? `进入 ${next.heading}` : next?.kind === "RECAP" ? "全文总结" : next ? next.kind === "DISCUSSION" ? "进入 Discussion" : "下一部分" : "已读完";
-  const readerLoading = !paper && (openingPaper || (!paperParam && !workspace && !workspaceError));
+  const readerLoading = !paper && (openingPaper || (!paperParam && ((!workspace && !workspaceError) || (!libraryReady && !libraryError))));
   const libraryOpen = compact ? drawerOpen : sidebarOpen;
   const libraryTerm = libraryQuery.trim().toLocaleLowerCase();
-  const visiblePapers = papers.filter((item) => deletions[item.id]?.status !== "deleted" && (!libraryTerm
+  const libraryPapers = !libraryTerm && showPrepared ? preparedPapers.filter((item) => item !== undefined) : papers;
+  const visiblePapers = libraryPapers.filter((item) => deletions[item.id]?.status !== "deleted" && (!libraryTerm
     || [item.title, item.original_filename].some((value) => value?.toLocaleLowerCase().includes(libraryTerm))));
   const libraryContents = <>
     <div className="libraryHeading">
