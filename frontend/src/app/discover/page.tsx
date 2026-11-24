@@ -1,5 +1,8 @@
 "use client";
 
+import PreparedDiscovery from "@/prepared/discover";
+import { preparedWorkspace } from "@/prepared/config";
+
 import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -46,6 +49,10 @@ async function lookup<T>(path: string, controller: AbortController, timeout: num
 }
 
 export default function DiscoverPage() {
+  return preparedWorkspace ? <PreparedDiscovery /> : <EditableDiscovery />;
+}
+
+function EditableDiscovery() {
   const router = useRouter();
   const urlQuery = useSearchParams().get("q")?.trim() || "";
   const [query, setQuery] = useState("");

@@ -89,7 +89,6 @@ export default function Home() {
         <p>从发现论文到设计研究，在同一个工作台整理线索、精读全文、比较结果。始终分清哪些结论来自摘要，哪些有全文支持。</p>
         <div className="home-hero-actions">
           <Link className="home-button home-button-primary" href="/discover">开始检索 <span aria-hidden="true">↗</span></Link>
-          <Link className="home-button home-button-secondary" href="/demo">查看演示 <span aria-hidden="true">↗</span></Link>
           <a className="home-button home-button-secondary" href="#workflow">了解工作流 <span aria-hidden="true">→</span></a>
         </div>
         <form className="home-search" role="search" onSubmit={submitSearch}>

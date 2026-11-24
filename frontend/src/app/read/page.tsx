@@ -1,5 +1,8 @@
 "use client";
 
+import PreparedReader from "@/prepared/reader";
+import { preparedWorkspace } from "@/prepared/config";
+
 import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -155,6 +158,10 @@ async function confirmPaperDeletion(id: string) {
 }
 
 export default function ReadPage() {
+  return preparedWorkspace ? <PreparedReader /> : <EditableReader />;
+}
+
+function EditableReader() {
   const searchParams = useSearchParams();
   const paperParam = searchParams.get("paper");
   const linkPage = searchParams.get("page");

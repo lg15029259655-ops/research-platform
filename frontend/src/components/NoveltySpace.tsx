@@ -66,7 +66,7 @@ function Planetarium({ planets, onSelect, onHover, playing, searchOnly, selected
 
 export default function NoveltySpace({ novelty, busy, onView, onAdd }: {
   novelty: Novelty; busy: boolean; onView: (paper: SimilarPaper) => void;
-  onAdd: (paper: SimilarPaper) => void;
+  onAdd?: (paper: SimilarPaper) => void;
 }) {
   const [selected, setSelected] = useState<SimilarPaper | null>(null);
   const [hovered, setHovered] = useState<SimilarPaper | null>(null);
@@ -99,6 +99,6 @@ export default function NoveltySpace({ novelty, busy, onView, onAdd }: {
     })}</div>
     <p className="planetariumScope">{novelty.search_only ? "图中的文献位于同一轨道，只表示检索命中；位置和距离不表示相似程度。" : "轨道只表示高、中、低三个定性层级，不代表精确距离。"}{novelty.evidence_scope ? ` ${novelty.evidence_scope}` : ""} 尚未完成全文核验。</p>
     {!novelty.search_only && <div className="conceptAngles"><strong>值得进一步核验的角度</strong>{novelty.novel_angles.slice(0, 4).map((item, i) => <span key={i}>{item}</span>)}</div>}
-    {selected && <EvidenceDrawer title={selected.title} eyebrow={novelty.search_only ? "检索文献 · 相似程度待核验" : `相似程度：${selected.similarity_level}`} onClose={() => setSelected(null)}><dl><dt>年份</dt><dd>{selected.year || "未知"}</dd><dt>证据范围</dt><dd>{selected.full_text_available ? "本地已有全文；本次新颖性判断仍只依据检索摘要" : "当前只有元数据或摘要，尚未全文核验"}</dd><dt>与想法差异</dt><dd>{selected.differences.join("；") || "需进一步对照原文"}</dd></dl><h4>检索摘要</h4><p>{selected.abstract || "OpenAlex 未提供摘要；未定位到具体原文位置。"}</p><div className="drawerActions"><button disabled={busy} aria-busy={busy} onClick={() => onView(selected)}>查看论文</button><button disabled={busy} aria-busy={busy} onClick={() => onAdd(selected)}>加入对比</button></div></EvidenceDrawer>}
+    {selected && <EvidenceDrawer title={selected.title} eyebrow={novelty.search_only ? "检索文献 · 相似程度待核验" : `相似程度：${selected.similarity_level}`} onClose={() => setSelected(null)}><dl><dt>年份</dt><dd>{selected.year || "未知"}</dd><dt>证据范围</dt><dd>{selected.full_text_available ? "本地已有全文；本次新颖性判断仍只依据检索摘要" : "当前只有元数据或摘要，尚未全文核验"}</dd><dt>与想法差异</dt><dd>{selected.differences.join("；") || "需进一步对照原文"}</dd></dl><h4>检索摘要</h4><p>{selected.abstract || "OpenAlex 未提供摘要；未定位到具体原文位置。"}</p><div className="drawerActions"><button disabled={busy} aria-busy={busy} onClick={() => onView(selected)}>查看论文</button>{onAdd && <button disabled={busy} aria-busy={busy} onClick={() => onAdd(selected)}>加入对比</button>}</div></EvidenceDrawer>}
   </div>;
 }

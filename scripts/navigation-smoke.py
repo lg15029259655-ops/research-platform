@@ -2189,47 +2189,74 @@ def keyboard_navigation(browser, frontend, viewport=None):
 def prepared_demo(browser, frontend, backend, width):
     context = browser.new_context(viewport={"width": width, "height": 900})
     unexpected = []
+    images = []
+    if width >= 1000:
+        context.add_cookies([{"name": "medread_session", "value": "prior-workspace-fixture", "url": frontend}])
 
     def prevent_generation(route):
-        unexpected.append(route.request.url)
-        route.abort()
+        if route.request.url.endswith("/api/health"):
+            route.continue_()
+        else:
+            unexpected.append(route.request.url)
+            route.abort()
 
     try:
-        context.route(f"{backend}/api/jobs", prevent_generation)
+        context.route(re.compile(rf"^{re.escape(backend)}/api/"), prevent_generation)
         page = context.new_page()
+        page.on("response", lambda response: images.append((response.url, response.status))
+                if "/research-elements/" in response.url else None)
         page.goto(frontend)
-        page.get_by_role("link", name="查看演示").click()
-        expect(page).to_have_url(f"{frontend}/demo")
-        paper_links = page.locator("ol a[href^='/read?paper=']")
-        expect(paper_links).to_have_count(3)
-        papers = [link.get_attribute("href") for link in paper_links.all()]
-        for label, expected in (
-            ("新颖性扫描", page.locator(".sectionBox").get_by_role("heading", name=re.compile("^新颖性扫描"))),
-            ("设计沙盘", page.locator(".designGrid")),
-            ("文献综合", page.locator(".synthesisResult")),
-        ):
-            page.get_by_role("link", name=label, exact=True).click()
-            expect(expected.first).to_be_visible()
-            page.go_back()
-            expect(paper_links).to_have_count(3)
-        for index, path in enumerate(papers):
-            paper_links.nth(index).click()
-            expect(page).to_have_url(f"{frontend}{path}")
-            expect(page.get_by_role("heading", name="全文解读", exact=True)).to_be_visible()
-            expect(page.locator(".savedReading h3")).to_have_count(6)
-            expect(page.get_by_role("button", name="对照原文").first).to_be_visible()
+        expect(page.get_by_role("link", name="查看演示")).to_have_count(0)
+        page.locator(".home-nav").get_by_role("link", name="发现").click()
+        expect(page.get_by_role("textbox", name="论文检索")).to_have_value("single cell RNA sequencing")
+        expect(page.locator(".workList details")).to_have_count(10)
+        page.get_by_role("tab", name="文献谱系").click()
+        expect(page.get_by_role("heading", name="文献谱系")).to_be_visible()
+        expect(page.get_by_text(re.compile(r"\d+ 篇文献 · \d+ 条联系"))).to_be_visible()
+        page.get_by_role("tab", name="列表", exact=True).click()
+        last_result = page.locator(".workList details").last
+        last_title = last_result.locator("summary strong").inner_text()
+        last_result.locator("summary").click()
+        last_result.get_by_role("button", name="查看谱系").click()
+        expect(page.get_by_role("heading", name="文献谱系")).to_be_visible()
+        expect(page.get_by_text(re.compile(rf"^{re.escape(last_title)} · \d+ 篇文献"))).to_be_visible()
+
+        page.get_by_role("link", name="深度精读").click()
+        expect(page.get_by_role("heading", name="全文解读")).to_be_visible()
+        library = page.locator(".preparedLibrary")
+        expect(library.get_by_role("button")).to_have_count(3)
+        library.evaluate("(node) => node.dataset.check = 'mounted'")
+        for index in range(3):
+            paper = library.get_by_role("button").nth(index)
+            title = paper.inner_text()
+            paper.click()
+            expect(page.get_by_role("heading", name=title, exact=True)).to_be_visible()
+            expect(page.get_by_role("heading", name="全文解读")).to_be_visible()
+            expect(library).to_have_attribute("data-check", "mounted")
+            expect(page.get_by_text("正在打开页面…", exact=True)).to_have_count(0)
             page.get_by_role("tab", name="行文导图").click()
             expect(page.get_by_role("button", name="展开全部")).to_be_enabled()
             page.get_by_role("tab", name="实验导图").click()
-            panel = page.locator(".pe-panel")
-            expect(panel).to_be_visible()
-            if index == 0:
-                expect(panel.get_by_role("heading", name="论文实验导图")).to_be_visible()
-                expect(panel.locator(".pe-summary")).to_contain_text("项候选实验")
-            else:
-                expect(panel.get_by_text("尚未提取到实验")).to_be_visible()
-            page.go_back()
-            expect(paper_links).to_have_count(3)
+            expect(page.get_by_role("heading", name="论文实验导图")).to_be_visible()
+            if index:
+                expect(page.locator(".preparedEvidence li").first).to_be_visible()
+        page.get_by_role("tab", name="原文 PDF").click()
+        expect(page.locator(".pdfCanvas canvas").first).to_be_visible(timeout=12000)
+        page.get_by_role("link", name="文献综合", exact=True).click()
+        expect(page.locator(".preparedMatrix").first).to_be_visible()
+        page.get_by_role("tab", name="证据地图").click()
+        expect(page.get_by_text("文献证据关系", exact=True)).to_be_visible()
+        page.get_by_role("tab", name="研究空白").click()
+        expect(page.locator(".gapPath")).to_be_visible()
+        page.get_by_role("link", name="科研设计", exact=True).click()
+        expect(page.get_by_role("heading", name="从研究问题到验证")).to_be_visible()
+        page.locator(".er-stage-main").first.click()
+        expect(page.locator(".er-stage-main").first).to_have_attribute("aria-expanded", "true")
+        page.wait_for_function("performance.getEntriesByType('resource').some(entry => entry.name.includes('/research-elements/') && entry.name.endsWith('.webp'))")
+        assert images and all(url.endswith(".webp") and status == 200 for url, status in images), images
+        page.get_by_role("tab", name="新颖性扫描").click()
+        expect(page.get_by_role("heading", name="新颖性扫描")).to_be_visible()
+        assert page.locator("main a[href^='https://openalex.org/']").count() >= 8
         assert not unexpected, unexpected
     finally:
         context.close()
@@ -2240,7 +2267,7 @@ if __name__ == "__main__":
     parser.add_argument("--frontend", default="http://127.0.0.1:3320")
     parser.add_argument("--backend", default="http://127.0.0.1:8320")
     parser.add_argument("--chrome", action="store_true", help="Use installed Google Chrome")
-    parser.add_argument("--prepared-demo", action="store_true", help="Check the prepared demo without submitting jobs")
+    parser.add_argument("--prepared-demo", action="store_true", help="Verify precomputed content on all four standard routes")
     args = parser.parse_args()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="chrome" if args.chrome else None)

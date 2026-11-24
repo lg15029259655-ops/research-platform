@@ -22,8 +22,8 @@ type SearchState = { status: "idle" | "pending" } | { status: "ready"; hits: Sea
 type PdfDisplay = { zoom: number; fitWidth: boolean };
 const defaultDisplay: PdfDisplay = { zoom: 1, fitWidth: true };
 
-export default function PdfPane({ paperId, fileVersion, page, totalPages, onPageChange }: {
-  paperId: string; fileVersion?: string | null; page: number; totalPages?: number; onPageChange: (page: number) => void;
+export default function PdfPane({ paperId, fileVersion, sourceUrl, page, totalPages, onPageChange }: {
+  paperId: string; fileVersion?: string | null; sourceUrl?: string; page: number; totalPages?: number; onPageChange: (page: number) => void;
 }) {
   const [pages, setPages] = useState(0);
   const [savedDisplay, setSavedDisplay] = useTabDraft<PdfDisplay & { fileVersion: string }>(`pdf-display:${paperId}`);
@@ -95,7 +95,7 @@ export default function PdfPane({ paperId, fileVersion, page, totalPages, onPage
     }
   }
   const count = pages || totalPages || 0;
-  const fileUrl = `${API}/api/papers/${encodeURIComponent(paperId)}/file${fileVersion ? `?v=${encodeURIComponent(fileVersion)}` : ""}`;
+  const fileUrl = sourceUrl ?? `${API}/api/papers/${encodeURIComponent(paperId)}/file${fileVersion ? `?v=${encodeURIComponent(fileVersion)}` : ""}`;
   const searching = searchState.status === "pending";
   const documentError = <div className="pdfError" role="alert">PDF 暂时无法显示。 <button type="button" className="quietButton"
     onClick={() => setDocumentAttempt((attempt) => attempt + 1)}>重试打开 PDF</button></div>;
@@ -110,10 +110,10 @@ export default function PdfPane({ paperId, fileVersion, page, totalPages, onPage
         <button type="button" aria-label="放大 PDF" onClick={() => setDisplay({ fitWidth, zoom: Math.min(2.5, zoom + .15) })}>＋</button>
         <button type="button" aria-pressed={fitWidth} className={fitWidth ? "fitActive" : ""} onClick={() => setDisplay({ fitWidth: !fitWidth, zoom: 1 })} title="切换适应宽度与原始宽度">适宽</button>
       </div>
-      <form onSubmit={(event) => { event.preventDefault(); void search(); }}>
+      {!sourceUrl && <form onSubmit={(event) => { event.preventDefault(); void search(); }}>
         <input value={query} onChange={(event) => editQuery(event.target.value)} placeholder="搜索 PDF 文字" aria-label="在 PDF 内搜索文字" />
         <button type="submit" disabled={searching || !query.trim()} aria-busy={searching}>{searchState.status === "error" && query.trim().length >= 2 ? "重试搜索" : "搜索"}</button>
-      </form>
+      </form>}
     </div>
     {searching && <p className="pdfSearchStatus" role="status">正在搜索 PDF…</p>}
     {searchState.status === "ready" && <>
