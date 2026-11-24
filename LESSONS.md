@@ -896,3 +896,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: the standalone demo worked by direct URL, but the home page had no presentation link. The local seed also included saved chat turns that were not needed for the public presentation.
 - Action: add a visible home-page link and make the prepared-demo browser smoke start there. Pack only the original three example PDFs and their supporting files, plus the 12 saved artifacts. Omit chat messages and owner IDs.
 - Verification: both local viewport checks start at the home page and open the saved demo with task submission blocked. A separately extracted public seed initialized all three summaries, maps and research results without chat history. The production build and 156 backend tests passed.
+
+## L-20261123-69 — Verify cloud transfer and preserve production state during activation
+
+- Evidence: Edge blocked automated file access through the extension, and the first activation guard rejected CRLF lines in the live systemd environment file before either service was changed.
+- Action: foreground the correct OrcaTerm window, open the native picker and enter the explicitly selected archive through its file-name field. Compare archive hashes, build and test in a detached systemd unit, and normalize carriage returns only in the guard's read of the environment file. Keep the previous release, environment file and verified database and upload backup.
+- Verification: the upload and both inner archives matched SHA-256. The host built the standalone release and passed 156 backend and 14 frontend tests. Backup checked 37,825 file references. Fresh browser sessions verified the public homepage, both viewport widths and all demonstration material with job submission blocked. A session from before the switch retained the same papers, synthesis and PDF range hash. See the current release record in `deploy/README.md`.
