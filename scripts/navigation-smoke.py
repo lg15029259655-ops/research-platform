@@ -2358,7 +2358,8 @@ def prepared_demo(browser, frontend, backend, width):
             title = paper.locator("strong").inner_text()
             paper.click()
             expect(page.get_by_role("heading", name=title, exact=True)).to_be_visible()
-            expect(page.get_by_role("tab", name="论文精读")).to_have_attribute("aria-selected", "true")
+            expected_tab = "论文精读" if index == 0 else "实验导图"
+            expect(page.get_by_role("tab", name=expected_tab)).to_have_attribute("aria-selected", "true")
             expect(page.get_by_text("正在打开页面…", exact=True)).to_have_count(0)
             if width >= 760:
                 expect(library).to_have_attribute("data-smoke-mounted", "true")
