@@ -1,8 +1,5 @@
 "use client";
 
-import PreparedDiscovery from "@/prepared/discover";
-import { preparedWorkspace } from "@/prepared/config";
-
 import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -15,6 +12,8 @@ import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspac
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import { tabGroup } from "@/lib/tabs";
 import { deferredPanel } from "@/components/deferred-panel";
+import preparedDiscovery from "@/prepared/discovery.json";
+import preparedConstellation from "@/prepared/constellation.json";
 
 const CitationGraph = deferredPanel(() => import("@/components/CitationGraph"), "星座视图");
 const LineageGraph = deferredPanel(() => import("@/components/lineage/LineageGraph"), "谱系图");
@@ -31,6 +30,9 @@ type DiscoveryView = {
 
 const domains: Record<string, string> = { biomed: "生物科学", review: "综述", general: "领域待确认" };
 const emptySearch: Search = { items: [], count: 0, page: 0, mode: "semantic" };
+const exampleSearch: Search = { ...preparedDiscovery.search, mode: "semantic" };
+const exampleLineage = preparedDiscovery.lineage as LineageResponse;
+const exampleLineages = new Set(preparedDiscovery.preparedLineages);
 let lastSearch: { query: string; result: Search } | null = null;
 
 const discoveryViewKey = (query: string, result: Search) =>
@@ -49,10 +51,6 @@ async function lookup<T>(path: string, controller: AbortController, timeout: num
 }
 
 export default function DiscoverPage() {
-  return preparedWorkspace ? <PreparedDiscovery /> : <EditableDiscovery />;
-}
-
-function EditableDiscovery() {
   const router = useRouter();
   const urlQuery = useSearchParams().get("q")?.trim() || "";
   const [query, setQuery] = useState("");
@@ -152,14 +150,28 @@ function EditableDiscovery() {
     const version = ++searchVersion.current;
     setBusy(false); setError("");
     resetRelations();
-    const term = urlQuery || workspace?.query || "";
+    const term = urlQuery || workspace?.query || preparedDiscovery.query;
     setQuery(term);
     const previous = lastSearch?.query === term ? lastSearch.result : null;
     const mode = window.localStorage.getItem("medread-search-mode") === "keyword" ? "keyword" : "semantic";
-    const matchingResult = previous?.mode === mode ? previous : null;
+    const defaultExample = term.toLowerCase() === preparedDiscovery.query.toLowerCase();
+    const matchingResult = previous?.mode === mode ? previous : defaultExample ? exampleSearch : null;
     setMode(mode);
     setResult(matchingResult || emptySearch);
     setResultQuery(matchingResult ? term : "");
+    if (matchingResult === exampleSearch) {
+      setMode("semantic");
+      const remembered = readTabDraft<DiscoveryView>(discoveryViewKey(term, exampleSearch));
+      const exampleCenter = exampleLineage.center.openalex_id;
+      if (!remembered?.lineageCenter || remembered.lineageCenter === exampleCenter) {
+        setLineage(exampleLineage);
+        setLineageCenter(exampleCenter);
+      }
+      if (!remembered?.graphCenter || remembered.graphCenter === exampleCenter) {
+        setGraph(preparedConstellation);
+        setCenter(exampleCenter);
+      }
+    }
     setTopicConfirmation(null);
     if (urlQuery && !matchingResult) {
       void search(1, term, false, mode, true);
@@ -280,8 +292,9 @@ function EditableDiscovery() {
     graphRequest.current = controller;
     setLoadingGraph(true); setPendingCenter(workId); setGraphError("");
     try {
-      const data = await lookup<Graph>(`/api/research/graph/${workId}${refresh ? "?refresh=true" : ""}`,
-        controller, 45000, "星座视图读取超时，请重试。");
+      const data = !refresh && workId === exampleLineage.center.openalex_id ? preparedConstellation
+        : await lookup<Graph>(`/api/research/graph/${workId}${refresh ? "?refresh=true" : ""}`,
+          controller, 45000, "星座视图读取超时，请重试。");
       if (controller.signal.aborted) return;
       setGraph(data); setCenter(workId);
       const previous = viewKey ? readTabDraft<DiscoveryView>(viewKey) : null;
@@ -305,8 +318,20 @@ function EditableDiscovery() {
     lineageRequest.current = controller;
     setLoadingLineage(true); setLineageError("");
     try {
-      const data = await lookup<LineageResponse>(`/api/research/lineage/${workId}${refresh ? "?refresh=true" : ""}`,
-        controller, 45000, "谱系图读取超时，请重试。");
+      let data: LineageResponse;
+      if (!refresh && exampleLineages.has(workId)) {
+        if (workId === exampleLineage.center.openalex_id) data = exampleLineage;
+        else {
+          const response = await fetch(`/prepared-discovery/${encodeURIComponent(workId)}.json`, {
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+          });
+          if (!response.ok) throw new Error("暂时无法读取已保存的谱系。");
+          data = await response.json() as LineageResponse;
+        }
+      } else {
+        data = await lookup<LineageResponse>(`/api/research/lineage/${workId}${refresh ? "?refresh=true" : ""}`,
+          controller, 45000, "谱系图读取超时，请重试。");
+      }
       if (controller.signal.aborted) return;
       setLineage(data); setLineageCenter(workId);
       const previous = viewKey ? readTabDraft<DiscoveryView>(viewKey) : null;

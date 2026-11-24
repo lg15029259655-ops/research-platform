@@ -1,8 +1,5 @@
 "use client";
 
-import PreparedSynthesis from "@/prepared/synthesis";
-import { preparedWorkspace } from "@/prepared/config";
-
 import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -38,10 +35,6 @@ function updateSynthesisUrl(params: URLSearchParams) {
 }
 
 export default function SynthesisPage() {
-  return preparedWorkspace ? <PreparedSynthesis /> : <EditableSynthesis />;
-}
-
-function EditableSynthesis() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const view = searchParams.get("view");

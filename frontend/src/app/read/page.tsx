@@ -1,8 +1,5 @@
 "use client";
 
-import PreparedReader from "@/prepared/reader";
-import { preparedWorkspace } from "@/prepared/config";
-
 import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -158,10 +155,6 @@ async function confirmPaperDeletion(id: string) {
 }
 
 export default function ReadPage() {
-  return preparedWorkspace ? <PreparedReader /> : <EditableReader />;
-}
-
-function EditableReader() {
   const searchParams = useSearchParams();
   const paperParam = searchParams.get("paper");
   const linkPage = searchParams.get("page");
@@ -696,7 +689,11 @@ function EditableReader() {
 
   function jumpTo(unitId: string) {
     const unit = paper?.units?.find((item) => item.id === unitId);
-    if (unit?.page_start) changePdfPage(unit.page_start);
+    jumpToPdfPage(unit?.page_start ?? undefined);
+  }
+
+  function jumpToPdfPage(next?: number) {
+    if (next) changePdfPage(next);
     if (compact) setCompactMode("pdf");
     else setDesktopMode("split");
     setReaderTab("read");
@@ -1028,7 +1025,7 @@ function EditableReader() {
       </>}
       {readerTab === "experiments" && <>
         {experimentsBusy && <JobProgress title="正在提取论文实验链" stageLabel={experimentsStage} progress={experimentsProgress} startedAt={experimentsStartedAt} hint="可在这篇论文内切换视图；离开论文会停止任务" onCancel={() => experimentsAbort.current?.abort()} />}
-        <PaperExperimentsPanel payload={experiments} pending={experimentsBusy} onJump={jumpTo} />
+        <PaperExperimentsPanel payload={experiments} pending={experimentsBusy} onJump={jumpTo} onPage={jumpToPdfPage} />
       </>}
       <div className="split" key={paper.id} hidden={readerTab !== "read"}>
         <RetainedPane active={showPdf} compact={compact} panel="pdf" className="pdfColumn" pdfMode={mode} style={{ "--pdf-w": `${pdfWidth}%` } as CSSProperties}><PdfPane paperId={paper.id} fileVersion={paper.file_version} page={page} totalPages={paper.page_count} onPageChange={changePdfPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" role="separator" aria-orientation="vertical" tabIndex={0} aria-valuenow={Math.round(pdfWidth)} aria-valuemin={30} aria-valuemax={70} aria-label="调整 PDF 与 AI 面板宽度" onKeyDown={(e) => { let next = pdfWidth; if (e.key === "ArrowLeft") next = Math.max(30, pdfWidth - 2); else if (e.key === "ArrowRight") next = Math.min(70, pdfWidth + 2); else if (e.key === "Home") next = 30; else if (e.key === "End") next = 70; else return; e.preventDefault(); setPdfWidth(next); window.localStorage.setItem("reader-pdf-width", String(next)); }} onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</RetainedPane>

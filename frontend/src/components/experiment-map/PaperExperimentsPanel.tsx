@@ -28,6 +28,7 @@ export type PaperExperimentsPayload = {
   summary: string;
   experiments: PaperExperiment[];
   generated_by: "ai" | "rules" | string;
+  cited_evidence?: { title: string; page: number; description: string }[];
 };
 
 /**
@@ -36,10 +37,11 @@ export type PaperExperimentsPayload = {
  * 与设计页的"实验设计图"不同：这里只呈现论文里出现过的实验，
  * 每个实验挂真实阅读单元的页码，点击即可回到 PDF 核对。
  */
-export default function PaperExperimentsPanel({ payload, pending, onJump }: {
+export default function PaperExperimentsPanel({ payload, pending, onJump, onPage }: {
   payload: PaperExperimentsPayload | null;
   pending: boolean;
   onJump: (unitId: string) => void;
+  onPage: (page: number) => void;
 }) {
   if (pending && !payload) {
     return (
@@ -50,6 +52,27 @@ export default function PaperExperimentsPanel({ payload, pending, onJump }: {
         </div>
       </section>
     );
+  }
+
+  const cited = payload?.cited_evidence;
+  if (cited?.length) {
+    return <section className="pe-panel" aria-label="论文实验导图">
+      <header className="pe-head"><div>
+        <span className="pe-kicker">PAPER EXPERIMENTS</span>
+        <h2>论文实验导图</h2>
+        <p className="pe-summary">综述引用的实验线索。页码指向综述原文。</p>
+      </div><div className="pe-meta"><strong>{cited.length}</strong><span>项引用实验</span></div></header>
+      <ol className="pe-flow">{cited.map((item, index) => (
+        <li className="pe-step" key={item.title} style={{ "--pe-accent": CARD_ACCENTS[index % CARD_ACCENTS.length] } as CSSProperties}>
+          <div className="pe-rail" aria-hidden="true"><span className="pe-order">{String(index + 1).padStart(2, "0")}</span></div>
+          <article className="pe-card">
+            <div className="pe-titleBlock"><h3>{item.title}</h3></div>
+            <p className="pe-result">{item.description}</p>
+            <button type="button" className="pe-page" onClick={() => onPage(item.page)}>p.{item.page}</button>
+          </article>
+        </li>
+      ))}</ol>
+    </section>;
   }
 
   if (!payload || !payload.experiments.length) {

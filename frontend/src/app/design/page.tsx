@@ -1,8 +1,5 @@
 "use client";
 
-import PreparedDesign from "@/prepared/design";
-import { preparedWorkspace } from "@/prepared/config";
-
 import PageMain from "@/components/PageMain";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -97,10 +94,6 @@ async function restoreSavedVersion(
 }
 
 export default function DesignPage() {
-  return preparedWorkspace ? <PreparedDesign /> : <EditableDesign />;
-}
-
-function EditableDesign() {
   const params = useSearchParams();
   const historical = params.get("version");
   return historical ? <DesignPreview key={historical} id={historical} stage={params.get("stage")} /> : <DesignWorkspace />;

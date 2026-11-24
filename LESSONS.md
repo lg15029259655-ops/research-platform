@@ -914,3 +914,10 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: both builds left staging directories and uploaded archives on the host. The old `/demo` route served a client redirect via HTML refresh, so testing for an HTTP Location header alone failed.
 - Action: check the live release pointer, service working directories, and symlink targets of both the current and rollback releases. Compare upload hashes with local copies before removing the two staging directories and two duplicate uploads.
 - Verification: the production browser suite passed at both viewport widths. All three public PDFs matched the local originals. Cleanup removed 1,438 MiB of staging directories and uploads, and both production services and the database health check were healthy afterward. The current and rollback releases remain in place.
+
+## L-20261123-72 — Prepare default results inside the existing workspace
+
+- Evidence: the simplified public routes removed the original controls, the workspace bar, and the constellation view. The user wanted prepared content inside the existing design and requested local review before another deployment.
+- Action: restore the four existing workspaces. Supply the discovery search and both default graphs as snapshots. Load the three reading examples, comparison, novelty scan, and design version through the same per-visitor APIs used by normal workspaces. Preserve the established controls and verify them in the prepared-content smoke test.
+- Verification: Chrome at 390 and 1440 pixels read both graphs, all three papers and their maps, the PDF, the three synthesis views, and both design views with analysis submissions and live discovery calls blocked. It also checked the upload and editing controls. The production build, 156 backend tests and 14 frontend tests passed.
+- Boundary: validate with a separate local database and upload directory. The published release remains as recorded in `deploy/README.md`.

@@ -14,7 +14,7 @@
 
 此目录只包含部署模板，不包含服务器凭据或正式密钥。2026-10-09 用户截图显示域名命名状态已为“正常”；该状态不等于实名认证或 ICP 备案完成。新网站 ICP 备案完成前，不要把新域名公开解析到中国内地服务器，也不要启用 Nginx 站点。
 
-公开成果版的构建设置为 `NEXT_PUBLIC_PREPARED_WORKSPACE=1`、`NEXT_PUBLIC_API_URL=''`、`DEPLOY_STANDALONE=1`。构建后同时复制 `frontend/public` 和 `.next/static`。标准导航直接读取随版本发布的检索、谱系、三篇论文、综合和设计成果。手动检索其他主题仍使用同源 API。用 `scripts/navigation-smoke.py --prepared-demo` 验证默认浏览路径无需提交任务。
+本地待验收版使用四个原有工作区。默认检索、谱系图和星座视图随前端发布。通过 `DEMO_SEED_DIR` 给新会话加载三篇精读示例、综合、扫描和设计，使用独立数据库和上传目录即可本地预览。运行 `scripts/navigation-smoke.py --prepared-demo` 可验证原有操作入口可用，且默认浏览无需提交任务。
 
 上次校园雷达部署故障及本次防错关口见 [部署复盘](../docs/deployment-retrospective.md)。本机运行 `python deploy/preflight.py`；发布包传到目标 Linux 主机并完成目录、env、venv 准备后，以具备读取生产 env 权限的账号运行 `python3 deploy/preflight.py --server`。检查只读取状态，不修改旧站点；有 `FAIL` 就停止启用新站点。Windows 若 `python` 指向 Microsoft Store，请使用 `backend/.venv/Scripts/python.exe`。
 

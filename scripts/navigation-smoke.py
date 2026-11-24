@@ -2190,15 +2190,13 @@ def prepared_demo(browser, frontend, backend, width):
     context = browser.new_context(viewport={"width": width, "height": 900})
     unexpected = []
     images = []
-    if width >= 1000:
-        context.add_cookies([{"name": "medread_session", "value": "prior-workspace-fixture", "url": frontend}])
-
     def prevent_generation(route):
-        if route.request.url.endswith("/api/health"):
-            route.continue_()
-        else:
+        path = urlsplit(route.request.url).path
+        if route.request.method == "POST" or path.startswith(("/api/research/discover", "/api/research/lineage", "/api/research/graph")):
             unexpected.append(route.request.url)
             route.abort()
+        else:
+            route.continue_()
 
     try:
         context.route(re.compile(rf"^{re.escape(backend)}/api/"), prevent_generation)
@@ -2209,54 +2207,61 @@ def prepared_demo(browser, frontend, backend, width):
         expect(page.get_by_role("link", name="查看演示")).to_have_count(0)
         page.locator(".home-nav").get_by_role("link", name="发现").click()
         expect(page.get_by_role("textbox", name="论文检索")).to_have_value("single cell RNA sequencing")
-        expect(page.locator(".workList details")).to_have_count(10)
+        expect(page.locator(".workList .workCard")).to_have_count(10)
         page.get_by_role("tab", name="文献谱系").click()
-        expect(page.get_by_role("heading", name="文献谱系")).to_be_visible()
-        expect(page.get_by_text(re.compile(r"\d+ 篇文献 · \d+ 条联系"))).to_be_visible()
-        page.get_by_role("tab", name="列表", exact=True).click()
-        last_result = page.locator(".workList details").last
-        last_title = last_result.locator("summary strong").inner_text()
-        last_result.locator("summary").click()
-        last_result.get_by_role("button", name="查看谱系").click()
-        expect(page.get_by_role("heading", name="文献谱系")).to_be_visible()
-        expect(page.get_by_text(re.compile(rf"^{re.escape(last_title)} · \d+ 篇文献"))).to_be_visible()
+        expect(page.get_by_role("tab", name="谱系图", exact=True)).to_have_attribute("aria-selected", "true")
+        expect(page.locator(".graphAside .workCard")).to_be_visible()
+        page.get_by_role("tab", name="星座视图").click()
+        expect(page.get_by_role("tab", name="星座视图")).to_have_attribute("aria-selected", "true")
+        expect(page.locator(".graphAside .workCard")).to_be_visible()
+        expect(page.locator(".graphRegion canvas").first).to_be_visible(timeout=15000)
 
         page.get_by_role("link", name="深度精读").click()
         expect(page.get_by_role("heading", name="全文解读")).to_be_visible()
-        library = page.locator(".preparedLibrary")
-        expect(library.get_by_role("button")).to_have_count(3)
-        library.evaluate("(node) => node.dataset.check = 'mounted'")
+        library = page.locator("#reader-library")
+        expect(library.locator(".paperItem")).to_have_count(3)
+        if width >= 760:
+            library.evaluate("(node) => node.dataset.smokeMounted = 'true'")
         for index in range(3):
-            paper = library.get_by_role("button").nth(index)
-            title = paper.inner_text()
+            if width < 760:
+                page.get_by_role("button", name="展开论文库").click()
+            expect(library.get_by_role("button", name=re.compile(r"上传 PDF"))).to_be_visible()
+            paper = library.locator(".paperItem").nth(index)
+            title = paper.locator("strong").inner_text()
             paper.click()
             expect(page.get_by_role("heading", name=title, exact=True)).to_be_visible()
+            page.get_by_role("tab", name="全文解读").click()
             expect(page.get_by_role("heading", name="全文解读")).to_be_visible()
-            expect(library).to_have_attribute("data-check", "mounted")
             expect(page.get_by_text("正在打开页面…", exact=True)).to_have_count(0)
+            if width >= 760:
+                expect(library).to_have_attribute("data-smoke-mounted", "true")
             page.get_by_role("tab", name="行文导图").click()
             expect(page.get_by_role("button", name="展开全部")).to_be_enabled()
             page.get_by_role("tab", name="实验导图").click()
             expect(page.get_by_role("heading", name="论文实验导图")).to_be_visible()
-            if index:
-                expect(page.locator(".preparedEvidence li").first).to_be_visible()
-        page.get_by_role("tab", name="原文 PDF").click()
+            expect(page.locator(".pe-flow li").first).to_be_visible()
+        page.get_by_role("tab", name="论文精读").click()
+        page.locator("#reader-mode-pdf").click()
         expect(page.locator(".pdfCanvas canvas").first).to_be_visible(timeout=12000)
         page.get_by_role("link", name="文献综合", exact=True).click()
-        expect(page.locator(".preparedMatrix").first).to_be_visible()
-        page.get_by_role("tab", name="证据地图").click()
+        expect(page.get_by_role("tab", name="论文对比")).to_be_visible()
+        page.get_by_role("tab", name="证据关系").click()
         expect(page.get_by_text("文献证据关系", exact=True)).to_be_visible()
         page.get_by_role("tab", name="研究空白").click()
         expect(page.locator(".gapPath")).to_be_visible()
         page.get_by_role("link", name="科研设计", exact=True).click()
+        expect(page.get_by_role("heading", name=re.compile(r"^新颖性扫描"))).to_be_visible()
+        expect(page.get_by_role("textbox", name="我的研究想法")).to_be_enabled()
+        with page.expect_response(lambda response: "/research-elements/" in response.url
+                                  and response.url.endswith(".webp") and response.ok):
+            page.get_by_role("tab", name="设计沙盘").click()
         expect(page.get_by_role("heading", name="从研究问题到验证")).to_be_visible()
         page.locator(".er-stage-main").first.click()
         expect(page.locator(".er-stage-main").first).to_have_attribute("aria-expanded", "true")
-        page.wait_for_function("performance.getEntriesByType('resource').some(entry => entry.name.includes('/research-elements/') && entry.name.endsWith('.webp'))")
+        expect(page.get_by_role("button", name="编辑阶段")).to_be_enabled()
         assert images and all(url.endswith(".webp") and status == 200 for url, status in images), images
         page.get_by_role("tab", name="新颖性扫描").click()
-        expect(page.get_by_role("heading", name="新颖性扫描")).to_be_visible()
-        assert page.locator("main a[href^='https://openalex.org/']").count() >= 8
+        expect(page.get_by_role("heading", name=re.compile(r"^新颖性扫描"))).to_be_visible()
         assert not unexpected, unexpected
     finally:
         context.close()
