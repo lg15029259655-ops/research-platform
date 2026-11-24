@@ -2186,6 +2186,75 @@ def keyboard_navigation(browser, frontend, viewport=None):
     context.close()
 
 
+def paper_transitions(browser, frontend, backend, width):
+    context = browser.new_context(viewport={"width": width, "height": 900})
+    try:
+        papers = context.request.get(f"{backend}/api/papers").json()
+        first, second = papers[:2]
+        first_url = f"{backend}/api/papers/{first['id']}"
+        second_url = f"{backend}/api/papers/{second['id']}"
+        page = context.new_page()
+        page.goto(f"{frontend}/read?{urlencode({'paper': first['id']})}")
+        expect(page.get_by_role("heading", name=first["title"], exact=True)).to_be_visible()
+        expect(page.locator(".pdfCanvas canvas").first).to_be_visible()
+
+        waiting = []
+        context.route(second_url, lambda route: waiting.append(route))
+        if width < 760:
+            page.get_by_role("button", name="展开论文库").click()
+        with page.expect_request(second_url):
+            page.locator(".paperItem").filter(has_text=second["title"]).click()
+        expect(page.get_by_text("正在切换论文…", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name=first["title"], exact=True)).to_be_visible()
+        expect(page.locator(".pdfCanvas canvas").first).to_be_visible()
+        expect(page.get_by_text("正在打开论文…", exact=True)).to_have_count(0)
+        waiting[0].fulfill(status=503, json={"detail": "模拟网络中断"})
+        expect(page.get_by_role("alert").filter(has_text="模拟网络中断")).to_be_visible()
+        expect(page.get_by_role("heading", name=first["title"], exact=True)).to_be_visible()
+        with page.expect_request(second_url):
+            page.get_by_role("button", name="重试打开论文").click()
+        waiting[1].fulfill(json=context.request.get(second_url).json())
+        context.unroute(second_url)
+        expect(page.get_by_role("heading", name=second["title"], exact=True)).to_be_visible()
+        expect(page.locator(".pdfCanvas canvas").first).to_be_visible()
+
+        def link_saved_paper(route):
+            summary = context.request.get(route.request.url).json()
+            matched = next(paper for paper in summary if paper["id"] == first["id"])
+            matched["openalex_id"] = "W2516455020"
+            route.fulfill(json=summary)
+
+        context.route(re.compile(r"/api/papers\?view=summary$"), link_saved_paper)
+        page.get_by_role("link", name="科研发现", exact=True).click()
+        link = page.get_by_role("link", name=re.compile("打开全文精读")).first
+        expect(link).to_be_visible()
+        page.evaluate("""() => {
+            window.readerFlashes = [];
+            function checkFrame() {
+                const fallback = [...document.querySelectorAll(".routeLoading, .reader .welcome[aria-busy='true']")];
+                const headings = [...document.querySelectorAll("main h1")];
+                if (fallback.some(node => node.getClientRects().length) || !headings.some(node => node.getClientRects().length)) {
+                    window.readerFlashes.push(location.pathname);
+                }
+                requestAnimationFrame(checkFrame);
+            }
+            requestAnimationFrame(checkFrame);
+        }""")
+        waiting.clear()
+        context.route(re.compile(rf"^{re.escape(first_url)}$"), lambda route: waiting.append(route))
+        with page.expect_request(first_url):
+            link.click()
+        expect(link).to_have_attribute("aria-busy", "true")
+        expect(page.locator(".workList .workCard").first).to_be_visible()
+        waiting[0].fulfill(json=context.request.get(first_url).json())
+        expect(page.get_by_role("heading", name=first["title"], exact=True)).to_be_visible()
+        expect(page.locator(".pdfCanvas canvas").first).to_be_visible()
+        assert len(waiting) == 1, f"Opening from discovery fetched a detail {len(waiting)} times"
+        assert page.evaluate("window.readerFlashes") == [], "A loading screen replaced the visible workspace"
+    finally:
+        context.close()
+
+
 def prepared_demo(browser, frontend, backend, width):
     context = browser.new_context(viewport={"width": width, "height": 900})
     unexpected = []
@@ -2290,6 +2359,7 @@ if __name__ == "__main__":
             if args.prepared_demo:
                 for width in (390, 1440):
                     prepared_demo(browser, args.frontend, args.backend, width)
+                    paper_transitions(browser, args.frontend, args.backend, width)
                 print("MedRead prepared demo passed")
                 raise SystemExit(0)
             smoke(browser, args.frontend, args.backend)

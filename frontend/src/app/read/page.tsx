@@ -15,6 +15,7 @@ import { setPaperInSynthesis, updateWorkspace, useWorkspace } from "@/lib/worksp
 import { tabGroup } from "@/lib/tabs";
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import { deferredPanel } from "@/components/deferred-panel";
+import { getReaderEntry, invalidateReaderEntry } from "@/lib/reader-entry";
 import "./enhancements.css";
 
 const PdfPane = deferredPanel(() => import("@/components/PdfPane"), " PDF", "pdfPaneLoading");
@@ -171,15 +172,16 @@ export default function ReadPage() {
   const [libraryError, setLibraryError] = useState(false);
   const [papers, setPapers] = useState<PaperSummary[]>([]);
   const [paperToRefresh, setPaperToRefresh] = useState<{ id: string; removed: boolean } | null>(null);
-  const [record, setPaper] = useState<Paper | null>(null);
-  const paper = record?.id === selectedId ? record : null;
-  const sourceChanged = !!paper?.file_available && !!sourceFile && sourceFile !== paper.file_version;
+  const [record, setPaper] = useState<Paper | null>(() => paperParam ? getReaderEntry<Paper>(paperParam) ?? null : null);
+  const paper = selectedId && record && deletions[record.id]?.status !== "deleted" ? record : null;
+  const switchingPaper = !!paper && paper.id !== selectedId;
+  const sourceChanged = !switchingPaper && !!paper?.file_available && !!sourceFile && sourceFile !== paper.file_version;
   const validLinkPage = validPdfPage(paper, requestedPage);
-  const invalidLinkPage = !!paper?.file_available && linkPage !== null && !validLinkPage;
+  const invalidLinkPage = !switchingPaper && !!paper?.file_available && linkPage !== null && !validLinkPage;
   const [openAttempt, setOpenAttempt] = useState(0);
   const [paperOpenError, setPaperOpenError] = useState<{ id: string; message: string } | null>(null);
   const openError = paperOpenError?.id === selectedId ? paperOpenError.message : "";
-  const openingPaper = !!selectedId && !paper && !openError;
+  const openingPaper = !!selectedId && (!paper || switchingPaper) && !openError;
   const [savedQuestion, setDraft] = useTabDraft<string>(paper ? questionDraftKey(paper.id) : null);
   const draft = typeof savedQuestion === "string" ? savedQuestion : "";
   const [pending, setPending] = useState(false);
@@ -195,8 +197,8 @@ export default function ReadPage() {
   const [desktopMode, setDesktopMode] = useTabDraft<Mode>("read-mode-desktop");
   const [compactMode, setCompactMode] = useTabDraft<"pdf" | "ai">("read-mode-compact");
   const preferredMode = compact ? compactMode ?? (desktopMode === "ai" ? "ai" : "pdf") : desktopMode ?? "split";
-  const requestedMode = searchParams.get("view");
-  const defaultMode = citation && preferredMode === "ai" ? "pdf" : preferredMode;
+  const requestedMode = switchingPaper ? null : searchParams.get("view");
+  const defaultMode = !switchingPaper && citation && preferredMode === "ai" ? "pdf" : preferredMode;
   const mode = requestedMode === "pdf" || requestedMode === "ai" || (requestedMode === "split" && !compact)
     ? requestedMode : defaultMode;
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -208,7 +210,7 @@ export default function ReadPage() {
   const focusedReaderControl = useRef<{ element: HTMLElement; region: "library" | "pane" } | null>(null);
   const [pdfWidth, setPdfWidth] = useState(38);
   const [activeHeading, setActiveHeading] = useState("");
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => record ? startingPdfPage(record, requestedPage, sourceFile) : 1);
   const [readerTab, setReaderTab] = useState<ReaderTab>("read");
   const [thinking, setThinking] = useState("");
   const [chatStartedAt, setChatStartedAt] = useState<number | null>(null);
@@ -304,7 +306,9 @@ export default function ReadPage() {
     const request = ++paperRequest.current;
     let data: Paper;
     try {
-      data = await apiJson<Paper>(`/api/papers/${encodeURIComponent(id)}`, { signal, cache: "no-store" });
+      if (!opening) invalidateReaderEntry(id);
+      const prepared = opening ? getReaderEntry<Paper>(id) : undefined;
+      data = prepared ?? await apiJson<Paper>(`/api/papers/${encodeURIComponent(id)}`, { signal, cache: "no-store" });
     } catch (error) {
       if (request !== paperRequest.current) return;
       throw error;
@@ -316,6 +320,9 @@ export default function ReadPage() {
     if (opening) {
       const params = new URLSearchParams(window.location.search);
       setPage(startingPdfPage(data, Number(params.get("page")), params.get("source_file")));
+      setReaderTab("read");
+      setMindmap(null);
+      setExperiments(null);
       if (readTabDraft<string>(lastPaperKey) !== id) writeTabDraft(lastPaperKey, id);
     }
     return data;
@@ -350,7 +357,7 @@ export default function ReadPage() {
     return () => controller.abort();
   }, [pending, selectedId, paperToRefresh, loadPaper]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     activePaper.current = selectedId;
     setPaperToRefresh(null);
     stopChat();
@@ -362,11 +369,12 @@ export default function ReadPage() {
     }
     setUnconfirmedParse(null);
     abortReaderJobs();
-    setPaper(null);
-    setReaderTab("read"); setMindmap(null); setExperiments(null);
     setThinking(""); setActiveHeading(""); setError(""); setCenterError(""); setParseProgress("");
     setPaperOpenError(null);
-    if (!selectedId) return;
+    if (!selectedId) {
+      setPaper(null);
+      return;
+    }
     const controller = new AbortController();
     const deadline = AbortSignal.timeout(10000);
     const signal = AbortSignal.any([controller.signal, deadline]);
@@ -389,8 +397,8 @@ export default function ReadPage() {
   }, [selectedId, showPdf]);
 
   useEffect(() => {
-    if (paper?.file_available) setPage(startingPdfPage(paper, requestedPage, sourceFile));
-  }, [paper?.id, paper?.file_available, paper?.file_version, requestedPage, sourceFile, validLinkPage]);
+    if (!switchingPaper && paper?.file_available) setPage(startingPdfPage(paper, requestedPage, sourceFile));
+  }, [switchingPaper, paper?.id, paper?.file_available, paper?.file_version, requestedPage, sourceFile, validLinkPage]);
 
   // 组件卸载（跳到别的页面）时取消后台任务，避免服务端为一个没人看的任务继续花钱。
   useEffect(() => {
@@ -411,7 +419,7 @@ export default function ReadPage() {
   // A paper can finish parsing after the initial upload wait, or while the
   // reader is closed. Resume lightweight polling when it is opened again.
   useEffect(() => {
-    if (!paper || pending || !parseStages[paper.status]) return;
+    if (!paper || switchingPaper || pending || !parseStages[paper.status]) return;
     const id = paper.id;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -445,7 +453,7 @@ export default function ReadPage() {
     };
     void poll();
     return () => { controller.abort(); if (timer) clearTimeout(timer); };
-  }, [paper?.id, paper?.status, pending, loadList, loadPaper]);
+  }, [paper?.id, paper?.status, switchingPaper, pending, loadList, loadPaper]);
 
   useEffect(() => {
     if (!compact) setDrawerOpen(false);
@@ -596,7 +604,7 @@ export default function ReadPage() {
 
   async function attach(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !paper || pending) return;
+    if (!file || !paper || switchingPaper || pending) return;
     const body = new FormData();
     body.append("file", file);
     try { await confirmParseRequest(paper, "attach", body); }
@@ -604,13 +612,13 @@ export default function ReadPage() {
   }
 
   async function reparse() {
-    if (!paper || pending || !window.confirm("重新识别会保留原 PDF、旧精读记录和综合结果，但会重置当前阅读位置。旧记录与新章节的关联将解除，旧综合结果需要重新核对。继续吗？")) return;
+    if (!paper || switchingPaper || pending || !window.confirm("重新识别会保留原 PDF、旧精读记录和综合结果，但会重置当前阅读位置。旧记录与新章节的关联将解除，旧综合结果需要重新核对。继续吗？")) return;
     await confirmParseRequest(paper, "reparse");
   }
 
   /** 章节骨架由后端确定性生成，AI 只补关键点。 */
   async function loadMindmap() {
-    if (!paper || paper.status !== "parsed") return;
+    if (!paper || switchingPaper || paper.status !== "parsed") return;
     if (mindmap || mindmapAbort.current) return;
     const controller = new AbortController();
     mindmapAbort.current = controller;
@@ -646,7 +654,7 @@ export default function ReadPage() {
 
   /** 实验导图 = 论文"实际做过"的实验链；与设计页"实验设计图"不同，源数据是方法与结果单元。 */
   async function loadExperiments() {
-    if (!paper || paper.status !== "parsed") return;
+    if (!paper || switchingPaper || paper.status !== "parsed") return;
     if (experiments || experimentsAbort.current) return;
     const controller = new AbortController();
     experimentsAbort.current = controller;
@@ -688,6 +696,7 @@ export default function ReadPage() {
   }
 
   function jumpToPdfPage(next?: number) {
+    if (switchingPaper) return;
     if (next) changePdfPage(next);
     if (compact) setCompactMode("pdf");
     else setDesktopMode("split");
@@ -695,7 +704,7 @@ export default function ReadPage() {
   }
 
   async function act(action: Action, message?: string) {
-    if (!paper || paper.status !== "parsed" || pending || chatRequest.current) return;
+    if (!paper || switchingPaper || paper.status !== "parsed" || pending || chatRequest.current) return;
     const controller = new AbortController();
     const network = new AbortController();
     const networkSignal = AbortSignal.any([controller.signal, network.signal]);
@@ -801,13 +810,15 @@ export default function ReadPage() {
 
   function selectPaper(id: string) {
     closeLibraryDrawer();
-    if (id === paperParam && paper) return;
+    if (id === paperParam && paper?.id === id) return;
     if (id === selectedId && openingPaper) return;
-    if (id === selectedId && !paper) {
+    if (id === selectedId) {
+      invalidateReaderEntry(id);
       setPaperOpenError(null);
       setOpenAttempt((attempt) => attempt + 1);
       return;
     }
+    invalidateReaderEntry(id);
     window.history.pushState(null, "", `/read?paper=${encodeURIComponent(id)}`);
   }
 
@@ -826,7 +837,7 @@ export default function ReadPage() {
   }
 
   async function queueForSynthesis() {
-    if (!paper || addingToSynthesis) return;
+    if (!paper || switchingPaper || addingToSynthesis) return;
     setAddingToSynthesis(true); setError("");
     try { await setPaperInSynthesis(paper.id, true, (workspace ?? await refresh()).query); }
     catch (e) { setError(e instanceof Error ? e.message : "无法加入待综合列表"); }
@@ -834,7 +845,7 @@ export default function ReadPage() {
   }
 
   async function setAsCenter() {
-    if (!paper || !workspace || settingCenter) return;
+    if (!paper || switchingPaper || !workspace || settingCenter) return;
     const id = paper.id;
     setSettingCenter(true); setCenterError("");
     try {
@@ -893,7 +904,7 @@ export default function ReadPage() {
   const figures = units.filter((unit) => unit.kind === "FIGURE");
   const figureIndex = current?.kind === "FIGURE" ? figures.findIndex((unit) => unit.id === current.id) + 1 : 0;
   const nextLabel = !current ? "开始精读 · 题目与摘要" : next?.kind === "FIGURE" ? `进入 ${next.heading}` : next?.kind === "RECAP" ? "全文总结" : next ? next.kind === "DISCUSSION" ? "进入 Discussion" : "下一部分" : "已读完";
-  const readerLoading = openingPaper || (!paperParam && !workspace && !workspaceError);
+  const readerLoading = !paper && (openingPaper || (!paperParam && !workspace && !workspaceError));
   const libraryOpen = compact ? drawerOpen : sidebarOpen;
   const libraryTerm = libraryQuery.trim().toLocaleLowerCase();
   const visiblePapers = papers.filter((item) => deletions[item.id]?.status !== "deleted" && (!libraryTerm
@@ -928,8 +939,9 @@ export default function ReadPage() {
           const deletion = deletions[item.id];
           return <div key={item.id}>
             <div className="paperRow">
-              <button className={`paperItem ${selectedId === item.id ? "selected" : ""}`} disabled={!!parseStage}
-                aria-current={selectedId === item.id ? "true" : undefined} onClick={() => selectPaper(item.id)}>
+              <button className={`paperItem ${paper?.id === item.id ? "selected" : ""}`} disabled={!!parseStage}
+                aria-current={paper?.id === item.id ? "true" : undefined}
+                aria-busy={openingPaper && selectedId === item.id} onClick={() => selectPaper(item.id)}>
                 <strong>{item.title}</strong><small>{item.original_filename}</small>
               </button>
               <button className="removePaper" title="删除论文" aria-label={`删除 ${item.title}`}
@@ -961,7 +973,7 @@ export default function ReadPage() {
       <div className="library">{libraryContents}</div>
     </dialog> : sidebarOpen && <aside id="reader-library" className="library" aria-labelledby="reader-library-title">{libraryContents}</aside>}
     <section className="workspace">
-      <header className="readerTop">
+      <header className="readerTop" aria-busy={openingPaper}>
         <div className="readerTitle">
           <button type="button" className="libraryToggle" ref={libraryToggle} onClick={toggleLibrary}
             aria-expanded={libraryOpen} aria-controls={compact || sidebarOpen ? "reader-library" : undefined} aria-haspopup={compact ? "dialog" : undefined}
@@ -974,14 +986,19 @@ export default function ReadPage() {
             <h1 title={paper?.title}>{paper?.title || (selectedId ? "深度精读" : readerLoading ? "正在打开精读" : "选择或上传一篇论文")}</h1>
           </div>
         </div>
-        {paper?.status === "parsed" && readerTab === "read" && <div ref={modeSwitch} className="modeSwitch" {...modeTabs.list} aria-label="阅读视图">
+        {paper?.status === "parsed" && readerTab === "read" && <div ref={modeSwitch} className="modeSwitch" inert={switchingPaper} {...modeTabs.list} aria-label="阅读视图">
           {modes.map((item) => <button key={item} type="button" {...modeTabs.item(item)} id={`reader-mode-${item}`}
             aria-controls={item === "split" ? "reader-pane-pdf reader-pane-ai" : `reader-pane-${item}`}>
             {item === "split" ? "左右分屏" : item === "pdf" ? (compact ? "原文 PDF" : "仅 PDF") : (compact ? "AI 讲解" : "仅 AI")}
           </button>)}
         </div>}
       </header>
-      {paper?.status === "parsed" && <div className="readerSubnav"><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">{compact ? "查看待综合 ↗" : "已选入综合 · 查看 ↗"}</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
+      {switchingPaper && selectedId && (openError ? <div className="alert readerSwitchNotice" role="alert">
+        <span>{openError}</span>
+        <button type="button" className="quietButton" onClick={() => selectPaper(selectedId)}>重试打开论文</button>
+        <button type="button" className="quietButton" onClick={() => window.history.replaceState(null, "", `/read?paper=${encodeURIComponent(paper.id)}`)}>继续阅读当前论文</button>
+      </div> : <p className="readerSwitchNotice" role="status">正在切换论文…</p>)}
+      {paper?.status === "parsed" && <div className="readerSubnav" inert={switchingPaper}><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">{compact ? "查看待综合 ↗" : "已选入综合 · 查看 ↗"}</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
       {error && <div className="alert" role="alert">{error}{pendingUpload && !pending && <button className="quietButton" onClick={() => void runUpload(pendingUpload)}>重试确认上传</button>}</div>}
       {unconfirmedParse && <div className="alert" role="alert">暂时无法确认 PDF 解析请求是否已受理。
         <button type="button" className="quietButton" disabled={pending} onClick={() => void confirmParseRequest(unconfirmedParse)}>核对解析状态</button>
@@ -1010,7 +1027,7 @@ export default function ReadPage() {
         {experimentsBusy && <JobProgress title="正在提取论文实验链" stageLabel={experimentsStage} progress={experimentsProgress} startedAt={experimentsStartedAt} hint="可在这篇论文内切换视图；离开论文会停止任务" onCancel={() => experimentsAbort.current?.abort()} />}
         <PaperExperimentsPanel payload={experiments} pending={experimentsBusy} onJump={jumpTo} onPage={jumpToPdfPage} />
       </>}
-      <div className="split" key={paper.id} hidden={readerTab !== "read"}>
+      <div className="split" key={paper.id} inert={switchingPaper} hidden={readerTab !== "read"}>
         <RetainedPane active={showPdf} compact={compact} panel="pdf" className="pdfColumn" pdfMode={mode} style={{ "--pdf-w": `${pdfWidth}%` } as CSSProperties}><PdfPane paperId={paper.id} fileVersion={paper.file_version} page={page} totalPages={paper.page_count} onPageChange={changePdfPage} />{mode === "split" && <div className="dragHandle" title="拖动调整宽度" role="separator" aria-orientation="vertical" tabIndex={0} aria-valuenow={Math.round(pdfWidth)} aria-valuemin={30} aria-valuemax={70} aria-label="调整 PDF 与 AI 面板宽度" onKeyDown={(e) => { let next = pdfWidth; if (e.key === "ArrowLeft") next = Math.max(30, pdfWidth - 2); else if (e.key === "ArrowRight") next = Math.min(70, pdfWidth + 2); else if (e.key === "Home") next = 30; else if (e.key === "End") next = 70; else return; e.preventDefault(); setPdfWidth(next); window.localStorage.setItem("reader-pdf-width", String(next)); }} onPointerDown={(e) => { const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX; const start = pdfWidth; const total = target.parentElement?.parentElement?.clientWidth || 1000; target.onpointermove = (move) => { const width = Math.max(30, Math.min(70, start + (move.clientX - startX) / total * 100)); setPdfWidth(width); window.localStorage.setItem("reader-pdf-width", String(width)); }; target.onpointerup = () => { target.onpointermove = null; target.onpointerup = null; }; }} />}</RetainedPane>
         <RetainedPane active={showChat} compact={compact} panel="ai" className="chatColumn"><div className="readingStatus"><span>当前阅读位置</span><strong>{activeHeading || current?.heading || "尚未开始"}</strong><small>阅读进度已保存；提问不会推进。</small>{figureIndex > 0 && <div className="figureProgress">Figure {figureIndex} / {figures.length}<div>{figures.map((unit, i) => <span key={unit.id} className={i < figureIndex ? "filled" : ""}>●</span>)}</div></div>}</div>
           <div className="messages" ref={messagesRef} onScroll={(event) => { const box = event.currentTarget; followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }}>{!paper.messages?.length && !stream && !thinking && <div className="chatIntro">点击“开始精读”，先读题目与摘要。之后每次只推进一个阅读单元。</div>}{paper.messages?.map((item) => <div key={item.id} className={`bubble ${item.role}`}><span>{item.role === "user" ? "你" : "精读助手"}{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "FIGURE" && <em className={item.visual_verified ? "verified" : "unverified"}>{item.visual_verified ? "视觉解析已完成" : "基于正文和图注，图像未核验"}</em>}</span>{item.role === "assistant" && units.find((unit) => unit.id === item.reading_unit_id)?.kind === "RECAP" ? <SummaryCards content={item.content} /> : <div className="markdownBody"><Markdown content={item.content} /></div>}</div>)}<ThinkingTrail text={thinking} active={pending && !!thinking.trim()} />{stream && <div className="bubble assistant"><span>{chatStartedAt === null ? "精读助手 · 回复已保存" : "精读助手 · 正在生成"}</span><div className="markdownBody streamText">{stream}</div></div>}</div>

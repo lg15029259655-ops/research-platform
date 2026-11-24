@@ -12,6 +12,7 @@ import { changeWorkspaceTopic, setPaperInSynthesis, updateWorkspace, useWorkspac
 import { readTabDraft, useTabDraft, writeTabDraft } from "@/lib/tab-draft";
 import { tabGroup } from "@/lib/tabs";
 import { deferredPanel } from "@/components/deferred-panel";
+import { prepareReaderEntry } from "@/lib/reader-entry";
 import preparedDiscovery from "@/prepared/discovery.json";
 import preparedConstellation from "@/prepared/constellation.json";
 
@@ -80,12 +81,14 @@ export default function DiscoverPage() {
   const [loadingGraph, setLoadingGraph] = useState(false);
   const [pendingCenter, setPendingCenter] = useState<string | null>(null);
   const [pendingWorkId, setPendingWorkId] = useState<string | null>(null);
+  const [pendingReaderId, setPendingReaderId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [unconfirmedAttachment, setUnconfirmedAttachment] = useState<Paper | null>(null);
   const searchVersion = useRef(0);
   const searchRequest = useRef<AbortController | null>(null);
   const graphRequest = useRef<AbortController | null>(null);
   const lineageRequest = useRef<AbortController | null>(null);
+  const readerEntry = useRef<{ id: string; controller: AbortController } | null>(null);
   const lineageTried = useRef<string | null>(null);
   const graphTried = useRef<string | null>(null);
   const initializedEntry = useRef<string | null>(null);
@@ -119,6 +122,7 @@ export default function DiscoverPage() {
       searchRequest.current?.abort();
       graphRequest.current?.abort();
       lineageRequest.current?.abort();
+      readerEntry.current?.controller.abort();
     };
   }, []);
   useEffect(() => {
@@ -460,8 +464,28 @@ export default function DiscoverPage() {
     finally { setBusy(false); }
   }
 
-  function openReader(id: string) {
-    if (active.current) router.push(`/read?paper=${encodeURIComponent(id)}`);
+  async function openReader(id: string) {
+    if (!active.current || readerEntry.current?.id === id) return;
+    readerEntry.current?.controller.abort();
+    const controller = new AbortController();
+    readerEntry.current = { id, controller };
+    const href = `/read?paper=${encodeURIComponent(id)}`;
+    setPendingReaderId(id);
+    setError("");
+    router.prefetch(href);
+    try {
+      await prepareReaderEntry(id, AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]));
+      if (!controller.signal.aborted && active.current) router.push(href);
+    } catch (error) {
+      if (!controller.signal.aborted && active.current) {
+        setError(error instanceof ApiError ? error.message : "暂时无法打开论文，可以重试。");
+      }
+    } finally {
+      if (readerEntry.current?.controller === controller) {
+        readerEntry.current = null;
+        if (active.current) setPendingReaderId(null);
+      }
+    }
   }
 
   function workCard(work: Work, compact = false) {
@@ -471,12 +495,13 @@ export default function DiscoverPage() {
     const pdfStatus = fulltext ? "已有全文" : paper ? paperLibraryIssue(paper)
       : libraryStatus === "ready" ? "尚无全文" : libraryStatus === "loading" ? "正在核对全文" : "全文状态待确认";
     const linkLabel = fulltext ? "打开全文精读" : parsing ? "查看解析进度" : "打开论文处理";
-    const acting = pendingWorkId === work.openalex_id;
+    const opening = !!paper && pendingReaderId === paper.id;
+    const acting = pendingWorkId === work.openalex_id || opening;
     return <article key={work.openalex_id} className={`workCard ${compact ? "compact" : ""}`}>
       <div className="workMeta"><span>{domains[work.domain || ""] || "领域待确认"}</span><span>{work.year || "年份未知"}</span><span>{work.journal || "来源未知"}</span><span>被引 {work.citation_count}</span><span className={`workAccess ${fulltext ? "fulltext" : ""}`}>{pdfStatus}</span>{acting && <span className="workPending" role="status">正在处理…</span>}</div>
       <h3>{work.title}</h3><p className="workAuthors">{work.authors.slice(0, 4).join(" · ") || "作者未提供"}</p>
       {work.abstract && <p className="workAbstract">{work.abstract}</p>}
-      <div className="workPrimaryActions"><button onClick={() => showLineage(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献谱系 <span>↗</span></button>{paper && (paper.status === "parsed" || parsing) ? <Link href={`/read?paper=${paper.id}`}>{linkLabel} <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
+      <div className="workPrimaryActions"><button onClick={() => showLineage(work.openalex_id)} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>浏览文献谱系 <span>↗</span></button>{paper && (paper.status === "parsed" || parsing) ? <Link href={`/read?paper=${encodeURIComponent(paper.id)}`} aria-busy={opening} onNavigate={(event) => { event.preventDefault(); void openReader(paper.id); }}>{linkLabel} <span>→</span></Link> : <label tabIndex={0} role="button" onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); uploadRefs.current[work.openalex_id]?.click(); } }}>上传 PDF 精读 <span>→</span><input type="file" accept=".pdf,application/pdf" hidden ref={(el) => { uploadRefs.current[work.openalex_id] = el; }} onChange={(e) => upload(work, e)} disabled={busy} /></label>}</div>
       <details className="workMore"><summary>保存、对比与其他操作 <span>＋</span></summary><div className="workActions"><button onClick={() => runWorkAction(work.openalex_id, () => setCore(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>设为研究中心</button><button onClick={() => runWorkAction(work.openalex_id, () => addToCompare(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>{workspace?.selected_paper_ids.includes(paper?.id || "") ? "已加入对比" : "加入对比"}</button>{paper ? <span className="workSaved">已存入论文库</span> : <button onClick={() => runWorkAction(work.openalex_id, () => save(work))} disabled={busy || !!pendingWorkId} aria-busy={busy || !!pendingWorkId}>保存检索记录</button>}{work.oa_pdf_url && !parsing && paper?.status !== "parsed" && <button onClick={() => importOpenPdf(work)} disabled={busy} aria-busy={busy}>尝试获取开放 PDF</button>}</div></details>
       {(paper || libraryStatus === "ready") && !parsing && paper?.status !== "parsed" && <small className="evidenceNote">当前仅展示检索信息与可用摘要；逐页精读需先取得全文。</small>}
     </article>;

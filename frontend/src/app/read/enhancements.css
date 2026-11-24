@@ -112,6 +112,14 @@
 }
 .pdfToolbar .pageTools { flex-wrap: wrap; min-width: 0; }
 .pdfPaneLoading { margin: auto; padding: 20px; color: var(--c-text-soft); }
+.reader > .workspace { position: relative; }
+.readerSwitchNotice { flex: none; margin: 0; padding: 6px 16px; color: var(--c-text-mid); font-size: var(--fs-label); }
+.readerSwitchNotice[role="status"] {
+  position: absolute; z-index: 2; inset-inline-end: 14px; inset-block-end: 14px;
+  border: 1px solid var(--c-line); border-radius: var(--r-control); background: var(--c-surface);
+  pointer-events: none;
+}
+.readerSwitchNotice.alert { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pdfSearchStatus { margin: 0; padding: 5px 10px; color: var(--c-text-mid); font-size: var(--fs-caption); }
 
 @media (max-width: 760px) {
