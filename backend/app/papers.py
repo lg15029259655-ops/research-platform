@@ -396,11 +396,41 @@ def get_paper(paper_id: str, owner: str = Owner):
         units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id).order_by(ReadingUnit.position)).all()
         messages = db.scalars(select(Message).where(Message.paper_id == paper_id).order_by(Message.created_at, Message.id)).all()
         data = paper_data(paper, units)
+        if data["source_matches"]:
+            summaries = db.scalars(select(ResearchArtifact.payload_json).where(
+                ResearchArtifact.owner_id == owner, ResearchArtifact.kind == "paper_summary",
+                ResearchArtifact.paper_ids_json == json.dumps([paper_id]),
+            ).order_by(ResearchArtifact.created_at.desc())).all()
+            for saved in summaries:
+                summary = json.loads(saved)
+                if not summary.get("stale_after_reparse"):
+                    data["saved_summary"] = summary
+                    break
         data["messages"] = [{"id": item.id, "role": item.role, "content": item.content,
                              "action": item.action, "reading_unit_id": item.reading_unit_id,
                              "visual_verified": item.visual_verified, "turn_id": item.turn_id,
                              "created_at": item.created_at.isoformat() if item.created_at else None} for item in messages]
         return data
+
+
+@router.get("/{paper_id}/saved-map/{view}")
+def get_saved_map(paper_id: str, view: Literal["mindmap", "experiments"], owner: str = Owner):
+    from .services.mindmap_service import find_saved_map, parse_revision
+    from .services.paper_experiment_service import EXPERIMENT_CACHE_SUFFIX
+
+    with SessionLocal() as db:
+        paper = owned_paper(db, paper_id, owner)
+        if paper.status == "parsed" and paper_source_matches(paper):
+            units = db.scalars(select(ReadingUnit).where(ReadingUnit.paper_id == paper_id)
+                               .order_by(ReadingUnit.position)).all()
+            kind = "paper_mindmap" if view == "mindmap" else "paper_experiments"
+            revision = parse_revision(paper, units)
+            if view == "experiments":
+                revision += EXPERIMENT_CACHE_SUFFIX
+            saved = find_saved_map(db, owner, paper_id, kind, revision)
+            if saved is not None:
+                return saved["payload"]
+    raise HTTPException(404, "暂无匹配当前 PDF 的已保存导图")
 
 
 @router.get("/{paper_id}/status")

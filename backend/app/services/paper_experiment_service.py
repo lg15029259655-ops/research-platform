@@ -6,15 +6,14 @@
 """
 
 import asyncio
-import json
 import logging
 import re
 from sqlalchemy import select
 
 from ..db import SessionLocal
-from ..models import Paper, ReadingUnit, ResearchArtifact
+from ..models import Paper, ReadingUnit
 from .experiment_service import CATEGORY_NAMES
-from .mindmap_service import parse_revision
+from .mindmap_service import find_saved_map, parse_revision
 from .research_ai import EXPERIMENT_CATEGORY_IDS
 
 logger = logging.getLogger(__name__)
@@ -22,6 +21,7 @@ logger = logging.getLogger(__name__)
 MAX_EXPERIMENTS = 16
 MAX_METHODS = 4
 MAX_EVIDENCE = 3
+EXPERIMENT_CACHE_SUFFIX = ":evidence-v4"
 MAX_TITLE = 24
 MAX_RESULT = 60
 
@@ -197,22 +197,6 @@ def _validate_ai(payload: dict, units: list[ReadingUnit]) -> list[dict]:
     return cleaned
 
 
-def _existing_artifact(owner: str, paper_id: str, revision: str) -> dict | None:
-    with SessionLocal() as db:
-        rows = db.scalars(select(ResearchArtifact).where(
-            ResearchArtifact.owner_id == owner,
-            ResearchArtifact.kind == "paper_experiments",
-        ).order_by(ResearchArtifact.created_at.desc())).all()
-        for row in rows:
-            if json.loads(row.paper_ids_json) != [paper_id]:
-                continue
-            payload = json.loads(row.payload_json)
-            if payload.get("parse_revision") == revision:
-                return {"id": row.id, "kind": row.kind, "paper_ids": [paper_id],
-                        "payload": payload, "created_at": row.created_at.isoformat()}
-    return None
-
-
 def _ai_context(paper: Paper, units: list[ReadingUnit]) -> dict:
     # Reserve capacity for results and figures even when methods are long.
     # A bounded sample is not the full paper; downstream must retain that caveat.
@@ -254,14 +238,13 @@ async def execute_paper_experiments(owner: str, paper_id: str, *, emit=None,
                            .order_by(ReadingUnit.position)).all()
         if not units:
             raise ValueError("这篇论文还没有可用的阅读单元，请先完成解析")
-        revision = parse_revision(paper, units) + ":evidence-v4"
+        revision = parse_revision(paper, units) + EXPERIMENT_CACHE_SUFFIX
+        cached = find_saved_map(db, owner, paper_id, "paper_experiments", revision)
+        if cached is not None:
+            return cached
         expected_revision = (paper.content_revision, paper.sha256)
         title = paper.title
         context = _ai_context(paper, units)
-
-    cached = _existing_artifact(owner, paper_id, revision)
-    if cached is not None:
-        return cached
 
     if emit is not None:
         await emit("stage", {"stage": "reading", "label": "读取方法与结果单元"})

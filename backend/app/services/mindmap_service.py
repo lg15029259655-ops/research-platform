@@ -424,19 +424,16 @@ def annotation_request(tree: dict) -> dict:
     return {"skeleton": skeleton}
 
 
-def _existing_artifact(owner: str, paper_id: str, revision: str) -> dict | None:
-    with SessionLocal() as db:
-        rows = db.scalars(select(ResearchArtifact).where(
-            ResearchArtifact.owner_id == owner,
-            ResearchArtifact.kind == "paper_mindmap",
-        ).order_by(ResearchArtifact.created_at.desc())).all()
-        for row in rows:
-            if json.loads(row.paper_ids_json) != [paper_id]:
-                continue
-            payload = json.loads(row.payload_json)
-            if payload.get("parse_revision") == revision:
-                return {"id": row.id, "kind": row.kind, "paper_ids": [paper_id],
-                        "payload": payload, "created_at": row.created_at.isoformat()}
+def find_saved_map(db, owner: str, paper_id: str, kind: str, revision: str) -> dict | None:
+    rows = db.scalars(select(ResearchArtifact).where(
+        ResearchArtifact.owner_id == owner, ResearchArtifact.kind == kind,
+        ResearchArtifact.paper_ids_json == json.dumps([paper_id]),
+    ).order_by(ResearchArtifact.created_at.desc())).all()
+    for row in rows:
+        payload = json.loads(row.payload_json)
+        if payload.get("parse_revision") == revision:
+            return {"id": row.id, "kind": row.kind, "paper_ids": [paper_id],
+                    "payload": payload, "created_at": row.created_at.isoformat()}
     return None
 
 
@@ -455,12 +452,11 @@ async def execute_mindmap(owner: str, paper_id: str, *, emit=None, timeout: floa
         if not units:
             raise ValueError("这篇论文还没有可用的阅读单元，请先完成解析")
         revision = parse_revision(paper, units)
+        cached = find_saved_map(db, owner, paper_id, "paper_mindmap", revision)
+        if cached is not None:
+            return cached
         expected_revision = (paper.content_revision, paper.sha256)
         skeleton = build_skeleton(paper, units)
-
-    cached = _existing_artifact(owner, paper_id, revision)
-    if cached is not None:
-        return cached
 
     annotations: list[dict] = []
     if emit is not None:

@@ -2186,15 +2186,68 @@ def keyboard_navigation(browser, frontend, viewport=None):
     context.close()
 
 
+def prepared_demo(browser, frontend, backend, width):
+    context = browser.new_context(viewport={"width": width, "height": 900})
+    unexpected = []
+
+    def prevent_generation(route):
+        unexpected.append(route.request.url)
+        route.abort()
+
+    try:
+        context.route(f"{backend}/api/jobs", prevent_generation)
+        page = context.new_page()
+        page.goto(f"{frontend}/demo")
+        paper_links = page.locator("ol a[href^='/read?paper=']")
+        expect(paper_links).to_have_count(3)
+        papers = [link.get_attribute("href") for link in paper_links.all()]
+        for label, expected in (
+            ("新颖性扫描", page.locator(".sectionBox").get_by_role("heading", name=re.compile("^新颖性扫描"))),
+            ("设计沙盘", page.locator(".designGrid")),
+            ("文献综合", page.locator(".synthesisResult")),
+        ):
+            page.get_by_role("link", name=label, exact=True).click()
+            expect(expected.first).to_be_visible()
+            page.go_back()
+            expect(paper_links).to_have_count(3)
+        for index, path in enumerate(papers):
+            paper_links.nth(index).click()
+            expect(page).to_have_url(f"{frontend}{path}")
+            expect(page.get_by_role("heading", name="全文解读", exact=True)).to_be_visible()
+            expect(page.locator(".savedReading h3")).to_have_count(6)
+            expect(page.get_by_role("button", name="对照原文").first).to_be_visible()
+            page.get_by_role("tab", name="行文导图").click()
+            expect(page.get_by_role("button", name="展开全部")).to_be_enabled()
+            page.get_by_role("tab", name="实验导图").click()
+            panel = page.locator(".pe-panel")
+            expect(panel).to_be_visible()
+            if index == 0:
+                expect(panel.get_by_role("heading", name="论文实验导图")).to_be_visible()
+                expect(panel.locator(".pe-summary")).to_contain_text("项候选实验")
+            else:
+                expect(panel.get_by_text("尚未提取到实验")).to_be_visible()
+            page.go_back()
+            expect(paper_links).to_have_count(3)
+        assert not unexpected, unexpected
+    finally:
+        context.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frontend", default="http://127.0.0.1:3320")
     parser.add_argument("--backend", default="http://127.0.0.1:8320")
     parser.add_argument("--chrome", action="store_true", help="Use installed Google Chrome")
+    parser.add_argument("--prepared-demo", action="store_true", help="Check the prepared demo without submitting jobs")
     args = parser.parse_args()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="chrome" if args.chrome else None)
         try:
+            if args.prepared_demo:
+                for width in (390, 1440):
+                    prepared_demo(browser, args.frontend, args.backend, width)
+                print("MedRead prepared demo passed")
+                raise SystemExit(0)
             smoke(browser, args.frontend, args.backend)
             reader_chat_idle_recovery(browser, args.frontend, args.backend)
             reader_delete_recovery(browser, args.frontend, args.backend)

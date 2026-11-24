@@ -96,6 +96,8 @@
   white-space: nowrap;
 }
 .readerSubnav .readerSynthesis:disabled { opacity: .55; cursor: wait; }
+.reader .savedReading { flex: 1; min-height: 0; overflow: auto; margin: 12px; overflow-wrap: anywhere; }
+.savedReading section + section { margin-top: 1rem; }
 
 .reader :is(.split, .pdfColumn, .chatColumn)[hidden] { display: none; }
 .libraryToggleText { display: none; }

@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from ..config import upload_dir
 from ..models import DemoSeedMarker, DesignVersion, Message, Paper, PaperImage, ReadingUnit, ResearchArtifact, ResearchWorkspace
 from .mindmap_service import build_skeleton, parse_revision, skeleton_stats
+from .paper_experiment_service import EXPERIMENT_CACHE_SUFFIX
 
 
 def _replace(value, mapping):
@@ -77,11 +78,16 @@ def _seed_workspace(db, owner, workspace, root, seed):
         for original in seed["research_artifacts"]:
             row = _row(ResearchArtifact, _replace(original, mapping))
             row["owner_id"] = owner
-            if row["kind"] == "paper_mindmap":
+            if row["kind"] in {"paper_mindmap", "paper_experiments", "paper_summary"}:
                 paper_id = json.loads(row["paper_ids_json"])[0]
                 paper = next(item for item in papers if item.id == paper_id)
                 payload = json.loads(row["payload_json"])
-                payload["parse_revision"] = parse_revision(paper, units_by_paper[paper_id])
+                if row["kind"] == "paper_summary":
+                    payload["prepared_demo"] = True
+                else:
+                    units = sorted(units_by_paper[paper_id], key=lambda unit: unit.position)
+                    suffix = EXPERIMENT_CACHE_SUFFIX if row["kind"] == "paper_experiments" else ""
+                    payload["parse_revision"] = parse_revision(paper, units) + suffix
                 row["payload_json"] = json.dumps(payload, ensure_ascii=False)
             artifact = ResearchArtifact(**row)
             db.add(artifact)
@@ -113,6 +119,10 @@ def _seed_workspace(db, owner, workspace, root, seed):
         if not workspace.design_version_id and not workspace.design_idea:
             workspace.design_idea = goal
             workspace.design_version_id = design.id
+            matching_scan = next((item for item in by_kind.get("novelty_analysis", [])
+                                  if json.loads(item.payload_json).get("query", "").strip() == goal.strip()), None)
+            if matching_scan:
+                workspace.novelty_id = matching_scan.id
         db.flush()
         latest_number = db.scalar(select(func.max(DesignVersion.version_number)).where(
             DesignVersion.workspace_id == workspace.id))
