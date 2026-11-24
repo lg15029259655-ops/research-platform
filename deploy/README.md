@@ -1,6 +1,8 @@
 # lunyu-lab.site 测试部署准备
 
-> **现行正式站（2026-11-23，美国丹佛时间）**：`https://lunyu-lab.site` 指向腾讯云成都轻量云主机 `1.14.126.145`。线上已发布 `f8c9b62`，首页「查看演示」打开 `/demo`。新匿名会话使用 `/var/lib/research-platform/demo-seed-f8c9b62`，包含三篇论文及 12 项已保存结果。可回退到 `releases/80a9fdf`，切换前备份位于 `/var/backups/research-platform/before-f8c9b62-20261124T002923Z`。Linux standalone 构建、156 项后端测试和 14 项前端测试通过。公网以桌面和手机宽度从首页验证了完整演示，同时核对了已有会话的论文、综合和 PDF 内容。
+> **现行正式站（2026-11-23，美国丹佛时间）**：`https://lunyu-lab.site` 指向腾讯云成都轻量云主机 `1.14.126.145`，当前发布版本为 `b06f28a`。四个标准导航直接打开预先准备的检索与图谱、三篇论文、综合和科研设计。旧 `/demo` 跳转至首页。公网桌面和手机宽度均通过浏览测试，三个公网 PDF 与本地原件哈希一致。后端进程和持久化数据沿用原配置，直接回滚版本为 `releases/f8c9b62`。
+
+> **上次正式站（2026-11-23）**：`f8c9b62` 通过独立 `/demo` 路由和 `/var/lib/research-platform/demo-seed-f8c9b62` 提供预生成内容。切换前的备份位于 `/var/backups/research-platform/before-f8c9b62-20261124T002923Z`。
 
 > **上次正式站（2026-11-17）**：通过 OrcaTerm 发布了 `80a9fdf`，当时保留 `runtime-default-v2`。切换前数据备份位于 `/var/backups/research-platform/before-80a9fdf-20261118T044016Z`。以下阿里云内容是较早的部署记录。
 
