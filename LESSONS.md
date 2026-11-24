@@ -941,3 +941,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Evidence: a public browser with five saved papers still showed five, although fresh browsers showed three. The previous switch test covered the PDF view and missed that selecting another paper reset the experiment or writing map tab.
 - Action: prefer the three prepared papers as the default reader list once they are all present. Existing papers remain searchable. Fetch the next paper and the currently selected saved map together and commit them in one render.
 - Verification: desktop and mobile smoke tests started with five library rows and a legacy last-paper preference. The reader showed exactly three. Holding either saved-map response left the first paper and view visible until the second was ready.
+
+## L-20261123-76 — Verify a Windows source patch on the Linux host
+
+- Evidence: the release archive and patch hashes both matched, but the first Linux patch check failed on a mixed line-ending context in the reader source. The live release did not change during that attempt.
+- Action: reproduce against the exact release archive. Apply the patch with line-ending-tolerant context matching and compare the normalized file hash against the reviewed Git source before building. Keep the previous production assets available while switching the frontend.
+- Verification: Linux built and activated the confirmed source. The public old-session scenario passed on desktop and mobile. Two temporary build directories and five hash-matched duplicate archives were removed, freeing 1,487 MiB. Both production services were active after the cleanup.

@@ -2273,6 +2273,7 @@ def prepared_reader_legacy_session(browser, frontend, backend, width):
         page.goto(f"{frontend}/read")
         expect(page.locator(".paperItem")).to_have_count(3)
         expect(page.get_by_role("heading", name=first["title"], exact=True)).to_be_visible()
+        expect(page.locator(".pdfCanvas canvas").first).to_be_visible()
 
         def choose_paper(paper):
             if width < 760:
@@ -2283,7 +2284,7 @@ def prepared_reader_legacy_session(browser, frontend, backend, width):
             ("experiments", "实验导图", ".pe-card"),
             ("mindmap", "行文导图", ".mindmapPanel"),
         ]:
-            page.get_by_role("tab", name=tab_name).click()
+            page.get_by_role("tab", name=tab_name).press("Enter")
             if view == "experiments":
                 expect(page.locator(panel).first).to_be_visible()
             else:
