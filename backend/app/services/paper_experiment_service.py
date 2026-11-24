@@ -14,6 +14,7 @@ from ..db import SessionLocal
 from ..models import Paper, ReadingUnit
 from .experiment_service import CATEGORY_NAMES
 from .mindmap_service import find_saved_map, parse_revision
+from .prepared_paper_experiments import prepared_experiments
 from .research_ai import EXPERIMENT_CATEGORY_IDS
 
 logger = logging.getLogger(__name__)
@@ -21,9 +22,9 @@ logger = logging.getLogger(__name__)
 MAX_EXPERIMENTS = 16
 MAX_METHODS = 4
 MAX_EVIDENCE = 3
-EXPERIMENT_CACHE_SUFFIX = ":evidence-v4"
+EXPERIMENT_CACHE_SUFFIX = ":evidence-v5"
 MAX_TITLE = 24
-MAX_RESULT = 60
+MAX_RESULT = 150
 
 # (category, 展示用短标签, 中英文关键词)。顺序即匹配优先级：更具体的检测/建模放前面，
 # 宽泛的"细胞/分析"放后面，避免"细胞增殖实验"被笼统归到 analysis。
@@ -33,6 +34,9 @@ _KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("molecular_experiment", "免疫组化", ("免疫组化", "ihc", "immunohistochem")),
     ("molecular_experiment", "ELISA", ("elisa",)),
     ("molecular_experiment", "质谱", ("质谱", "mass spectrom")),
+    ("molecular_experiment", "免疫共沉淀", ("co-ip", "coimmunoprecipitation", "co-immunoprecipitation", "免疫共沉淀")),
+    ("molecular_experiment", "染色质免疫沉淀", ("chip-seq", "chip-qpcr", "chromatin immunoprecipitation", "染色质免疫沉淀")),
+    ("molecular_experiment", "报告基因检测", ("luciferase", "reporter assay", "报告基因")),
     ("data_analysis", "单细胞分析", ("单细胞", "single-cell", "single cell")),
     ("data_analysis", "转录组测序", ("转录组", "rna-seq", "rnaseq", "sequencing", "测序")),
     ("data_analysis", "差异表达分析", ("差异表达", "差异基因", "differential expression")),
@@ -43,6 +47,8 @@ _KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("cell_experiment", "敲低/敲除", ("敲低", "敲除", "knockdown", "knockout", "sirna", "shrna", "crispr")),
     ("cell_experiment", "过表达", ("过表达", "overexpress")),
     ("cell_experiment", "增殖/凋亡检测", ("增殖检测", "凋亡检测", "cck-8", "cck8", "apoptosis assay", "proliferation assay", "viability assay")),
+    ("cell_experiment", "克隆形成", ("colony formation", "clonogenic assay", "克隆形成")),
+    ("cell_experiment", "类器官实验", ("organoid", "类器官")),
     ("cell_experiment", "迁移/侵袭实验", ("迁移实验", "侵袭实验", "transwell", "migration assay", "invasion assay")),
     ("cell_experiment", "共培养", ("共培养", "co-culture", "coculture")),
     ("cell_experiment", "流式细胞术", ("流式", "flow cytometry")),
@@ -53,10 +59,17 @@ _KEYWORDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("clinical_sample", "临床样本", ("临床样本", "患者样本", "组织芯片", "human liver tissue specimens", "patient samples", "tissue microarray")),
     ("imaging", "共聚焦成像", ("共聚焦", "confocal", "荧光成像")),
     ("imaging", "电镜", ("电镜", "electron microscop")),
-
+    ("survey_statistics", "生存分析", ("kaplan-meier", "cox regression", "生存分析")),
+    ("modeling_algorithm", "消融实验", ("ablation study", "消融实验")),
+    ("materials_prep", "材料表征", ("x-ray diffraction", "scanning electron microscopy", "材料表征")),
 )
 
 _SENTENCE = re.compile(r"(?<=[。！？!?；;])|(?<=[.])\s+")
+_OUTCOME_SECTIONS = {"RESULTS", "FIGURE", "TABLE"}
+_OUTCOME_CUE = re.compile(r"\b(?:show\w*|observ\w*|found|detect\w*|reveal\w*|measur\w*|increas\w*|decreas\w*|reduc\w*|suppress\w*|quantif\w*|confirm\w*)\b|显示|观察|检测|发现|增加|降低|抑制", re.I)
+_BROAD_METHODS = {"敲低/敲除", "过表达", "给药处理", "动物模型构建", "临床样本", "数据库筛选"}
+_REVIEW_CUE = re.compile(r"\b(?:in this review|this (?:systematic |scoping |narrative )?review|we review|meta-analysis)\b|本文综述|本综述", re.I)
+_ATTRIBUTION = re.compile(r"\[\s*\d+(?:[\d\s,–-]*\d)?\s*\]|\bet al\b|\b(?:a|one|previous|recent) stud(?:y|ies)\b|研究发现|有研究|已有研究", re.I)
 
 
 def _clip(text: str, limit: int) -> str:
@@ -125,11 +138,12 @@ def rules_experiments(units: list[ReadingUnit]) -> list[dict]:
             if not existing["result"]:
                 existing["result"] = _clip(sentence, MAX_RESULT)
             existing["inferred"] = True
-        else:
-            if title not in existing["methods"] and len(existing["methods"]) < MAX_METHODS:
-                existing["methods"].append(title)
-        if len(existing["evidence"]) < MAX_EVIDENCE:
-            existing["evidence"].append(_evidence(unit, sentence, title))
+        if title not in existing["methods"] and len(existing["methods"]) < MAX_METHODS:
+            existing["methods"].append(title)
+        evidence = _evidence(unit, sentence, title)
+        limit = MAX_EVIDENCE if result else MAX_EVIDENCE - 1
+        if len(existing["evidence"]) < limit and evidence not in existing["evidence"]:
+            existing["evidence"].append(evidence)
         return existing
 
     for unit in ordered:
@@ -139,6 +153,20 @@ def rules_experiments(units: list[ReadingUnit]) -> list[dict]:
                 for category, label in _matches(sentence):
                     add(category, label, unit, sentence, result=False)
 
+    # A result sentence can support a named technique independently of whether
+    # its subsection survived PDF parsing. Do not attach by category alone.
+    for unit in sorted(ordered, key=lambda item: item.kind == "RESULTS"):
+        if unit.kind not in _OUTCOME_SECTIONS:
+            continue
+        for sentence in _sentences(unit.source_text):
+            if not _OUTCOME_CUE.search(sentence):
+                continue
+            hits = [(category, label) for category, label in _matches(sentence) if label not in _BROAD_METHODS]
+            if len(hits) == 1:
+                category, label = hits[0]
+                if label not in by_title or not by_title[label]["result"]:
+                    add(category, label, unit, sentence, result=True)
+
     experiments = experiments[:MAX_EXPERIMENTS]
     for index, item in enumerate(experiments):
         item["order"] = index + 1
@@ -146,6 +174,41 @@ def rules_experiments(units: list[ReadingUnit]) -> list[dict]:
         item["depends_on"] = []
         item["methods"] = [method[:16] for method in item["methods"][:MAX_METHODS]]
         item["inferred"] = bool(item["inferred"] or not item["evidence"])
+    return experiments
+
+
+def _is_review(paper: Paper, units: list[ReadingUnit]) -> bool:
+    if paper.study_type == "evidence_synthesis":
+        return True
+    abstract = next((unit.source_text for unit in units if unit.kind == "ABSTRACT"), "") or ""
+    if any(unit.kind in {"METHODS", "RESULTS"} for unit in units):
+        return False
+    return bool(_REVIEW_CUE.search(" ".join((paper.title or "", paper.abstract or "", abstract[:2000]))))
+
+
+def _review_experiments(units: list[ReadingUnit]) -> list[dict]:
+    experiments = []
+    seen = set()
+    for unit in units:
+        if unit.kind not in {"ABSTRACT", "INTRODUCTION", "BODY", "RESULTS", "DISCUSSION", "CONCLUSION"}:
+            continue
+        source = re.sub(r"\bet al\.", "et al", unit.source_text or "", flags=re.I)
+        for sentence in _SENTENCE.split(source):
+            if not _ATTRIBUTION.search(sentence) or not _OUTCOME_CUE.search(sentence):
+                continue
+            for category, label in _matches(sentence):
+                if label in seen:
+                    continue
+                seen.add(label)
+                order = len(experiments) + 1
+                experiments.append({
+                    "id": f"E{order}", "order": order, "title": label, "category": category,
+                    "methods": [label], "result": _clip(sentence, MAX_RESULT),
+                    "evidence": [_evidence(unit, sentence, label)], "depends_on": [], "inferred": True,
+                })
+                break
+            if len(experiments) >= MAX_EXPERIMENTS:
+                return experiments
     return experiments
 
 
@@ -168,6 +231,8 @@ def _validate_ai(payload: dict, units: list[ReadingUnit]) -> list[dict]:
             continue
         evidence = []
         for ref in item.get("evidence", []) if isinstance(item.get("evidence"), list) else []:
+            if not isinstance(ref, dict):
+                continue
             unit = by_id.get(str(ref.get("unit_id", "")))
             if unit is None:
                 continue
@@ -182,7 +247,11 @@ def _validate_ai(payload: dict, units: list[ReadingUnit]) -> list[dict]:
         if not evidence:
             continue
         seen_titles.add(title)
-        methods = [str(value)[:16] for value in (item.get("methods") or []) if str(value).strip()][:MAX_METHODS]
+        method_values = item.get("methods")
+        methods = []
+        if isinstance(method_values, list):
+            methods = [value.strip()[:16] for value in method_values
+                       if isinstance(value, str) and value.strip()][:MAX_METHODS]
         evidence_kinds = {by_id[ref["unit_id"]].kind for ref in evidence}
         result = _clip(str(item.get("result", "")), MAX_RESULT) if evidence_kinds & {"RESULTS", "FIGURE", "TABLE"} else ""
         cleaned.append({
@@ -192,17 +261,15 @@ def _validate_ai(payload: dict, units: list[ReadingUnit]) -> list[dict]:
         })
         if len(cleaned) >= MAX_EXPERIMENTS:
             break
-    for index, item in enumerate(cleaned):
-        item["depends_on"] = []
     return cleaned
 
 
 def _ai_context(paper: Paper, units: list[ReadingUnit]) -> dict:
-    # Reserve capacity for results and figures even when methods are long.
+    # Reserve capacity for figures even when the results or methods are long.
     # A bounded sample is not the full paper; downstream must retain that caveat.
     excerpts = []
     ordered = sorted(units, key=lambda item: item.position)
-    for kinds in ({"METHODS"}, {"RESULTS", "FIGURE", "TABLE", "CONCLUSION"}):
+    for kinds, limit in (({"METHODS"}, 10), ({"RESULTS", "CONCLUSION"}, 8), ({"FIGURE", "TABLE"}, 6)):
         bucket = []
         for unit in ordered:
             if unit.kind not in kinds:
@@ -211,9 +278,9 @@ def _ai_context(paper: Paper, units: list[ReadingUnit]) -> dict:
             for start in range(0, len(text), 1600):
                 bucket.append({"unit_id": unit.id, "kind": unit.kind,
                                "page": unit.page_start, "text": text[start:start + 1600]})
-                if len(bucket) >= 12:
+                if len(bucket) >= limit:
                     break
-            if len(bucket) >= 12:
+            if len(bucket) >= limit:
                 break
         excerpts.extend(bucket)
     return {
@@ -245,6 +312,20 @@ async def execute_paper_experiments(owner: str, paper_id: str, *, emit=None,
         expected_revision = (paper.content_revision, paper.sha256)
         title = paper.title
         context = _ai_context(paper, units)
+        prepared = prepared_experiments(paper, revision)
+        cited = _is_review(paper, units)
+
+    if prepared is not None:
+        return save_artifact(owner, "paper_experiments", [paper_id], prepared,
+                             expected_revisions={paper_id: expected_revision})
+    if cited:
+        payload = {
+            "paper_id": paper_id, "parse_revision": revision, "cited": True, "generated_by": "rules",
+            "summary": "从综述中提取可定位的引用实验线索。页码指向综述原文。",
+            "experiments": _review_experiments(units),
+        }
+        return save_artifact(owner, "paper_experiments", [paper_id], payload,
+                             expected_revisions={paper_id: expected_revision})
 
     if emit is not None:
         await emit("stage", {"stage": "reading", "label": "读取方法与结果单元"})

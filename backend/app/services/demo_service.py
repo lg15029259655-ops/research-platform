@@ -13,19 +13,6 @@ from ..models import DemoSeedMarker, DesignVersion, Message, Paper, PaperImage, 
 from .mindmap_service import build_skeleton, parse_revision, skeleton_stats
 from .paper_experiment_service import EXPERIMENT_CACHE_SUFFIX
 
-_REVIEW_EVIDENCE = {
-    "35064256.pdf": [
-        {"title": "部分肝切除与再生", "page": 3, "description": "综述引用的肝脏 α-catenin 敲低研究报告，部分肝切除后 YAP 活化和肝细胞增殖增加。"},
-        {"title": "肝星状细胞与纤维化", "page": 10, "description": "综述引用的研究报告，维替泊芬处理后，培养肝星状细胞的 Acta2 与 Col1a1 上调受到抑制。"},
-    ],
-    "42008043.pdf": [
-        {"title": "肺纤维化模型", "page": 10, "description": "综述引用的研究报告，博来霉素诱导模型中持续的 YAP 活化与纤维化加重相关。"},
-        {"title": "巩膜成纤维细胞", "page": 11, "description": "综述汇总了有关 TGF-β2、YAP 与 SMAD2/3 的研究，并讨论了 YAP 抑制剂对所述病理变化的影响。"},
-        {"title": "皮肤纤维化干预", "page": 11, "description": "综述引用了富马酸二甲酯在系统性硬化相关纤维化中的研究，并讨论 TAZ 与 YAP 信号。"},
-    ],
-}
-
-
 def _replace(value, mapping):
     if isinstance(value, str):
         for old, new in mapping.items():
@@ -100,10 +87,6 @@ def _seed_workspace(db, owner, workspace, root, seed):
                     units = sorted(units_by_paper[paper_id], key=lambda unit: unit.position)
                     suffix = EXPERIMENT_CACHE_SUFFIX if row["kind"] == "paper_experiments" else ""
                     payload["parse_revision"] = parse_revision(paper, units) + suffix
-                    if row["kind"] == "paper_experiments" and not payload.get("experiments"):
-                        cited = _REVIEW_EVIDENCE.get(paper.original_filename)
-                        if cited:
-                            payload["cited_evidence"] = cited
                 row["payload_json"] = json.dumps(payload, ensure_ascii=False)
             artifact = ResearchArtifact(**row)
             db.add(artifact)

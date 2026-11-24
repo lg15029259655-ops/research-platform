@@ -15,6 +15,7 @@ HEADINGS = (
     ("CONCLUSION", re.compile(r"^(\d+(?:\.\d+)*\.?\s*)?(conclusions?|concluding remarks|future work|结论|总结与展望)$", re.I)),
 )
 FIGURE = re.compile(r"^(?:Fig(?:ure)?\.?|图)\s*([0-9]+[A-Za-z]?)\s*[.:：-]\s*(.+)", re.I)
+FIGURE_LABEL = re.compile(r"^(?:Fig(?:ure)?\.?|图)\s*([0-9]+[A-Za-z]?)\s*[.:：-]?\s*$", re.I)
 TABLE = re.compile(r"^Table\s*([0-9]+[A-Za-z]?)\s*[.:：-]\s*(.+)", re.I)
 SUPPLEMENT = re.compile(r"^(?:supplementary|supplemental)(?: information| materials?| data)?$|^supporting information$", re.I)
 RESULT_SUBHEADING = re.compile(r"^(?:\d+(?:\.\d+)+\s+.{3,80}|(?:primary|secondary|exploratory)\s+(?:outcomes?|endpoints?|analys[ie]s)|baseline characteristics|safety|efficacy|patient characteristics)$", re.I)
@@ -176,11 +177,17 @@ def parse_pdf(path: str | Path, on_stage: Callable[[str], None] | None = None) -
                         sections.append(current)
                     current = ParsedUnit(heading_kind, line, "", page_number, page_number)
                     continue
-                figure = FIGURE.match(line) if not supplementary else None
+                figure = FIGURE.match(line)
+                standalone_figure = FIGURE_LABEL.fullmatch(line)
+                if figure is None and standalone_figure and line_index + 1 < len(lines):
+                    following = lines[line_index + 1]
+                    if len(following) >= 20 and not classify_heading(following) and not FIGURE.match(following) and not TABLE.match(following):
+                        figure = standalone_figure
                 if figure:
-                    caption = line
+                    caption = line.rstrip(" .") if figure is standalone_figure else line
                     for continuation in lines[line_index + 1:line_index + 4]:
-                        if caption.rstrip().endswith(".") or classify_heading(continuation) or FIGURE.match(continuation) or TABLE.match(continuation):
+                        if (caption.endswith(".") or classify_heading(continuation)
+                                or FIGURE.match(continuation) or FIGURE_LABEL.fullmatch(continuation) or TABLE.match(continuation)):
                             break
                         caption += " " + continuation
                     figures.setdefault(figure.group(1).lower(), ParsedUnit("FIGURE", f"Figure {figure.group(1)}", caption, page_number, page_number))

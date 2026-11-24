@@ -417,6 +417,7 @@ def get_paper(paper_id: str, owner: str = Owner):
 def get_saved_map(paper_id: str, view: Literal["mindmap", "experiments"], owner: str = Owner):
     from .services.mindmap_service import find_saved_map, parse_revision
     from .services.paper_experiment_service import EXPERIMENT_CACHE_SUFFIX
+    from .services.prepared_paper_experiments import prepared_experiments
 
     with SessionLocal() as db:
         paper = owned_paper(db, paper_id, owner)
@@ -427,6 +428,9 @@ def get_saved_map(paper_id: str, view: Literal["mindmap", "experiments"], owner:
             revision = parse_revision(paper, units)
             if view == "experiments":
                 revision += EXPERIMENT_CACHE_SUFFIX
+                prepared = prepared_experiments(paper, revision)
+                if prepared is not None:
+                    return prepared
             saved = find_saved_map(db, owner, paper_id, kind, revision)
             if saved is not None:
                 return saved["payload"]

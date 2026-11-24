@@ -164,6 +164,44 @@ def test_unmatched_results_do_not_create_or_attach_experiments():
     assert experiments[0]["depends_on"] == []
 
 
+def test_new_upload_uses_split_figure_caption_without_a_methods_match(client, monkeypatch):
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("no model")
+
+    monkeypatch.setattr("app.services.research_ai.run_task_events", unavailable)
+    with pymupdf.open() as document:
+        page = document.new_page()
+        page.insert_text((50, 50), "New research paper", fontsize=20)
+        page.insert_text((50, 100), "Results\nFig. 1\nLuciferase reporter assay showed lower reporter activity.", fontsize=11)
+        source = document.tobytes()
+    paper = client.post("/api/papers", files={"file": ("new.pdf", source, "application/pdf")}).json()
+    detail = client.get(f"/api/papers/{paper['id']}").json()
+    figure = next(unit for unit in detail["units"] if unit["kind"] == "FIGURE")
+    assert figure["page_start"] == 1
+    submitted = client.post("/api/jobs", json={"kind": "paper_experiments", "params": {"paper_id": paper["id"]}}).json()
+    snapshot = _wait(client, submitted["id"])
+    assert snapshot["status"] == "done", snapshot
+    cards = snapshot["result"]["payload"]["experiments"]
+    card = next(item for item in cards if item["title"] == "报告基因检测")
+    assert card["methods"] == ["报告基因检测"]
+    assert any(ref["unit_id"] == figure["id"] for ref in card["evidence"])
+    saved = client.get(f"/api/papers/{paper['id']}/saved-map/experiments").json()
+    assert saved["experiments"] == cards
+
+
+def test_review_requires_attribution_to_show_cited_experiments():
+    from app.models import Paper, ReadingUnit
+
+    paper = Paper(title="A review of cell dynamics", abstract="This review examines published studies.")
+    unit = ReadingUnit(id="body", paper_id="p", position=0, kind="BODY", heading="Body",
+                       page_start=3, page_end=3,
+                       source_text="Flow cytometry showed higher fluorescence [42]. Western blot showed a signal.")
+    assert paper_experiment_service._is_review(paper, [unit])
+    cards = paper_experiment_service._review_experiments([unit])
+    assert [card["title"] for card in cards] == ["流式细胞术"]
+    assert cards[0]["evidence"][0]["page"] == 3
+
+
 def test_short_keywords_do_not_match_inside_unrelated_words():
     assert paper_experiment_service._match("We used a separate approach.") is None
     assert paper_experiment_service._match("Rats were studied.")[1] == "动物模型构建"

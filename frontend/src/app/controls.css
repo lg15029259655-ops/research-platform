@@ -26,7 +26,6 @@
 }
 .workPrimaryActions :is(button, a, label) { justify-content: center; }
 .moreButton { display: flex; width: max-content; max-width: 100%; }
-.home-button span { font-size: 1em; line-height: 1; }
 .home-header-action { min-height: 36px; }
 .searchModes button, .versionBar button, .graphToolbar button, .flowToolbar button { border-radius: var(--r-control); }
 .quietButton:hover:not(:disabled), .searchModes button:hover:not(:disabled) {

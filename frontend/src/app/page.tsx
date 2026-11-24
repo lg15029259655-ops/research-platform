@@ -88,8 +88,8 @@ export default function Home() {
         <h1 id="home-title">读懂证据，<br /><em>再提出下一步问题。</em></h1>
         <p>从发现论文到设计研究，在同一个工作台整理线索、精读全文、比较结果。始终分清哪些结论来自摘要，哪些有全文支持。</p>
         <div className="home-hero-actions">
-          <Link className="home-button home-button-primary" href="/discover">开始检索 <span aria-hidden="true">↗</span></Link>
-          <a className="home-button home-button-secondary" href="#workflow">了解工作流 <span aria-hidden="true">→</span></a>
+          <Link className="home-button home-button-primary" href="/discover">开始检索</Link>
+          <a className="home-button home-button-secondary" href="#workflow">了解工作流</a>
         </div>
         <form className="home-search" role="search" onSubmit={submitSearch}>
           <input value={term} onChange={(event) => setTerm(event.target.value)} placeholder="用一句话描述你的研究问题…" aria-label="检索文献：用一句话描述你的研究问题" />

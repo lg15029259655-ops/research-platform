@@ -25,9 +25,8 @@ const ReadingMarkdown = lazy(() => import("@/components/reader/ReadingMarkdown")
 })));
 type Unit = { id: string; position: number; kind: string; heading: string; page_start: number | null; actual_pdf_page?: number | null; caption?: string | null; evidence_snippet?: string | null };
 type Message = { id: string; role: string; content: string; reading_unit_id: string | null; visual_verified?: boolean; turn_id?: string | null };
-type SavedSummary = { prepared_demo?: boolean; question: string; stages: { key: string; label: string; summary: string; unit_ids: string[] }[]; limitations: string[] };
-type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; saved_summary?: SavedSummary; warning?: string; page_count?: number; file_available?: boolean; file_version?: string | null; content_revision?: string | null; source_matches?: boolean };
-type ReaderTab = "summary" | "read" | "mindmap" | "experiments";
+type Paper = { id: string; title: string; original_filename: string; current_unit_id: string | null; status: string; abstract?: string | null; year?: number | null; journal?: string | null; units?: Unit[]; messages?: Message[]; warning?: string; page_count?: number; file_available?: boolean; file_version?: string | null; content_revision?: string | null; source_matches?: boolean };
+type ReaderTab = "read" | "mindmap" | "experiments";
 type ParseSubmission = Pick<Paper, "id" | "status" | "warning" | "content_revision">;
 type Action = "START" | "NEXT" | "NAVIGATE" | "FIGURE" | "WHY_DESIGN" | "EVIDENCE" | "QUESTION";
 type Mode = "split" | "pdf" | "ai";
@@ -238,8 +237,7 @@ export default function ReadPage() {
       window.history.replaceState(null, "", `/read?${params}`);
     }
   });
-  const readerTabs = tabGroup<ReaderTab>(paper?.saved_summary
-    ? ["summary", "read", "mindmap", "experiments"] : ["read", "mindmap", "experiments"], readerTab, setReaderTab);
+  const readerTabs = tabGroup<ReaderTab>(["read", "mindmap", "experiments"], readerTab, setReaderTab);
   useLayoutEffect(() => {
     const last = focusedReaderControl.current;
     const activeElement = document.activeElement;
@@ -318,9 +316,6 @@ export default function ReadPage() {
     if (opening) {
       const params = new URLSearchParams(window.location.search);
       setPage(startingPdfPage(data, Number(params.get("page")), params.get("source_file")));
-      if (data.saved_summary?.prepared_demo && !["page", "source_file", "citation", "view"].some((key) => params.has(key))) {
-        setReaderTab("summary");
-      }
       if (readTabDraft<string>(lastPaperKey) !== id) writeTabDraft(lastPaperKey, id);
     }
     return data;
@@ -986,7 +981,7 @@ export default function ReadPage() {
           </button>)}
         </div>}
       </header>
-      {paper?.status === "parsed" && <div className="readerSubnav"><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图">{paper.saved_summary && <button {...readerTabs.item("summary")}>全文解读</button>}<button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">{compact ? "查看待综合 ↗" : "已选入综合 · 查看 ↗"}</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
+      {paper?.status === "parsed" && <div className="readerSubnav"><div className="readerViewTabs" {...readerTabs.list} aria-label="精读视图"><button {...readerTabs.item("read")}>论文精读</button><button {...readerTabs.item("mindmap", openMindmap)}>行文导图</button><button {...readerTabs.item("experiments", openExperiments)}>实验导图</button></div>{workspace?.selected_paper_ids.includes(paper.id) ? <Link className="quietButton readerSynthesis" href="/synthesis">{compact ? "查看待综合 ↗" : "已选入综合 · 查看 ↗"}</Link> : <button className="quietButton readerSynthesis" type="button" onClick={queueForSynthesis} disabled={addingToSynthesis} aria-busy={addingToSynthesis}>{addingToSynthesis ? "正在加入…" : "加入待综合"}</button>}</div>}
       {error && <div className="alert" role="alert">{error}{pendingUpload && !pending && <button className="quietButton" onClick={() => void runUpload(pendingUpload)}>重试确认上传</button>}</div>}
       {unconfirmedParse && <div className="alert" role="alert">暂时无法确认 PDF 解析请求是否已受理。
         <button type="button" className="quietButton" disabled={pending} onClick={() => void confirmParseRequest(unconfirmedParse)}>核对解析状态</button>
@@ -1007,18 +1002,6 @@ export default function ReadPage() {
       </div> : readerLoading && !parseStage ? <div className="welcome" role="status" aria-busy="true"><h2>正在打开论文…</h2></div> : !paper ? <div className="welcome"><div className="welcomeMark" aria-hidden="true"><span>PDF</span><b>→</b><span>AI</span></div><h2>{parseStage || "让阅读从原文开始"}</h2><p>上传 PDF 后，可查看原文并按阅读单元逐步精读。上传不会自动调用 AI。</p><label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, welcomeUploadRef.current)}>选择 PDF 文件<input ref={welcomeUploadRef} type="file" accept="application/pdf,.pdf" onChange={upload} disabled={pending} hidden /></label></div> : paper.status !== "parsed" ?
       <div className="metadataPaper"><span className="sectionLabel">{paper.status === "metadata_only" ? "METADATA ONLY" : paper.status === "failed" ? "PDF PARSE FAILED" : "PDF PARSING"}</span><h2>{paper.title}</h2><p>{paper.year || ""} {paper.journal || ""}</p><div className="miniNotice">{paper.status === "metadata_only" ? "当前只有检索元数据和摘要，尚未分析全文。上传 PDF 后才可使用逐页精读、Figure 和证据分析。" : paper.status === "failed" ? "PDF 未能成功解析。请核对文件后重新上传；解析成功前不会开放全文分析。" : "PDF 正在解析。完成前不会开放全文精读、Figure 或证据分析。"}</div>{paper.abstract && <p className="metadataAbstract">{paper.abstract}</p>}{["metadata_only", "failed"].includes(paper.status) && <label className="bigUpload" tabIndex={0} role="button" onKeyDown={(e) => openUpload(e, attachUploadRef.current)}>{paper.status === "failed" ? "重新上传 PDF" : "上传这篇论文的 PDF"}<input ref={attachUploadRef} type="file" accept=".pdf,application/pdf" onChange={attach} disabled={pending} hidden /></label>}</div> :
       <>
-      {readerTab === "summary" && paper.saved_summary && <article className="sectionBox savedReading">
-        <h2>全文解读</h2>
-        <p>{paper.saved_summary.question}</p>
-        {paper.saved_summary.stages.map((stage) => <section key={stage.key}>
-          <h3>{stage.label}</h3>
-          <p>{stage.summary}</p>
-          {!!stage.unit_ids.length && <button type="button" className="quietButton" onClick={() => jumpTo(stage.unit_ids[0])}>对照原文 ↗</button>}
-        </section>)}
-        {!!paper.saved_summary.limitations.length && <section><h3>局限与证据边界</h3>
-          <ul>{paper.saved_summary.limitations.map((item, index) => <li key={index}>{item}</li>)}</ul>
-        </section>}
-      </article>}
       {readerTab === "mindmap" && <>
         {mindmapBusy && <JobProgress title="正在生成行文导图" stageLabel={mindmapStage} progress={mindmapProgress} startedAt={mindmapStartedAt} hint="可在这篇论文内切换视图；离开论文会停止任务" onCancel={() => mindmapAbort.current?.abort()} />}
         <MindMapPanel mindmap={mindmap} pending={mindmapBusy} onJump={jumpTo} />
