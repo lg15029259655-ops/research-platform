@@ -890,3 +890,9 @@ Existing project history: [docs/lessons.md](docs/lessons.md). Read both before r
 - Verification: a fresh local workspace loaded three source PDFs, three summaries with valid unit IDs, three annotated maps, the saved scan, comparison and design. Both review papers had no extracted original experiment chain. Another visitor could not read the first visitor's cached map. Rerunning preparation against the completed seed reused all 12 results without generating more. The production build, 156 backend tests and 14 frontend tests passed.
 - Browser regression: Chrome at 1440px and Edge at 390px opened all three research results and the three paper summaries and maps with job submission blocked. The experiment count badge is hidden on compact screens, so the regression checks the visible heading and summary there.
 - Boundary: the prepared seed lives at `D:/论文阅读/demo-seed-ready` and the local demo uses a separate database. Existing visitor workspaces are preserved. A hosted demo needs its own configured seed directory.
+
+## L-20261123-68 — Verify the public demonstration from the home page
+
+- Evidence: the standalone demo worked by direct URL, but the home page had no presentation link. The local seed also included saved chat turns that were not needed for the public presentation.
+- Action: add a visible home-page link and make the prepared-demo browser smoke start there. Pack only the original three example PDFs and their supporting files, plus the 12 saved artifacts. Omit chat messages and owner IDs.
+- Verification: both local viewport checks start at the home page and open the saved demo with task submission blocked. A separately extracted public seed initialized all three summaries, maps and research results without chat history. The production build and 156 backend tests passed.

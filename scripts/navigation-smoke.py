@@ -2197,7 +2197,9 @@ def prepared_demo(browser, frontend, backend, width):
     try:
         context.route(f"{backend}/api/jobs", prevent_generation)
         page = context.new_page()
-        page.goto(f"{frontend}/demo")
+        page.goto(frontend)
+        page.get_by_role("link", name="查看演示").click()
+        expect(page).to_have_url(f"{frontend}/demo")
         paper_links = page.locator("ol a[href^='/read?paper=']")
         expect(paper_links).to_have_count(3)
         papers = [link.get_attribute("href") for link in paper_links.all()]
